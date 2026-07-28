@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: e-posyandu-api
+    runtime: docker
+    rootDir: backend-python
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://delicate-lolly-9a37f0.netlify.app

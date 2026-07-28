@@ -1,0 +1,37 @@
+{
+  "name": "e-posyandu",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "preview": "npm --prefix frontend run preview",
+    "backend:dev": "node backend/src/server.mjs",
+    "migrate:export": "node backend/scripts/migrate/export-firestore.mjs",
+    "migrate:import": "node backend/scripts/migrate/import-supabase.mjs",
+    "migrate:verify": "node backend/scripts/migrate/verify-migration.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.8",
+    "dotenv": "^17.4.2",
+    "firebase": "^12.6.0",
+    "firebase-admin": "^14.2.0",
+    "lucide-react": "^0.560.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.22",
+    "netlify-cli": "^27.0.1",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.9.3",
+    "vite": "^5.2.0"
+  }
+}

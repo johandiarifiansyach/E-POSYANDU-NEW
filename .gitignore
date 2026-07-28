@@ -1,0 +1,12 @@
+node_modules/
+.DS_Store
+
+# Runtime credentials stay local. Commit the matching .env.example files instead.
+.env
+.env.*
+!.env.example
+frontend/.env
+backend-python/.env
+
+# Service-account credentials are never committed.
+secrets/*.json

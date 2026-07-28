@@ -1,0 +1,67 @@
+[
+  {
+    "id": "4scvrxE3D7DMzqCGaCMF",
+    "data": {
+      "childId": "JBo6LLKqPDQflwKlZtF1",
+      "childName": "dsfgvsd",
+      "category": "Wasting",
+      "jenisPmt": "Lokal",
+      "sumberAnggaran": "APBD",
+      "tglPemberian": "2025-12-13",
+      "status": "Aktif",
+      "createdAt": "2025-12-13T07:06:07.777Z",
+      "monitorings": {
+        "1": {
+          "tgl": "2025-12-13",
+          "bb": null,
+          "tb": null,
+          "caraUkur": "Terlentang",
+          "days": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "pemantauanKesehatan": "Ada",
+          "tindakLanjut": "Dilanjutkan"
+        }
+      },
+      "updatedAt": "2025-12-13T10:04:36.099Z"
+    }
+  },
+  {
+    "id": "HAiUwGOEyokn5potQjy6",
+    "data": {
+      "childId": "zPuLTOpluYWZVHNKXDF9",
+      "childName": "Zara Azalia Oktavia",
+      "category": "Wasting",
+      "jenisPmt": "Pabrikan",
+      "sumberAnggaran": "Dana Desa",
+      "mitra": "",
+      "mitraLain": "",
+      "tglPemberian": "2026-02-12",
+      "siklusKe": 1,
+      "pmtSesuaiJuknis": "Ya",
+      "status": "Aktif",
+      "monitorings": {},
+      "createdAt": "2026-02-12T09:20:31.604Z"
+    }
+  },
+  {
+    "id": "qFJMMMt3zjOhQpLksXCZ",
+    "data": {
+      "childId": "JBo6LLKqPDQflwKlZtF1",
+      "childName": "dsfgvsd",
+      "category": "Underweight",
+      "jenisPmt": "Lokal",
+      "sumberAnggaran": "DAK Non Fisik",
+      "tglPemberian": "2025-12-13",
+      "status": "Aktif",
+      "monitorings": {},
+      "createdAt": "2025-12-13T07:03:02.185Z"
+    }
+  }
+]
