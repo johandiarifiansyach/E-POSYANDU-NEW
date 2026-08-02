@@ -443,6 +443,7 @@ type SupabaseAuthResponse = {
   refresh_token: string;
   expires_in: number;
   user: { id: string; email?: string | null };
+  profile?: AccessProfile;
 };
 
 async function supabaseAuthRequest(path: string, body: Record<string, string>): Promise<SupabaseAuthResponse> {
@@ -1098,7 +1099,12 @@ export async function restoreAuthSession(auth: Auth): Promise<AuthUser | null> {
   return session;
 }
 
-export async function signInWithPassword(auth: Auth, username: string, password: string, turnstileToken?: string): Promise<AuthUser> {
+export async function signInWithPassword(
+  auth: Auth,
+  username: string,
+  password: string,
+  turnstileToken?: string
+): Promise<{ session: AuthUser; profile: AccessProfile | null }> {
   const response = await usernameLoginRequest(username, password, turnstileToken);
   const nextSession = sessionFromResponse(response);
   if (auth.currentUser && auth.currentUser.uid !== nextSession.uid) {
@@ -1108,7 +1114,7 @@ export async function signInWithPassword(auth: Auth, username: string, password:
   auth.currentUser = nextSession;
   saveSession(nextSession);
   notifyAuthListeners();
-  return nextSession;
+  return { session: nextSession, profile: response.profile || null };
 }
 
 export async function getCurrentAccessProfile(): Promise<AccessProfile> {

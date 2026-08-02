@@ -47,6 +47,14 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
   ]) {
     assert.ok(document.paths[path], `OpenAPI belum memuat ${path}`);
   }
+  assert.equal(
+    document.paths['/api/v1/auth/login'].post.responses['200'].content['application/json'].schema.$ref,
+    '#/components/schemas/LoginResponse'
+  );
+  assert.equal(
+    document.components.schemas.LoginResponse.properties.profile.$ref,
+    '#/components/schemas/AccessProfile'
+  );
 });
 
 test('manifest dan service worker membentuk shell PWA yang dapat dipasang', async () => {

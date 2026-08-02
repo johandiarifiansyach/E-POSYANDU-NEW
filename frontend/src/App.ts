@@ -15,6 +15,7 @@ type UserRole = {
 };
 
 type Cleanup = () => void;
+type DashboardModule = typeof import('./pages/DashboardApp');
 
 const auth = getAuth(initializeApp({
   projectId: import.meta.env.VITE_APP_ID || 'siposyandu-377b6'
@@ -173,11 +174,12 @@ export function mountApp(container: HTMLElement): Cleanup {
     if (disposed) return;
     replaceView(() => mountLoginPage(container, {
       onLogin: async (username, password, turnstileToken) => {
-        await signInWithPassword(auth, username, password, turnstileToken);
-        const profile = await getCurrentAccessProfile();
+        const dashboardModule = import('./pages/DashboardApp');
+        const login = await signInWithPassword(auth, username, password, turnstileToken);
+        const profile = login.profile || await getCurrentAccessProfile();
         const user = { role: profile.role, desa: profile.desa, posyandu: profile.posyandu };
         saveStoredUser(user);
-        await renderDashboard(user);
+        await renderDashboard(user, dashboardModule);
       }
     }));
   };
@@ -188,10 +190,10 @@ export function mountApp(container: HTMLElement): Cleanup {
     window.sessionStorage.removeItem(IDLE_ACTIVITY_KEY);
   };
 
-  const renderDashboard = async (user: UserRole) => {
+  const renderDashboard = async (user: UserRole, preload?: Promise<DashboardModule>) => {
     if (disposed) return;
     showLoading(container);
-    const { Dashboard } = await import('./pages/DashboardApp');
+    const { Dashboard } = await (preload || import('./pages/DashboardApp'));
     if (disposed) return;
     replaceView(() => {
       const root = createRoot(container);

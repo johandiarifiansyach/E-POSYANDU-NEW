@@ -56,7 +56,14 @@
         },
         "responses": {
           "200": {
-            "description": "Sesi berhasil dibuat"
+            "description": "Sesi dan profil akses berhasil dibuat",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
           },
           "401": {
             "$ref": "#/components/responses/ApiError"
@@ -364,6 +371,82 @@
           },
           "turnstileToken": {
             "type": "string"
+          }
+        }
+      },
+      "AccessProfile": {
+        "type": "object",
+        "required": [
+          "userId",
+          "role"
+        ],
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "email"
+          },
+          "role": {
+            "type": "string"
+          },
+          "desa": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "posyandu": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "required": [
+          "access_token",
+          "refresh_token",
+          "expires_in",
+          "user",
+          "profile"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer"
+          },
+          "user": {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "email": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "email"
+              }
+            }
+          },
+          "profile": {
+            "$ref": "#/components/schemas/AccessProfile"
           }
         }
       },

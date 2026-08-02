@@ -86,7 +86,7 @@ struct LoginBody {
     turnstile_token: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct LoginAccount {
     user_id: String,
     email: Option<String>,
@@ -891,7 +891,44 @@ async fn verify_turnstile(env: &Env, token: Option<&str>, remote_ip: &str) -> Ap
     Ok(())
 }
 
-async fn login(mut request: Request, env: &Env) -> ApiResult<serde_json::Value> {
+fn schedule_login_audit(
+    context: &Context,
+    env: &Env,
+    request_id: &str,
+    username: &str,
+    account: Option<&LoginAccount>,
+    action: &str,
+    outcome: &str,
+) {
+    let env = env.clone();
+    let request_id = request_id.to_owned();
+    let username = username.to_owned();
+    let account = account.cloned();
+    let action = action.to_owned();
+    let outcome = outcome.to_owned();
+    context.wait_until(async move {
+        record_login_audit(
+            &env,
+            &request_id,
+            &username,
+            account.as_ref(),
+            &action,
+            &outcome,
+        )
+        .await;
+    });
+}
+
+fn schedule_login_attempt_clear(context: &Context, env: &Env, ip: &str, username: &str) {
+    let env = env.clone();
+    let ip = ip.to_owned();
+    let username = username.to_owned();
+    context.wait_until(async move {
+        clear_login_attempt(&env, &ip, &username).await;
+    });
+}
+
+async fn login(mut request: Request, env: &Env, context: &Context) -> ApiResult<serde_json::Value> {
     let audit_request_id = request_id(&request);
     let remote_ip = client_ip(&request);
     let body = request
@@ -903,15 +940,15 @@ async fn login(mut request: Request, env: &Env) -> ApiResult<serde_json::Value> 
     verify_turnstile(env, body.turnstile_token.as_deref(), &remote_ip).await?;
     let password = body.password.unwrap_or_default();
     if password.is_empty() {
-        record_login_audit(
+        schedule_login_audit(
+            context,
             env,
             &audit_request_id,
             &username,
             None,
             "login_failure",
             "missing_password",
-        )
-        .await;
+        );
         return Err(ApiFailure::new(
             401,
             "Username atau kata sandi tidak benar.",
@@ -939,30 +976,30 @@ async fn login(mut request: Request, env: &Env) -> ApiResult<serde_json::Value> 
     }
     let accounts: Vec<LoginAccount> = response_data(payload)?;
     let Some(account) = accounts.into_iter().next().filter(|account| account.active) else {
-        record_login_audit(
+        schedule_login_audit(
+            context,
             env,
             &audit_request_id,
             &username,
             None,
             "login_failure",
             "unknown_or_inactive_account",
-        )
-        .await;
+        );
         return Err(ApiFailure::new(
             401,
             "Username atau kata sandi tidak benar.",
         ));
     };
-    let Some(email) = account.email.as_deref().filter(|email| !email.is_empty()) else {
-        record_login_audit(
+    let Some(email) = account.email.clone().filter(|email| !email.is_empty()) else {
+        schedule_login_audit(
+            context,
             env,
             &audit_request_id,
             &username,
             Some(&account),
             "login_failure",
             "account_email_missing",
-        )
-        .await;
+        );
         return Err(ApiFailure::new(
             401,
             "Username atau kata sandi tidak benar.",
@@ -979,15 +1016,15 @@ async fn login(mut request: Request, env: &Env) -> ApiResult<serde_json::Value> 
     )
     .await?;
     if status >= 300 {
-        record_login_audit(
+        schedule_login_audit(
+            context,
             env,
             &audit_request_id,
             &username,
             Some(&account),
             "login_failure",
             "invalid_credentials",
-        )
-        .await;
+        );
         return Err(ApiFailure::new(
             401,
             "Username atau kata sandi tidak benar.",
@@ -995,35 +1032,50 @@ async fn login(mut request: Request, env: &Env) -> ApiResult<serde_json::Value> 
     }
     let session: SupabaseSession = response_data(payload)?;
     if session.user.id != account.user_id {
-        record_login_audit(
+        schedule_login_audit(
+            context,
             env,
             &audit_request_id,
             &username,
             Some(&account),
             "login_failure",
             "account_mapping_mismatch",
-        )
-        .await;
+        );
         return Err(ApiFailure::new(
             401,
             "Username atau kata sandi tidak benar.",
         ));
     }
-    clear_login_attempt(env, &remote_ip, &username).await;
-    record_login_audit(
+    let profile = AccessScope {
+        user_id: account.user_id.clone(),
+        email: session.user.email.clone().or_else(|| account.email.clone()),
+        role: account.role.clone(),
+        desa: account.village.clone(),
+        posyandu: account.posyandu.clone(),
+    };
+    cache_scope(session.access_token.clone(), profile.clone());
+    schedule_login_attempt_clear(context, env, &remote_ip, &username);
+    schedule_login_audit(
+        context,
         env,
         &audit_request_id,
         &username,
         Some(&account),
         "login_success",
         "authenticated",
-    )
-    .await;
+    );
     Ok(json!({
         "access_token": session.access_token,
         "refresh_token": session.refresh_token,
         "expires_in": session.expires_in,
-        "user": { "id": session.user.id, "email": session.user.email }
+        "user": { "id": session.user.id, "email": session.user.email },
+        "profile": {
+            "userId": profile.user_id,
+            "email": profile.email,
+            "role": profile.role,
+            "desa": profile.desa,
+            "posyandu": profile.posyandu
+        }
     }))
 }
 
@@ -1141,11 +1193,11 @@ async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
     Ok(scope)
 }
 
-async fn dispatch(request: Request, env: &Env) -> ApiResult<serde_json::Value> {
+async fn dispatch(request: Request, env: &Env, context: &Context) -> ApiResult<serde_json::Value> {
     match (request.method(), request.path().as_str()) {
         (Method::Get, "/api/v1/openapi.json") => openapi_document(),
         (Method::Post, "/internal/v1/nutrition/batch") => nutrition_batch(request, env).await,
-        (Method::Post, "/api/v1/auth/login") => login(request, env).await,
+        (Method::Post, "/api/v1/auth/login") => login(request, env, context).await,
         (Method::Get, "/api/v1/me") => {
             let scope = require_scope(&request, env).await?;
             Ok(json!({
@@ -1201,7 +1253,7 @@ mod tests {
 }
 
 #[event(fetch)]
-pub async fn main(request: Request, env: Env, _ctx: Context) -> Result<Response> {
+pub async fn main(request: Request, env: Env, context: Context) -> Result<Response> {
     let started_at = now_ms();
     let request_id = request_id(&request);
     let mut request = request.clone_mut()?;
@@ -1239,7 +1291,7 @@ pub async fn main(request: Request, env: Env, _ctx: Context) -> Result<Response>
         log_request(&env, &request_id, &method, &path, 200, started_at);
         return Ok(response);
     }
-    let (status, response) = match dispatch(request, &env).await {
+    let (status, response) = match dispatch(request, &env, &context).await {
         Ok(payload) => success_response(
             &payload,
             origin.as_deref(),
