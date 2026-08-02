@@ -30,6 +30,7 @@ let databasePromise: Promise<IDBDatabase> | null = null;
 const memoryDocuments = new Map<string, CachedDocument>();
 const memoryMutations = new Map<string, PendingMutation>();
 const listeners = new Set<() => void>();
+let lastQueuedAtMs = 0;
 
 function documentKey(tableName: string, id: string) {
   return `${tableName}:${id}`;
@@ -179,6 +180,29 @@ export async function removeCachedDocument(tableName: string, id: string): Promi
   notifyListeners();
 }
 
+export async function clearOfflineStore(): Promise<void> {
+  memoryDocuments.clear();
+  memoryMutations.clear();
+
+  if (canUseIndexedDb()) {
+    try {
+      const database = await getDatabase();
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction([DOCUMENT_STORE, MUTATION_STORE], 'readwrite');
+        transaction.objectStore(DOCUMENT_STORE).clear();
+        transaction.objectStore(MUTATION_STORE).clear();
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error || new Error('Gagal membersihkan penyimpanan offline.'));
+        transaction.onabort = () => reject(transaction.error || new Error('Pembersihan penyimpanan offline dibatalkan.'));
+      });
+    } catch {
+      // In-memory entries have already been cleared.
+    }
+  }
+
+  notifyListeners();
+}
+
 export async function cacheRemoteDocuments(
   tableName: string,
   documents: Array<{ id: string; data: Record<string, any>; createdAt: string; updatedAt: string }>
@@ -206,10 +230,12 @@ export async function cacheRemoteDocuments(
 }
 
 export async function queueMutation(mutation: Omit<PendingMutation, 'id' | 'queuedAt'>): Promise<PendingMutation> {
+  const queuedAtMs = Math.max(Date.now(), lastQueuedAtMs + 1);
+  lastQueuedAtMs = queuedAtMs;
   const entry: PendingMutation = {
     ...mutation,
     id: mutationId(),
-    queuedAt: new Date().toISOString()
+    queuedAt: new Date(queuedAtMs).toISOString()
   };
   memoryMutations.set(entry.id, entry);
 
@@ -228,8 +254,11 @@ export async function queueMutation(mutation: Omit<PendingMutation, 'id' | 'queu
 }
 
 export async function getPendingMutations(): Promise<PendingMutation[]> {
+  const sortMutations = (entries: PendingMutation[]) =>
+    entries.sort((left, right) => left.queuedAt.localeCompare(right.queuedAt) || left.id.localeCompare(right.id));
+
   if (!canUseIndexedDb()) {
-    return Array.from(memoryMutations.values()).sort((a, b) => a.queuedAt.localeCompare(b.queuedAt));
+    return sortMutations(Array.from(memoryMutations.values()));
   }
 
   try {
@@ -237,9 +266,9 @@ export async function getPendingMutations(): Promise<PendingMutation[]> {
       return requestResult(store.index('queuedAt').getAll()) as Promise<PendingMutation[]>;
     });
     entries.forEach((entry) => memoryMutations.set(entry.id, entry));
-    return entries;
+    return sortMutations(entries);
   } catch {
-    return Array.from(memoryMutations.values()).sort((a, b) => a.queuedAt.localeCompare(b.queuedAt));
+    return sortMutations(Array.from(memoryMutations.values()));
   }
 }
 

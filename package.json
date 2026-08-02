@@ -1,37 +1,28 @@
 {
   "name": "e-posyandu",
   "private": true,
-  "version": "0.0.0",
+  "version": "3.4.0",
   "type": "module",
   "scripts": {
     "dev": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "preview": "npm --prefix frontend run preview",
-    "backend:dev": "node backend/src/server.mjs",
-    "migrate:export": "node backend/scripts/migrate/export-firestore.mjs",
-    "migrate:import": "node backend/scripts/migrate/import-supabase.mjs",
-    "migrate:verify": "node backend/scripts/migrate/verify-migration.mjs"
-  },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.110.8",
-    "dotenv": "^17.4.2",
-    "firebase": "^12.6.0",
-    "firebase-admin": "^14.2.0",
-    "lucide-react": "^0.560.0",
-    "react": "^19.2.1",
-    "react-dom": "^19.2.1"
-  },
-  "devDependencies": {
-    "@types/node": "^25.0.0",
-    "@types/react": "^19.2.7",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^4.2.1",
-    "autoprefixer": "^10.4.22",
-    "netlify-cli": "^27.0.1",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^3.4.17",
-    "typescript": "^5.9.3",
-    "vite": "^5.2.0"
+    "check": "npm run frontend:check && npm run integration:test && npm run worker:test",
+    "frontend:check": "npm --prefix frontend run typecheck",
+    "integration:test": "node --test tests/integration/*.test.mjs",
+    "e2e:test": "npm --prefix frontend run e2e:test",
+    "ci": "npm run check && npm run build",
+    "db:migrate": "./scripts/database/migrate.sh",
+    "db:backup": "./scripts/database/backup.sh",
+    "db:restore-drill": "./scripts/database/restore-drill.sh",
+    "worker:check": "cargo check --manifest-path backend-rust-worker/Cargo.toml",
+    "worker:test": "cargo test --manifest-path backend-rust-worker/Cargo.toml",
+    "worker:dev": "npx --yes wrangler --cwd backend-rust-worker dev --env development --ip 127.0.0.1 --port 8787",
+    "worker:deploy": "npx --yes wrangler --cwd backend-rust-worker deploy --env=",
+    "worker:deploy:staging": "npx --yes wrangler --cwd backend-rust-worker deploy --env staging",
+    "pages:build": "VITE_API_URL=https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev npm --prefix frontend run build",
+    "pages:build:staging": "VITE_APP_ENV=staging VITE_API_URL=https://e-posyandu-api-staging.eposyandu-puskesmas-gumukmas.workers.dev npm --prefix frontend run build -- --mode staging",
+    "pages:deploy": "npm run pages:build && npx --yes wrangler pages deploy frontend/dist --project-name e-posyandu --branch main",
+    "pages:deploy:staging": "npm run pages:build:staging && npx --yes wrangler pages deploy frontend/dist --project-name e-posyandu-staging --branch staging",
+    "preview": "npm --prefix frontend run preview"
   }
 }

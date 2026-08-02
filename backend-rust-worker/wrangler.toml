@@ -1,0 +1,70 @@
+name = "e-posyandu-api"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-07-29"
+workers_dev = true
+
+[observability]
+enabled = true
+head_sampling_rate = 0.1
+
+[build]
+command = "worker-build --release --no-panic-recovery"
+
+[[kv_namespaces]]
+binding = "E_POSYANDU_CACHE"
+id = "05421512a237477282deac4d63bd7d8e"
+
+# R2 dipakai khusus untuk lampiran privat seperti foto atau dokumen, bukan
+# data balita maupun penimbangan. Aktifkan R2 di Cloudflare Dashboard, buat
+# bucket `e-posyandu-files`, lalu buka tiga baris berikut sebelum deploy.
+# [[r2_buckets]]
+# binding = "E_POSYANDU_FILES"
+# bucket_name = "e-posyandu-files"
+
+[vars]
+# Pisahkan dengan koma. Nilai rahasia dibuat melalui `wrangler secret put`,
+# bukan disimpan dalam file ini.
+ENVIRONMENT = "production"
+CORS_ORIGINS = "https://e-posyandu.pages.dev"
+TURNSTILE_HOSTNAMES = "e-posyandu.pages.dev"
+
+[env.development]
+name = "e-posyandu-api-development"
+workers_dev = true
+
+[env.development.vars]
+ENVIRONMENT = "development"
+CORS_ORIGINS = "http://localhost:5175,http://127.0.0.1:5175,http://localhost:5176,http://127.0.0.1:5176"
+TURNSTILE_HOSTNAMES = "localhost,127.0.0.1"
+LOCAL_TURNSTILE_BYPASS = "true"
+
+[env.development.observability]
+enabled = false
+
+[[env.development.kv_namespaces]]
+binding = "E_POSYANDU_CACHE"
+
+[env.development.secrets]
+required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY"]
+
+[env.staging]
+name = "e-posyandu-api-staging"
+workers_dev = true
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+CORS_ORIGINS = "https://e-posyandu-staging.pages.dev"
+TURNSTILE_HOSTNAMES = "e-posyandu-staging.pages.dev"
+
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[[env.staging.kv_namespaces]]
+binding = "E_POSYANDU_CACHE"
+
+[env.staging.secrets]
+required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY"]
+
+[secrets]
+required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY"]

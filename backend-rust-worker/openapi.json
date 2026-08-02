@@ -1,0 +1,395 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "E-Posyandu Puskesmas Gumukmas API",
+    "version": "3.4.0",
+    "description": "REST API untuk autentikasi, dashboard, data balita, pengukuran, sinkronisasi offline, dan ekspor E-Posyandu."
+  },
+  "servers": [
+    {
+      "url": "https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev"
+    }
+  ],
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "summary": "Memeriksa kesehatan API",
+        "operationId": "healthCheck",
+        "responses": {
+          "200": {
+            "description": "API aktif",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "summary": "Mengambil kontrak OpenAPI",
+        "operationId": "openApiDocument",
+        "responses": {
+          "200": {
+            "description": "Dokumen OpenAPI"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "summary": "Masuk memakai username dan kata sandi",
+        "operationId": "login",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sesi berhasil dibuat"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "summary": "Mengambil profil dan cakupan akses",
+        "operationId": "currentUser",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Profil pengguna"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/v1/features": {
+      "get": {
+        "summary": "Mengambil feature flag aktif",
+        "operationId": "featureFlags",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daftar feature flag"
+          }
+        }
+      }
+    },
+    "/api/v1/dashboard/stats": {
+      "get": {
+        "summary": "Mengambil ringkasan dashboard sesuai wilayah pengguna",
+        "operationId": "dashboardStats",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ringkasan dashboard"
+          }
+        }
+      }
+    },
+    "/api/v1/children/page": {
+      "get": {
+        "summary": "Mengambil satu halaman daftar balita",
+        "operationId": "childrenPage",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Halaman data balita"
+          }
+        }
+      }
+    },
+    "/api/v1/exclusive-breastfeeding/page": {
+      "get": {
+        "summary": "Mengambil satu halaman data ASI eksklusif",
+        "operationId": "exclusiveBreastfeedingPage",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Halaman data ASI eksklusif"
+          }
+        }
+      }
+    },
+    "/api/v1/exports/sigizi-measurements": {
+      "get": {
+        "summary": "Mengambil data ekspor pengukuran Sigizi",
+        "operationId": "sigiziMeasurementExport",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Baris data ekspor"
+          }
+        }
+      }
+    },
+    "/api/v1/sync": {
+      "post": {
+        "summary": "Mengirim mutasi offline dan menarik perubahan server",
+        "operationId": "synchronize",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Hasil sinkronisasi"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/v1/client-errors": {
+      "post": {
+        "summary": "Mencatat error teknis frontend tanpa data formulir",
+        "operationId": "reportClientError",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Laporan diterima"
+          }
+        }
+      }
+    },
+    "/api/v1/collections/{resource}": {
+      "parameters": [
+        {
+          "name": "resource",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "children",
+              "measurements",
+              "mpasi_logs",
+              "pmt_programs",
+              "change_logs"
+            ]
+          }
+        }
+      ],
+      "get": {
+        "summary": "Mengambil data koleksi sesuai cakupan akses",
+        "operationId": "listCollection",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daftar dokumen"
+          }
+        }
+      },
+      "post": {
+        "summary": "Menambahkan dokumen dengan idempotency key",
+        "operationId": "createDocument",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dokumen dibuat"
+          }
+        }
+      }
+    },
+    "/api/v1/collections/{resource}/{id}": {
+      "parameters": [
+        {
+          "name": "resource",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "Mengambil satu dokumen",
+        "operationId": "getDocument",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dokumen"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Memperbarui satu dokumen",
+        "operationId": "updateDocument",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dokumen diperbarui"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Menghapus satu dokumen",
+        "operationId": "deleteDocument",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dokumen dihapus"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "required": [
+          "ok",
+          "service",
+          "database",
+          "version"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "service": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 32
+          },
+          "password": {
+            "type": "string",
+            "format": "password"
+          },
+          "turnstileToken": {
+            "type": "string"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "error": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "responses": {
+      "ApiError": {
+        "description": "Permintaan ditolak",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    }
+  }
+}

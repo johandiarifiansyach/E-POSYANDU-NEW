@@ -1,0 +1,17 @@
+# Salin menjadi .dev.vars hanya untuk pengujian lokal. Jangan commit file .dev.vars.
+SUPABASE_URL=https://project-ref.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxx
+SUPABASE_SECRET_KEY=sb_secret_xxx
+TURNSTILE_SECRET_KEY=0x0000000000000000000000000000000AA
+TURNSTILE_HOSTNAMES=localhost,e-posyandu.pages.dev
+CORS_ORIGINS=http://localhost:5173,http://localhost:5174,https://e-posyandu.pages.dev
+# Hanya gunakan pada `wrangler dev` lokal saat layanan Turnstile tidak dapat
+# dijangkau. Jangan pernah membuat variabel ini di dashboard Cloudflare.
+LOCAL_TURNSTILE_BYPASS=true
+# Opsional. Hanya diperlukan bila endpoint internal /internal/v1/nutrition/batch dipakai.
+RUST_WORKER_SHARED_SECRET=replace-with-a-long-random-secret
+# Opsional. Upstash Redis dipakai untuk pembatasan percobaan login lintas
+# instance Worker. Bila belum diisi, Worker memakai pembatas lokal sebagai
+# cadangan sehingga login tetap dapat digunakan.
+UPSTASH_REDIS_REST_URL=https://your-redis.upstash.io
+UPSTASH_REDIS_REST_TOKEN=replace-with-upstash-rest-token

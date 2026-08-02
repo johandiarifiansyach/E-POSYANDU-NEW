@@ -1,5 +1,6 @@
 import {
   cacheRemoteDocuments,
+  clearOfflineStore,
   completeMutation,
   getCachedDocument,
   getCachedDocuments,
@@ -9,11 +10,28 @@ import {
   PendingMutation,
   putCachedDocument,
   queueMutation,
+  removeCachedDocument,
   subscribeToOfflineStore
 } from './offlineStore';
 
+export type AuthUser = {
+  uid: string;
+  email: string | null;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: number;
+};
+
 export type Auth = {
-  currentUser: { uid: string } | null;
+  currentUser: AuthUser | null;
+};
+
+export type AccessProfile = {
+  userId: string;
+  email: string | null;
+  role: string;
+  desa: string | null;
+  posyandu: string | null;
 };
 
 export type Firestore = {
@@ -75,9 +93,127 @@ type TimestampCompat = {
   seconds: number;
 };
 
-type ApiDocument = {
+export type ApiDocument = {
   id: string;
   data: DocumentData;
+};
+
+type SyncMutationResult = {
+  id: string;
+  resource: string;
+  documentId: string;
+  operation: PendingMutation['type'];
+  document?: ApiDocument;
+};
+
+type SyncChangeSet = {
+  items: ApiDocument[];
+  deletedIds?: string[];
+  cursor?: string;
+};
+
+type SyncResponse = {
+  results: SyncMutationResult[];
+  changes: Record<string, SyncChangeSet>;
+  cursor: string;
+};
+
+export type ChildrenPageRequest = {
+  asOf: string;
+  measurementEnd: string;
+  measurementStart: string;
+  page: number;
+  posyandu?: string;
+  search?: string;
+  size?: number;
+  sort: string;
+  view?: 'data' | 'recent' | 'recycle' | 'mpasi';
+  village?: string;
+};
+
+export type ChildrenPageResponse = {
+  items: ApiDocument[];
+  measurements: ApiDocument[];
+  mpasiLogs?: ApiDocument[];
+  total: number;
+};
+
+export type ExclusiveBreastfeedingPageRequest = {
+  ageGroup: '0-5' | '6';
+  measurementEnd: string;
+  measurementStart: string;
+  page: number;
+  posyandu?: string;
+  size?: number;
+  village?: string;
+};
+
+export type ExclusiveBreastfeedingPageResponse = {
+  items: ApiDocument[];
+  total: number;
+};
+
+export type DashboardStatsRequest = {
+  monthEnd: string;
+  monthStart: string;
+  posyandu?: string;
+  previousMonthEnd: string;
+  previousMonthStart: string;
+  village?: string;
+};
+
+export type DashboardStatsResponse = {
+  S: number;
+  D: number;
+  N: number;
+  T: number;
+  B: number;
+  O: number;
+  asiEksklusif: number;
+  asiTarget: number;
+  underweight: number;
+  stunting: number;
+  wasting: number;
+  perD: string;
+  perN: string;
+  perT: string;
+  perAsiEksklusif: string;
+  perUnderweight: string;
+  perStunting: string;
+  perWasting: string;
+};
+
+export type SigiziMeasurementExportRequest = {
+  monthStart: string;
+  monthEnd: string;
+  village?: string;
+  posyandu?: string;
+};
+
+export type SigiziMeasurementExportRow = {
+  nik: string;
+  nama: string;
+  tglUkur: string | null;
+  bb: number | null;
+  tb: number | null;
+  lila: number | null;
+  lk: number | null;
+  edema: string;
+  caraUkur: string;
+  vitA: string;
+  asiBulan0: string;
+  asiBulan1: string;
+  asiBulan2: string;
+  asiBulan3: string;
+  asiBulan4: string;
+  asiBulan5: string;
+  asiBulan6: string;
+  kelasIbu: string;
+  mbg: string;
+};
+
+export type SigiziMeasurementExportResponse = {
+  items: SigiziMeasurementExportRow[];
 };
 
 type LegacyDocument = {
@@ -87,17 +223,22 @@ type LegacyDocument = {
   updated_at: string;
 };
 
-const API_BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+// An empty value means "use this website's /api route". This keeps the same
+// frontend configuration working through Vite locally and Netlify in production.
+const API_BASE_URL = (
+  import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : '')
+).replace(/\/$/, '');
 const LEGACY_SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
 const LEGACY_SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
-const REMOTE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
-const REALTIME_RECONNECT_DELAY_MS = 3_000;
+const FULL_SYNC_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const SYNC_STATE_PREFIX = 'e-posyandu:sync-state:';
+const AUTH_SESSION_KEY = 'e-posyandu:auth-session';
 
 const authState: Auth = { currentUser: null };
-const authListeners = new Set<(user: { uid: string } | null) => void>();
-const remoteChangeListeners = new Map<string, Set<() => void>>();
-let realtimeSocket: WebSocket | null = null;
-let realtimeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+const authListeners = new Set<(user: AuthUser | null) => void>();
+const activeViewRefreshers = new Set<() => Promise<void>>();
+const syncStateListeners = new Set<(syncing: boolean) => void>();
+let activeSyncOperations = 0;
 
 function toTimestampCompat(input: Date | string): TimestampCompat {
   const date = input instanceof Date ? input : new Date(input);
@@ -179,6 +320,44 @@ function isNetworkError(error: unknown) {
   return /failed to fetch|network|offline|load failed|fetch failed|connection/i.test(message);
 }
 
+type QuerySyncState = {
+  lastSyncedAt: string;
+  lastFullSyncAt: string;
+};
+
+function querySyncKey(ref: QueryRef) {
+  const backendVersion = usesFastApi() ? 'node-api-v1' : 'legacy-supabase-v1';
+  return `${SYNC_STATE_PREFIX}${backendVersion}:${ref.tableName}:${JSON.stringify(ref.constraints)}`;
+}
+
+function readQuerySyncState(ref: QueryRef): QuerySyncState | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(querySyncKey(ref));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<QuerySyncState>;
+    if (typeof value.lastSyncedAt !== 'string' || typeof value.lastFullSyncAt !== 'string') return null;
+    return value as QuerySyncState;
+  } catch {
+    return null;
+  }
+}
+
+function saveQuerySyncState(ref: QueryRef, state: QuerySyncState) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(querySyncKey(ref), JSON.stringify(state));
+  } catch {
+    // Sync remains usable when browser storage is unavailable.
+  }
+}
+
+function needsFullSync(state: QuerySyncState | null) {
+  if (!state) return true;
+  const lastFullSyncAt = new Date(state.lastFullSyncAt).getTime();
+  return !Number.isFinite(lastFullSyncAt) || Date.now() - lastFullSyncAt >= FULL_SYNC_INTERVAL_MS;
+}
+
 function apiUrl(path: string): string {
   return `${API_BASE_URL}/api/v1${path}`;
 }
@@ -187,23 +366,186 @@ function usesFastApi() {
   return Boolean(API_BASE_URL);
 }
 
-function realtimeUrl(): string | null {
+function clearSyncState() {
+  if (typeof window === 'undefined') return;
+  try {
+    Object.keys(window.localStorage)
+      .filter((key) => key.startsWith(SYNC_STATE_PREFIX))
+      .forEach((key) => window.localStorage.removeItem(key));
+  } catch {
+    // Cache cleanup is best effort when browser storage is unavailable.
+  }
+}
+
+function readStoredSession(): AuthUser | null {
   if (typeof window === 'undefined') return null;
-  const origin = API_BASE_URL || window.location.origin;
-  const url = new URL(`${origin}/api/v1/realtime`);
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  return url.toString();
+  try {
+    let raw = window.sessionStorage.getItem(AUTH_SESSION_KEY);
+    const fromLegacyStorage = !raw;
+    if (!raw) raw = window.localStorage.getItem(AUTH_SESSION_KEY);
+    if (!raw) return null;
+    const session = JSON.parse(raw) as Partial<AuthUser>;
+    if (
+      typeof session.uid !== 'string' ||
+      typeof session.accessToken !== 'string' ||
+      typeof session.refreshToken !== 'string' ||
+      typeof session.expiresAt !== 'number'
+    ) {
+      window.sessionStorage.removeItem(AUTH_SESSION_KEY);
+      window.localStorage.removeItem(AUTH_SESSION_KEY);
+      return null;
+    }
+    const restored = {
+      uid: session.uid,
+      email: typeof session.email === 'string' ? session.email : null,
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
+      expiresAt: session.expiresAt
+    };
+    if (fromLegacyStorage) {
+      window.sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(restored));
+      window.localStorage.removeItem(AUTH_SESSION_KEY);
+    }
+    return restored;
+  } catch {
+    return null;
+  }
+}
+
+function saveSession(user: AuthUser | null) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!user?.accessToken || !user.refreshToken || !user.expiresAt) {
+      window.sessionStorage.removeItem(AUTH_SESSION_KEY);
+      window.localStorage.removeItem(AUTH_SESSION_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(user));
+    window.localStorage.removeItem(AUTH_SESSION_KEY);
+  } catch {
+    // The active session can still run until the page is closed.
+  }
+}
+
+function notifyAuthListeners() {
+  authListeners.forEach((listener) => listener(authState.currentUser));
+}
+
+function authConfig() {
+  if (!LEGACY_SUPABASE_URL || !LEGACY_SUPABASE_ANON_KEY) {
+    throw new Error('Konfigurasi Supabase Auth belum tersedia.');
+  }
+  return { url: LEGACY_SUPABASE_URL, publishableKey: LEGACY_SUPABASE_ANON_KEY };
+}
+
+type SupabaseAuthResponse = {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  user: { id: string; email?: string | null };
+};
+
+async function supabaseAuthRequest(path: string, body: Record<string, string>): Promise<SupabaseAuthResponse> {
+  const { url, publishableKey } = authConfig();
+  const response = await fetch(`${url}/auth/v1${path}`, {
+    method: 'POST',
+    headers: {
+      apikey: publishableKey,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    let detail = 'Email atau kata sandi tidak dapat diverifikasi.';
+    try {
+      const payload = await response.json();
+      if (typeof payload?.msg === 'string') detail = payload.msg;
+      else if (typeof payload?.message === 'string') detail = payload.message;
+    } catch {
+      // Keep the safe generic message when Auth cannot return JSON.
+    }
+    throw new Error(detail);
+  }
+  return response.json() as Promise<SupabaseAuthResponse>;
+}
+
+async function usernameLoginRequest(username: string, password: string, turnstileToken?: string): Promise<SupabaseAuthResponse> {
+  if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
+  const response = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-Request-ID': createRequestId()
+    },
+    body: JSON.stringify({ username, password, turnstileToken })
+  });
+  if (!response.ok) {
+    let detail = 'Username atau kata sandi tidak benar.';
+    try {
+      const payload = await response.json();
+      if (typeof payload?.detail === 'string') detail = payload.detail;
+    } catch {
+      // Keep the safe generic message when the API cannot return JSON.
+    }
+    throw new Error(detail);
+  }
+  return response.json() as Promise<SupabaseAuthResponse>;
+}
+
+function sessionFromResponse(response: SupabaseAuthResponse): AuthUser {
+  return {
+    uid: response.user.id,
+    email: response.user.email || null,
+    accessToken: response.access_token,
+    refreshToken: response.refresh_token,
+    expiresAt: Date.now() + response.expires_in * 1000
+  };
+}
+
+async function refreshAccessToken(auth: Auth): Promise<AuthUser> {
+  const session = auth.currentUser;
+  if (!session?.refreshToken) throw new Error('Sesi masuk diperlukan.');
+  const response = await supabaseAuthRequest('/token?grant_type=refresh_token', { refresh_token: session.refreshToken });
+  const refreshed = sessionFromResponse(response);
+  auth.currentUser = refreshed;
+  saveSession(refreshed);
+  notifyAuthListeners();
+  return refreshed;
+}
+
+async function getAccessToken(auth: Auth): Promise<string> {
+  const session = auth.currentUser;
+  if (!session?.accessToken) throw new Error('Sesi masuk diperlukan.');
+  if ((session.expiresAt || 0) > Date.now() + 60_000) return session.accessToken;
+  return (await refreshAccessToken(auth)).accessToken as string;
+}
+
+function createRequestId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(apiUrl(path), {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init.headers
+  const accessToken = await getAccessToken(authState);
+  let response: Response;
+  try {
+    response = await fetch(apiUrl(path), {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'X-Request-ID': createRequestId(),
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init.headers
+      }
+    });
+  } catch (error) {
+    if (isNetworkError(error)) {
+      throw new Error('Tidak dapat terhubung ke API. Periksa koneksi lalu coba lagi.');
     }
-  });
+    throw error;
+  }
 
   if (response.status === 204) return undefined as T;
   if (!response.ok) {
@@ -217,6 +559,226 @@ async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(detail);
   }
   return response.json() as Promise<T>;
+}
+
+export type FeatureFlags = {
+  csvExport: boolean;
+  largeExports: boolean;
+  notifications: boolean;
+  webhooks: boolean;
+  fileUploads: boolean;
+};
+
+export async function getFeatureFlags(): Promise<FeatureFlags> {
+  return apiRequest<FeatureFlags>('/features');
+}
+
+function stackFrames(error: unknown): string {
+  if (!(error instanceof Error) || !error.stack) return '';
+  return error.stack
+    .split('\n')
+    .slice(1)
+    .filter((line) => /^\s*at\s|@/.test(line))
+    .slice(0, 12)
+    .join('\n')
+    .slice(0, 1_500);
+}
+
+export async function reportClientError(error: unknown, source: string): Promise<void> {
+  if (!usesFastApi() || !isOnline() || !authState.currentUser?.accessToken) return;
+  const name = error instanceof Error ? error.name : 'UnknownError';
+  try {
+    await apiRequest<{ accepted: boolean }>('/client-errors', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: name.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 64) || 'Error',
+        source: source.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 64),
+        route: window.location.pathname.slice(0, 200),
+        stackFrames: stackFrames(error)
+      })
+    });
+  } catch {
+    // Error reporting must never interrupt the user's current task.
+  }
+}
+
+export async function getChildrenPage(request: ChildrenPageRequest): Promise<ChildrenPageResponse> {
+  if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
+
+  const parameters = new URLSearchParams({
+    asOf: request.asOf,
+    measurementEnd: request.measurementEnd,
+    measurementStart: request.measurementStart,
+    page: String(request.page),
+    size: String(request.size || 10),
+    sort: request.sort
+  });
+  if (request.search?.trim()) parameters.set('search', request.search.trim());
+  if (request.view) parameters.set('view', request.view);
+  if (request.village?.trim()) parameters.set('village', request.village.trim());
+  if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
+
+  const response = await apiRequest<ChildrenPageResponse>(`/children/page?${parameters.toString()}`);
+  const now = new Date().toISOString();
+  await Promise.all([
+    cacheRemoteDocuments('children', response.items.map((item) => ({
+      id: item.id,
+      data: item.data,
+      createdAt: typeof item.data.createdAt === 'string' ? item.data.createdAt : now,
+      updatedAt: typeof item.data.updatedAt === 'string' ? item.data.updatedAt : now
+    }))),
+    cacheRemoteDocuments('measurements', response.measurements.map((item) => ({
+      id: item.id,
+      data: item.data,
+      createdAt: typeof item.data.createdAt === 'string' ? item.data.createdAt : now,
+      updatedAt: typeof item.data.updatedAt === 'string' ? item.data.updatedAt : now
+    })))
+  ]);
+
+  const pendingChildren = new Map(
+    (await getCachedDocuments('children'))
+      .filter((document) => document.pending)
+      .map((document) => [document.id, document])
+  );
+  const visibleItems = response.items.flatMap((item) => {
+    const pending = pendingChildren.get(item.id);
+    if (!pending) return [item];
+
+    const hiddenByPendingMutation = pending.deleted || (
+      request.view === 'recycle'
+        ? !pending.data.deletedAt
+        : Boolean(pending.data.deletedAt)
+    );
+    if (hiddenByPendingMutation) return [];
+    return [{ id: item.id, data: { ...item.data, ...pending.data } }];
+  });
+  const visibleIds = new Set(visibleItems.map((item) => item.id));
+  const hiddenCount = response.items.length - visibleItems.length;
+
+  return {
+    ...response,
+    items: visibleItems,
+    measurements: response.measurements.filter((item) => visibleIds.has(String(item.data.childId || ''))),
+    mpasiLogs: response.mpasiLogs?.filter((item) => visibleIds.has(String(item.data.childId || ''))),
+    total: Math.max(0, response.total - hiddenCount)
+  };
+}
+
+export async function getExclusiveBreastfeedingPage(
+  request: ExclusiveBreastfeedingPageRequest
+): Promise<ExclusiveBreastfeedingPageResponse> {
+  if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
+
+  const parameters = new URLSearchParams({
+    ageGroup: request.ageGroup,
+    measurementEnd: request.measurementEnd,
+    measurementStart: request.measurementStart,
+    page: String(request.page),
+    size: String(request.size || 10)
+  });
+  if (request.village?.trim()) parameters.set('village', request.village.trim());
+  if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
+  return apiRequest<ExclusiveBreastfeedingPageResponse>(`/exclusive-breastfeeding/page?${parameters.toString()}`);
+}
+
+export async function getChildDetail(id: string): Promise<ApiDocument> {
+  if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
+  const document = await apiRequest<ApiDocument>(`/collections/children/${encodeURIComponent(id)}`);
+  return { ...document, data: hydrateForRead(document.data) };
+}
+
+export async function getDashboardStats(request: DashboardStatsRequest): Promise<DashboardStatsResponse> {
+  if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
+  const parameters = new URLSearchParams({
+    monthEnd: request.monthEnd,
+    monthStart: request.monthStart,
+    previousMonthEnd: request.previousMonthEnd,
+    previousMonthStart: request.previousMonthStart
+  });
+  if (request.village?.trim()) parameters.set('village', request.village.trim());
+  if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
+  return apiRequest<DashboardStatsResponse>(`/dashboard/stats?${parameters.toString()}`);
+}
+
+export async function getSigiziMeasurementExport(
+  request: SigiziMeasurementExportRequest
+): Promise<SigiziMeasurementExportResponse> {
+  if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
+  const parameters = new URLSearchParams({
+    monthEnd: request.monthEnd,
+    monthStart: request.monthStart
+  });
+  if (request.village?.trim()) parameters.set('village', request.village.trim());
+  if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
+  return apiRequest<SigiziMeasurementExportResponse>(`/exports/sigizi-measurements?${parameters.toString()}`);
+}
+
+function compareCachedChildren(left: ApiDocument, right: ApiDocument, sort: string) {
+  const leftData = left.data;
+  const rightData = right.data;
+  const comparable = (value: unknown) => {
+    if (value && typeof (value as { toDate?: unknown }).toDate === 'function') {
+      return ((value as { toDate: () => Date }).toDate()).toISOString();
+    }
+    return String(value || '');
+  };
+  const byText = (a: unknown, b: unknown) => comparable(a).localeCompare(comparable(b), 'id');
+
+  switch (sort) {
+    case 'oldest_input': return byText(leftData.createdAt, rightData.createdAt) || byText(left.id, right.id);
+    case 'name_asc': return byText(leftData.nama, rightData.nama) || byText(left.id, right.id);
+    case 'name_desc': return byText(rightData.nama, leftData.nama) || byText(left.id, right.id);
+    case 'age_oldest': return byText(leftData.tglLahir, rightData.tglLahir) || byText(left.id, right.id);
+    case 'age_youngest': return byText(rightData.tglLahir, leftData.tglLahir) || byText(left.id, right.id);
+    default: return byText(rightData.createdAt, leftData.createdAt) || byText(right.id, left.id);
+  }
+}
+
+export async function getCachedChildrenPage(request: ChildrenPageRequest): Promise<ChildrenPageResponse> {
+  const asOf = request.asOf;
+  const parsedAsOf = new Date(`${asOf}T00:00:00Z`);
+  if (Number.isNaN(parsedAsOf.getTime())) throw new Error('Periode data balita tidak valid.');
+  parsedAsOf.setUTCMonth(parsedAsOf.getUTCMonth() - 60);
+  const cutoff = parsedAsOf.toISOString().slice(0, 10);
+  const search = request.search?.trim().toLocaleLowerCase('id') || '';
+  const children = (await getCachedDocuments('children'))
+    .filter((document) => {
+      const data = document.data;
+      const birthDate = String(data.tglLahir || '');
+      if (document.deleted || data.deletedAt || birthDate <= cutoff || birthDate > asOf) return false;
+      if (request.village && data.desa !== request.village) return false;
+      if (request.posyandu && data.posyandu !== request.posyandu) return false;
+      if (!search) return true;
+      return String(data.nama || '').toLocaleLowerCase('id').includes(search) || String(data.nik || '').includes(search);
+    })
+    .map((document) => ({ id: document.id, data: hydrateForRead(document.data) }));
+  children.sort((left, right) => compareCachedChildren(left, right, request.sort));
+
+  const total = children.length;
+  const size = Math.min(Math.max(request.size || 10, 1), 50);
+  const offset = (Math.max(request.page, 1) - 1) * size;
+  const items = children.slice(offset, offset + size);
+  const childIds = new Set(items.map((item) => item.id));
+  const measurements = (await getCachedDocuments('measurements'))
+    .filter((document) => {
+      const data = document.data;
+      return !document.deleted && childIds.has(String(data.childId || '')) && data.tglUkur >= request.measurementStart && data.tglUkur <= request.measurementEnd;
+    })
+    .map((document) => ({ id: document.id, data: hydrateForRead(document.data) }))
+    .sort((left, right) => {
+      const dateCompare = String(right.data.tglUkur || '').localeCompare(String(left.data.tglUkur || ''));
+      const createdAt = (value: unknown) => value && typeof (value as { toDate?: unknown }).toDate === 'function'
+        ? (value as { toDate: () => Date }).toDate().toISOString()
+        : String(value || '');
+      return dateCompare || createdAt(right.data.createdAt).localeCompare(createdAt(left.data.createdAt));
+    });
+  const latestMeasurements = new Map<string, ApiDocument>();
+  measurements.forEach((measurement) => {
+    const childId = String(measurement.data.childId || '');
+    if (childId && !latestMeasurements.has(childId)) latestMeasurements.set(childId, measurement);
+  });
+
+  return { items, measurements: Array.from(latestMeasurements.values()), total };
 }
 
 async function legacySupabaseRequest<T>(url: URL, init: RequestInit = {}): Promise<T> {
@@ -305,12 +867,27 @@ async function mergePendingDocuments(
 
 async function executeFastApiQuery(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
   const params = new URLSearchParams();
+  const syncState = readQuerySyncState(ref);
+  const fullSync = needsFullSync(syncState);
+  const syncStartedAt = new Date().toISOString();
   for (const constraint of ref.constraints) {
     if (constraint.kind === 'where') params.append('filter', `${constraint.field}|${constraint.op}|${String(constraint.value)}`);
     else params.append('order', `${constraint.field}|${constraint.direction}`);
   }
-  const suffix = params.size ? `?${params.toString()}` : '';
-  const response = await apiRequest<{ items: ApiDocument[] }>(`/collections/${encodeURIComponent(ref.tableName)}${suffix}`);
+  let response: SyncChangeSet;
+  if (!fullSync && syncState) {
+    const synced = await apiRequest<SyncResponse>('/sync', {
+      method: 'POST',
+      body: JSON.stringify({
+        mutations: [],
+        pull: [{ resource: ref.tableName, since: syncState.lastSyncedAt }]
+      })
+    });
+    response = synced.changes[ref.tableName] || { items: [], cursor: synced.cursor };
+  } else {
+    const suffix = params.size ? `?${params.toString()}` : '';
+    response = await apiRequest<SyncChangeSet>(`/collections/${encodeURIComponent(ref.tableName)}${suffix}`);
+  }
   const cacheEntries = response.items.map((document) => ({
     id: document.id,
     data: document.data,
@@ -318,21 +895,36 @@ async function executeFastApiQuery(ref: QueryRef): Promise<QuerySnapshot<Documen
     updatedAt: typeof document.data.updatedAt === 'string' ? document.data.updatedAt : new Date().toISOString()
   }));
   await cacheRemoteDocuments(ref.tableName, cacheEntries);
-  return mergePendingDocuments(
-    ref,
-    response.items.map((document) => makeDocSnapshot(document.id, hydrateForRead(document.data)))
-  );
+  await Promise.all((response.deletedIds || []).map((id) => removeCachedDocument(ref.tableName, id)));
+  if (fullSync) {
+    const remoteIds = new Set(cacheEntries.map((document) => document.id));
+    const cachedDocuments = await getCachedDocuments(ref.tableName);
+    await Promise.all(
+      cachedDocuments
+        .filter((document) => !document.pending && matchesQuery(document.data, ref) && !remoteIds.has(document.id))
+        .map((document) => removeCachedDocument(ref.tableName, document.id))
+    );
+  }
+  const cursor = response.cursor || syncStartedAt;
+  saveQuerySyncState(ref, {
+    lastSyncedAt: cursor,
+    lastFullSyncAt: fullSync ? cursor : syncState?.lastFullSyncAt || cursor
+  });
+  return readCachedQuery(ref);
 }
 
 async function executeLegacySupabaseQuery(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
-  const documents: Array<QueryDocumentSnapshot<DocumentData>> = [];
   const cacheEntries: Array<{ id: string; data: DocumentData; createdAt: string; updatedAt: string }> = [];
+  const syncState = readQuerySyncState(ref);
+  const fullSync = needsFullSync(syncState);
+  const syncStartedAt = new Date().toISOString();
   let offset = 0;
 
   while (true) {
     const url = new URL(`${LEGACY_SUPABASE_URL}/rest/v1/documents`);
     url.searchParams.set('select', 'id,data,created_at,updated_at');
     url.searchParams.append('table_name', `eq.${ref.tableName}`);
+    if (!fullSync && syncState) url.searchParams.append('updated_at', `gt.${syncState.lastSyncedAt}`);
 
     for (const constraint of ref.constraints) {
       if (constraint.kind === 'where') {
@@ -353,7 +945,6 @@ async function executeLegacySupabaseQuery(ref: QueryRef): Promise<QuerySnapshot<
       headers: { Range: `${offset}-${offset + 999}` }
     });
     for (const row of rows) {
-      documents.push(makeDocSnapshot(row.id, hydrateForRead(row.data || {})));
       cacheEntries.push({
         id: row.id,
         data: row.data || {},
@@ -367,14 +958,28 @@ async function executeLegacySupabaseQuery(ref: QueryRef): Promise<QuerySnapshot<
   }
 
   await cacheRemoteDocuments(ref.tableName, cacheEntries);
-  return mergePendingDocuments(ref, documents);
+  if (fullSync) {
+    const remoteIds = new Set(cacheEntries.map((document) => document.id));
+    const cachedDocuments = await getCachedDocuments(ref.tableName);
+    await Promise.all(
+      cachedDocuments
+        .filter((document) => !document.pending && matchesQuery(document.data, ref) && !remoteIds.has(document.id))
+        .map((document) => removeCachedDocument(ref.tableName, document.id))
+    );
+  }
+
+  saveQuerySyncState(ref, {
+    lastSyncedAt: syncStartedAt,
+    lastFullSyncAt: fullSync ? syncStartedAt : syncState?.lastFullSyncAt || syncStartedAt
+  });
+  return readCachedQuery(ref);
 }
 
 async function executeRemoteQuery(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
   return usesFastApi() ? executeFastApiQuery(ref) : executeLegacySupabaseQuery(ref);
 }
 
-async function executeQuery(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
+async function executeRemoteQueryWithFallback(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
   if (!isOnline()) return readCachedQuery(ref);
   try {
     return await executeRemoteQuery(ref);
@@ -384,76 +989,98 @@ async function executeQuery(ref: QueryRef): Promise<QuerySnapshot<DocumentData>>
   }
 }
 
-function notifyRemoteChange(tableName: string) {
-  for (const listener of remoteChangeListeners.get(tableName) || []) listener();
+function queryParameters(ref: QueryRef) {
+  const parameters = new URLSearchParams();
+  ref.constraints.forEach((constraint) => {
+    if (constraint.kind === 'where') parameters.append('filter', `${constraint.field}|${constraint.op}|${String(constraint.value)}`);
+    else parameters.append('order', `${constraint.field}|${constraint.direction}`);
+  });
+  return parameters;
 }
 
-function scheduleRealtimeReconnect() {
-  if (realtimeReconnectTimer || remoteChangeListeners.size === 0 || !isOnline()) return;
-  realtimeReconnectTimer = setTimeout(() => {
-    realtimeReconnectTimer = null;
-    ensureRealtimeConnection();
-  }, REALTIME_RECONNECT_DELAY_MS);
+async function fetchFastApiExport(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
+  const parameters = queryParameters(ref);
+  const documents: Array<QueryDocumentSnapshot<DocumentData>> = [];
+  const pageSize = 500;
+  let page = 1;
+
+  // Halaman aplikasi tidak pernah memakai jalur ini. Data lengkap dibaca
+  // bertahap hanya setelah pengguna benar-benar meminta sebuah ekspor.
+  while (true) {
+    parameters.set('export', '1');
+    parameters.set('page', String(page));
+    parameters.set('size', String(pageSize));
+    const suffix = parameters.size ? `?${parameters.toString()}` : '';
+    const response = await apiRequest<{ items: ApiDocument[]; hasMore?: boolean }>(
+      `/collections/${encodeURIComponent(ref.tableName)}${suffix}`
+    );
+    documents.push(...response.items.map((item) => makeDocSnapshot(item.id, hydrateForRead(item.data))));
+    if (!response.hasMore) break;
+    page += 1;
+  }
+  return mergePendingDocuments(ref, documents);
 }
 
-function ensureRealtimeConnection() {
-  if (
-    !usesFastApi() ||
-    typeof WebSocket === 'undefined' ||
-    !isOnline() ||
-    remoteChangeListeners.size === 0 ||
-    realtimeSocket?.readyState === WebSocket.OPEN ||
-    realtimeSocket?.readyState === WebSocket.CONNECTING
-  ) {
-    return;
+async function fetchLegacyExport(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
+  const documents: Array<QueryDocumentSnapshot<DocumentData>> = [];
+  let offset = 0;
+
+  while (true) {
+    const url = new URL(`${LEGACY_SUPABASE_URL}/rest/v1/documents`);
+    url.searchParams.set('select', 'id,data');
+    url.searchParams.append('table_name', `eq.${ref.tableName}`);
+    ref.constraints.forEach((constraint) => {
+      if (constraint.kind !== 'where') return;
+      const operator = constraint.op === '==' ? 'eq' : constraint.op === '>=' ? 'gte' : 'lte';
+      url.searchParams.append(`data->>${constraint.field}`, `${operator}.${String(constraint.value)}`);
+    });
+    const rows = await legacySupabaseRequest<Array<Pick<LegacyDocument, 'id' | 'data'>>>(url, {
+      headers: { Range: `${offset}-${offset + 999}` }
+    });
+    rows.forEach((row) => documents.push(makeDocSnapshot(row.id, hydrateForRead(row.data || {}))));
+    if (rows.length < 1000) break;
+    offset += 1000;
   }
 
-  const url = realtimeUrl();
-  if (!url) return;
+  return mergePendingDocuments(ref, documents);
+}
 
+// Exports are the deliberate exception to the light page-loading policy: they
+// fetch every matching record only after the user asks to generate a file.
+export async function getDocsForExport(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
+  if (!isOnline()) return readCachedQuery(ref);
   try {
-    const socket = new WebSocket(url);
-    realtimeSocket = socket;
-    socket.onmessage = (event) => {
-      try {
-        const message = JSON.parse(String(event.data));
-        if (message?.type === 'document_changed' && typeof message.tableName === 'string') {
-          notifyRemoteChange(message.tableName);
-        }
-      } catch {
-        // Ignore malformed messages and keep the local fallback refresh active.
-      }
-    };
-    socket.onclose = () => {
-      if (realtimeSocket === socket) realtimeSocket = null;
-      scheduleRealtimeReconnect();
-    };
-    socket.onerror = () => socket.close();
-  } catch {
-    scheduleRealtimeReconnect();
+    return usesFastApi() ? await fetchFastApiExport(ref) : await fetchLegacyExport(ref);
+  } catch (error) {
+    if (isNetworkError(error)) return readCachedQuery(ref);
+    throw error;
   }
 }
 
-function subscribeToRemoteChanges(tableName: string, listener: () => void): () => void {
-  let listeners = remoteChangeListeners.get(tableName);
-  if (!listeners) {
-    listeners = new Set();
-    remoteChangeListeners.set(tableName, listeners);
-  }
-  listeners.add(listener);
-  ensureRealtimeConnection();
+function notifySyncState() {
+  const syncing = activeSyncOperations > 0;
+  syncStateListeners.forEach((listener) => listener(syncing));
+}
 
-  return () => {
-    const currentListeners = remoteChangeListeners.get(tableName);
-    currentListeners?.delete(listener);
-    if (currentListeners?.size === 0) remoteChangeListeners.delete(tableName);
-    if (remoteChangeListeners.size === 0) {
-      if (realtimeReconnectTimer) clearTimeout(realtimeReconnectTimer);
-      realtimeReconnectTimer = null;
-      realtimeSocket?.close();
-      realtimeSocket = null;
-    }
-  };
+async function runOnlineOperation<T>(operation: () => Promise<T>): Promise<T> {
+  activeSyncOperations += 1;
+  notifySyncState();
+  try {
+    return await operation();
+  } finally {
+    activeSyncOperations -= 1;
+    notifySyncState();
+  }
+}
+
+export function isSyncing() {
+  return activeSyncOperations > 0;
+}
+
+export function subscribeToSyncState(listener: (syncing: boolean) => void): () => void {
+  syncStateListeners.add(listener);
+  listener(isSyncing());
+  return () => syncStateListeners.delete(listener);
 }
 
 export function initializeApp(config: FirebaseAppCompat): FirebaseAppCompat {
@@ -464,15 +1091,40 @@ export function getAuth(_app?: FirebaseAppCompat): Auth {
   return authState;
 }
 
+export async function restoreAuthSession(auth: Auth): Promise<AuthUser | null> {
+  const session = readStoredSession();
+  auth.currentUser = session;
+  if (session) notifyAuthListeners();
+  return session;
+}
+
+export async function signInWithPassword(auth: Auth, username: string, password: string, turnstileToken?: string): Promise<AuthUser> {
+  const response = await usernameLoginRequest(username, password, turnstileToken);
+  const nextSession = sessionFromResponse(response);
+  if (auth.currentUser && auth.currentUser.uid !== nextSession.uid) {
+    await clearOfflineStore();
+    clearSyncState();
+  }
+  auth.currentUser = nextSession;
+  saveSession(nextSession);
+  notifyAuthListeners();
+  return nextSession;
+}
+
+export async function getCurrentAccessProfile(): Promise<AccessProfile> {
+  if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
+  return apiRequest<AccessProfile>('/me');
+}
+
 export async function signInAnonymously(auth: Auth): Promise<void> {
   if (auth.currentUser) return;
-  auth.currentUser = { uid: `anon-${createId()}` };
-  for (const listener of authListeners) listener(auth.currentUser);
+  auth.currentUser = { uid: `anon-${createId()}`, email: null };
+  notifyAuthListeners();
 }
 
 export function onAuthStateChanged(
   auth: Auth,
-  callback: (user: { uid: string } | null) => void
+  callback: (user: AuthUser | null) => void
 ): () => void {
   authListeners.add(callback);
   callback(auth.currentUser);
@@ -480,8 +1132,28 @@ export function onAuthStateChanged(
 }
 
 export async function signOut(auth: Auth): Promise<void> {
+  const pending = await getPendingMutations();
+  if (pending.length > 0) throw new Error('Masih ada data offline yang belum tersinkron. Sambungkan internet sebelum keluar.');
+
+  const accessToken = auth.currentUser?.accessToken;
+  if (accessToken && isOnline() && LEGACY_SUPABASE_URL && LEGACY_SUPABASE_ANON_KEY) {
+    try {
+      await fetch(`${LEGACY_SUPABASE_URL}/auth/v1/logout`, {
+        method: 'POST',
+        headers: {
+          apikey: LEGACY_SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${accessToken}`
+        }
+      });
+    } catch {
+      // Local logout still protects this device when Auth cannot be reached.
+    }
+  }
   auth.currentUser = null;
-  for (const listener of authListeners) listener(null);
+  saveSession(null);
+  await clearOfflineStore();
+  clearSyncState();
+  notifyAuthListeners();
 }
 
 export function getFirestore(_app?: FirebaseAppCompat): Firestore {
@@ -520,21 +1192,47 @@ async function applyPendingMutation(mutation: PendingMutation): Promise<void> {
   }
 
   const collectionPath = `/collections/${encodeURIComponent(mutation.tableName)}`;
+  const mutationHeaders = { 'Idempotency-Key': mutation.id };
   if (mutation.type === 'add') {
-    await apiRequest(collectionPath, {
+    const created = await apiRequest<ApiDocument>(collectionPath, {
       method: 'POST',
+      headers: mutationHeaders,
       body: JSON.stringify({ id: mutation.documentId, data: mutation.payload?.data || {} })
     });
+    const now = new Date().toISOString();
+    await cacheRemoteDocuments(mutation.tableName, [{
+      id: created.id,
+      data: created.data,
+      createdAt: typeof created.data.createdAt === 'string' ? created.data.createdAt : mutation.queuedAt,
+      updatedAt: typeof created.data.updatedAt === 'string' ? created.data.updatedAt : now
+    }]);
     return;
   }
   if (mutation.type === 'update') {
-    await apiRequest(`${collectionPath}/${encodeURIComponent(mutation.documentId)}`, {
+    const envelope = mutation.payload?.data && (
+      Object.prototype.hasOwnProperty.call(mutation.payload, 'expectedVersion') ||
+      Object.prototype.hasOwnProperty.call(mutation.payload, 'expectedUpdatedAt')
+    )
+      ? mutation.payload
+      : { data: mutation.payload || {} };
+    const updated = await apiRequest<ApiDocument>(`${collectionPath}/${encodeURIComponent(mutation.documentId)}`, {
       method: 'PATCH',
-      body: JSON.stringify({ data: mutation.payload || {} })
+      headers: mutationHeaders,
+      body: JSON.stringify(envelope)
     });
+    const now = new Date().toISOString();
+    await cacheRemoteDocuments(mutation.tableName, [{
+      id: updated.id,
+      data: updated.data,
+      createdAt: typeof updated.data.createdAt === 'string' ? updated.data.createdAt : now,
+      updatedAt: typeof updated.data.updatedAt === 'string' ? updated.data.updatedAt : now
+    }]);
     return;
   }
-  await apiRequest(`${collectionPath}/${encodeURIComponent(mutation.documentId)}`, { method: 'DELETE' });
+  await apiRequest(`${collectionPath}/${encodeURIComponent(mutation.documentId)}`, {
+    method: 'DELETE',
+    headers: mutationHeaders
+  });
 }
 
 async function applyLegacySupabaseMutation(mutation: PendingMutation): Promise<void> {
@@ -578,22 +1276,146 @@ async function applyLegacySupabaseMutation(mutation: PendingMutation): Promise<v
 }
 
 let syncPromise: Promise<void> | null = null;
+const syncedMutationListeners = new Set<() => void>();
+
+export function subscribeToSyncedMutations(listener: () => void): () => void {
+  syncedMutationListeners.add(listener);
+  return () => syncedMutationListeners.delete(listener);
+}
+
+function notifySyncedMutations() {
+  syncedMutationListeners.forEach((listener) => listener());
+}
+
+function nextPendingMutation(mutations: PendingMutation[]): PendingMutation | undefined {
+  const first = mutations[0];
+  if (!first || first.type !== 'add' || first.tableName === 'children') return first;
+
+  const childId = first.payload?.data?.childId;
+  if (typeof childId !== 'string' || !childId) return first;
+
+  return mutations.find(
+    (candidate) =>
+      candidate.type === 'add' && candidate.tableName === 'children' && candidate.documentId === childId
+  ) || first;
+}
+
+function orderedPendingMutations(mutations: PendingMutation[]): PendingMutation[] {
+  const remaining = [...mutations];
+  const ordered: PendingMutation[] = [];
+  while (remaining.length > 0) {
+    const next = nextPendingMutation(remaining);
+    if (!next) break;
+    ordered.push(next);
+    remaining.splice(remaining.findIndex((mutation) => mutation.id === next.id), 1);
+  }
+  return ordered;
+}
+
+function syncMutationPayload(mutation: PendingMutation) {
+  if (mutation.type === 'add') {
+    return {
+      id: mutation.id,
+      operation: mutation.type,
+      resource: mutation.tableName,
+      documentId: mutation.documentId,
+      data: mutation.payload?.data || {}
+    };
+  }
+  if (mutation.type === 'update') {
+    const envelope = mutation.payload?.data && (
+      Object.prototype.hasOwnProperty.call(mutation.payload, 'expectedVersion') ||
+      Object.prototype.hasOwnProperty.call(mutation.payload, 'expectedUpdatedAt')
+    )
+      ? mutation.payload
+      : { data: mutation.payload || {} };
+    return {
+      id: mutation.id,
+      operation: mutation.type,
+      resource: mutation.tableName,
+      documentId: mutation.documentId,
+      data: envelope.data,
+      expectedVersion: envelope.expectedVersion,
+      expectedUpdatedAt: envelope.expectedUpdatedAt
+    };
+  }
+  return {
+    id: mutation.id,
+    operation: mutation.type,
+    resource: mutation.tableName,
+    documentId: mutation.documentId
+  };
+}
+
+async function syncFastApiBatch(batch: PendingMutation[]): Promise<void> {
+  const response = await apiRequest<SyncResponse>('/sync', {
+    method: 'POST',
+    body: JSON.stringify({ mutations: batch.map(syncMutationPayload), pull: [] })
+  });
+  const results = new Map(response.results.map((result) => [result.id, result]));
+  if (results.size !== batch.length || batch.some((mutation) => !results.has(mutation.id))) {
+    throw new Error('Respons sinkronisasi tidak lengkap. Data tetap disimpan untuk dicoba kembali.');
+  }
+
+  for (const mutation of batch) {
+    const result = results.get(mutation.id);
+    await completeMutation(mutation);
+    if (mutation.type !== 'delete' && result?.document?.id) {
+      const document = result.document;
+      const now = new Date().toISOString();
+      await cacheRemoteDocuments(mutation.tableName, [{
+        id: document.id,
+        data: document.data,
+        createdAt: typeof document.data.createdAt === 'string' ? document.data.createdAt : now,
+        updatedAt: typeof document.data.updatedAt === 'string' ? document.data.updatedAt : now
+      }]);
+    }
+  }
+}
 
 export async function syncPendingMutations(): Promise<void> {
   if (!isOnline()) return;
-  if (syncPromise) return syncPromise;
+  if (syncPromise) {
+    await syncPromise;
+    if ((await getPendingMutations()).length > 0) return syncPendingMutations();
+    return;
+  }
 
   syncPromise = (async () => {
-    while (true) {
-      const [mutation] = await getPendingMutations();
-      if (!mutation) break;
-      try {
-        await applyPendingMutation(mutation);
-        await completeMutation(mutation);
-      } catch (error) {
-        await markMutationError(mutation, error);
-        break;
-      }
+    let syncedCount = 0;
+    try {
+      await runOnlineOperation(async () => {
+        if (usesFastApi()) {
+          let pending = orderedPendingMutations(await getPendingMutations());
+          while (pending.length > 0) {
+            const batch = pending.slice(0, 25);
+            try {
+              await syncFastApiBatch(batch);
+              syncedCount += batch.length;
+            } catch (error) {
+              await Promise.all(batch.map((mutation) => markMutationError(mutation, error)));
+              throw error;
+            }
+            pending = orderedPendingMutations(await getPendingMutations());
+          }
+          return;
+        }
+
+        let mutation = nextPendingMutation(await getPendingMutations());
+        while (mutation) {
+          try {
+            await applyPendingMutation(mutation);
+            await completeMutation(mutation);
+            syncedCount += 1;
+          } catch (error) {
+            await markMutationError(mutation, error);
+            throw error;
+          }
+          mutation = nextPendingMutation(await getPendingMutations());
+        }
+      });
+    } finally {
+      if (syncedCount > 0) notifySyncedMutations();
     }
   })().finally(() => {
     syncPromise = null;
@@ -602,18 +1424,22 @@ export async function syncPendingMutations(): Promise<void> {
 }
 
 function requestSync() {
-  if (isOnline()) void syncPendingMutations();
+  if (isOnline()) void syncPendingMutations().catch(() => {
+    // The queued mutation remains available and is retried by the next online action.
+  });
 }
 
 if (typeof window !== 'undefined') {
-  window.addEventListener('online', () => {
-    ensureRealtimeConnection();
-    void syncPendingMutations();
+  window.addEventListener('online', requestSync);
+}
+
+export async function syncActiveViewFromServer(): Promise<void> {
+  if (!isOnline()) throw new Error('Perangkat sedang offline. Sambungkan internet untuk memperbarui data.');
+
+  await runOnlineOperation(async () => {
+    await syncPendingMutations();
+    await Promise.all(Array.from(activeViewRefreshers, (refresh) => refresh()));
   });
-  window.setInterval(() => {
-    void syncPendingMutations();
-  }, 30_000);
-  void syncPendingMutations();
 }
 
 export async function addDoc(ref: CollectionRef, payload: Record<string, any>): Promise<{ id: string }> {
@@ -627,16 +1453,26 @@ export async function addDoc(ref: CollectionRef, payload: Record<string, any>): 
 }
 
 export async function getDocs(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
-  return executeQuery(ref);
+  return readCachedQuery(ref);
 }
 
 export async function updateDoc(ref: DocRef, patch: Record<string, any>): Promise<void> {
   const now = new Date().toISOString();
   const normalizedPatch = normalizeForWrite(patch);
   const existing = await getCachedDocument(ref.tableName, ref.id);
+  const expectedUpdatedAt = existing && !existing.pending ? existing.updatedAt : undefined;
+  const cachedVersion = existing?.data?.version;
+  const expectedVersion = existing && !existing.pending && Number.isSafeInteger(cachedVersion)
+    ? cachedVersion
+    : undefined;
   const merged = { ...(existing?.data || {}), ...normalizedPatch };
   await putCachedDocument(makeCachedDocument(ref.tableName, ref.id, merged, existing?.createdAt || now, now));
-  await queueMutation({ type: 'update', tableName: ref.tableName, documentId: ref.id, payload: normalizedPatch });
+  await queueMutation({
+    type: 'update',
+    tableName: ref.tableName,
+    documentId: ref.id,
+    payload: { data: normalizedPatch, expectedVersion, expectedUpdatedAt }
+  });
   requestSync();
 }
 
@@ -657,9 +1493,9 @@ export function onSnapshot(
   let lastSignature = '';
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const pull = async () => {
+  const pull = async (fromServer = false) => {
     try {
-      const snapshot = await executeQuery(ref);
+      const snapshot = fromServer ? await executeRemoteQueryWithFallback(ref) : await readCachedQuery(ref);
       const signature = JSON.stringify(snapshot.docs.map((item) => ({ id: item.id, data: item.data() })));
       if (signature !== lastSignature) {
         lastSignature = signature;
@@ -679,22 +1515,16 @@ export function onSnapshot(
   };
 
   void pull();
-  const interval = setInterval(() => {
-    if (isOnline() && (typeof document === 'undefined' || !document.hidden)) void pull();
-  }, REMOTE_REFRESH_INTERVAL_MS);
-  const handleVisibilityChange = () => {
-    if (typeof document !== 'undefined' && !document.hidden && isOnline()) schedulePull();
+  const refreshFromServer = async () => {
+    if (active) await pull(true);
   };
-  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', handleVisibilityChange);
+  activeViewRefreshers.add(refreshFromServer);
   const unsubscribeOfflineStore = subscribeToOfflineStore(schedulePull);
-  const unsubscribeRealtime = subscribeToRemoteChanges(ref.tableName, schedulePull);
 
   return () => {
     active = false;
-    clearInterval(interval);
     if (refreshTimer) clearTimeout(refreshTimer);
-    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', handleVisibilityChange);
+    activeViewRefreshers.delete(refreshFromServer);
     unsubscribeOfflineStore();
-    unsubscribeRealtime();
   };
 }
