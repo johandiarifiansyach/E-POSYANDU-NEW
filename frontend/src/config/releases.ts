@@ -13,6 +13,19 @@ export const RELEASE_HISTORY: AppRelease[] = [
     version: APP_VERSION,
     releaseDate: '2 Agustus 2026',
     releaseDateIso: '2026-08-02',
+    title: 'Pembaruan dan Perbaikan Sistem',
+    changes: [
+      'Jumlah sasaran dashboard kini sama dengan Data Balita aktif usia 0-59 bulan pada akhir periode laporan.',
+      'Perhitungan dashboard telah diverifikasi konsisten untuk akun gizi, 5 desa, dan 63 posyandu.',
+      'Proses login dipercepat dengan mengirim profil akses bersama sesi dan menjalankan proses nonkritis di latar belakang.',
+      'Dashboard dimuat bersamaan dengan autentikasi agar perpindahan halaman lebih cepat pada koneksi lambat.',
+      'Pengujian regresi login dan konsistensi data ditambahkan untuk mencegah masalah yang sama terulang.'
+    ]
+  },
+  {
+    version: '3.4.0',
+    releaseDate: '2 Agustus 2026',
+    releaseDateIso: '2026-08-02',
     title: 'Pengalaman iOS yang Lebih Lengkap',
     changes: [
       'Mode terang dan gelap kini konsisten pada login, formulir, tabel, ASI eksklusif, serta PMT.',

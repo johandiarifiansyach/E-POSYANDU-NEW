@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "E-Posyandu Puskesmas Gumukmas API",
-    "version": "3.4.0",
+    "version": "3.4.1",
     "description": "REST API untuk autentikasi, dashboard, data balita, pengukuran, sinkronisasi offline, dan ekspor E-Posyandu."
   },
   "servers": [
