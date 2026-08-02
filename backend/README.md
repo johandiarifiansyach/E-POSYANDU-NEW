@@ -59,7 +59,7 @@ R2 sengaja belum menerima unggahan dari halaman aplikasi karena E-Posyandu saat 
 ## Menjalankan lokal
 
 ```bash
-cd backend-rust-worker
+cd backend
 cp .dev.vars.example .dev.vars
 rustup target add wasm32-unknown-unknown
 cargo install worker-build

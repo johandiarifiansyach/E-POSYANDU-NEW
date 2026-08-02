@@ -8,7 +8,7 @@ use worker::{
     wasm_bindgen::JsValue,
 };
 
-mod full_api;
+mod api;
 
 const SCOPE_CACHE_TTL_MS: f64 = 90_000.0;
 const LOGIN_IP_WINDOW_SECONDS: u64 = 600;
@@ -1036,7 +1036,7 @@ async fn record_login_audit(
     outcome: &str,
 ) {
     let account_key = hashed_key("account", username);
-    let result = full_api::record_operational_audit(
+    let result = api::record_operational_audit(
         env,
         account
             .map(|value| value.user_id.as_str())
@@ -1156,7 +1156,7 @@ async fn dispatch(request: Request, env: &Env) -> ApiResult<serde_json::Value> {
                 "posyandu": scope.posyandu
             }))
         }
-        _ if request.path().starts_with("/api/v1/") => full_api::dispatch(request, env).await,
+        _ if request.path().starts_with("/api/v1/") => api::dispatch(request, env).await,
         _ => Err(ApiFailure::new(404, "Rute API tidak ditemukan.")),
     }
 }

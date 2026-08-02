@@ -526,7 +526,7 @@ test('notifikasi operasi memakai liquid glass iOS dan dapat ditutup', async ({ p
   await page.evaluate(async (moduleUrl) => {
     const notifications = await import(moduleUrl);
     notifications.showSuccess('Program PMT berhasil dihapus.');
-  }, '/src/native/notifications.ts');
+  }, '/src/ui/notifications.ts');
 
   const notification = page.locator('.ios-notification');
   await expect(notification).toBeVisible();

@@ -5,7 +5,6 @@ export default defineConfig(({ mode }) => {
   const apiTarget = env.VITE_API_URL || 'http://localhost:3002';
 
   return {
-    publicDir: '../public',
     server: {
       host: '127.0.0.1',
       port: 5175,

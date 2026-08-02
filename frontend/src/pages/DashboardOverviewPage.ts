@@ -1,6 +1,6 @@
 // @ts-nocheck
-import Native from '../native/dom';
-import { Activity, Baby, CircleOff, Minus, Scale, TrendingUp, UserPlus, Users } from '../native/icons';
+import Native from '../runtime/dom';
+import { Activity, Baby, CircleOff, Minus, Scale, TrendingUp, UserPlus, Users } from '../ui/icons';
 import { Card, MONTHS } from './DashboardApp';
 export default function DashboardOverviewPage({ stats, loading = false, filterMonth, filterYear, viewDesa, viewPosyandu }) {
     return (Native.createElement("div", { className: "apple-page space-y-6" },

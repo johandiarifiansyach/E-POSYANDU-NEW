@@ -1,7 +1,7 @@
 // @ts-nocheck
-import Native, { useMemo, useState } from '../native/dom';
-import { actionTooltipProps } from '../native/actionTooltip';
-import { AlertCircle, Calendar, FileDown, Gift, Loader2, Minus, Trash2, TrendingDown } from '../native/icons';
+import Native, { useMemo, useState } from '../runtime/dom';
+import { actionTooltipProps } from '../ui/actionTooltip';
+import { AlertCircle, Calendar, FileDown, Gift, Loader2, Minus, Trash2, TrendingDown } from '../ui/icons';
 import {
   Button,
   calculateGiziStatus,

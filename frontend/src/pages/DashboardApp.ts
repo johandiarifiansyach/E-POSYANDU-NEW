@@ -1,14 +1,13 @@
 // @ts-nocheck
-import Native, { useState, useEffect, useLayoutEffect, useMemo, useRef } from '../native/dom';
+import Native, { useState, useEffect, useLayoutEffect, useMemo, useRef } from '../runtime/dom';
 import { APP_VERSION } from '../config/app';
-import { showSuccess } from '../native/notifications';
-import { openReleaseNotes } from '../native/releaseNotes';
-import { actionTooltipProps } from '../native/actionTooltip';
-import { getPreferredColorScheme, saveColorScheme, subscribeColorScheme } from '../lib/colorScheme';
-import { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, signOut } from '../lib/supabase-compat';
-import { getFirestore, collection, addDoc, query, where, onSnapshot, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, getDocsForExport, getCachedChildrenPage, getChildDetail, getChildrenPage, getDashboardStats, getSigiziMeasurementExport, subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations, orderBy } from '../lib/supabase-compat';
-import { Ruler, LogOut, Plus, MapPin, Clock, Baby, XCircle, ChevronDown, ChevronLeft, ChevronRight, Loader2, LayoutDashboard, Users, Trash2, Menu, AlertTriangle, TrendingDown, AlertCircle, Minus, Utensils, Gift, ClipboardCheck, CheckSquare, History, Filter, RotateCcw, UserRound, X, Moon, Sun } from '../native/icons';
-import { WHO_0_TO_5 } from '../lib/anthropometry-data';
+import { getFirestore, collection, addDoc, query, where, onSnapshot, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, getDocsForExport, getCachedChildrenPage, getChildDetail, getChildrenPage, getDashboardStats, getSigiziMeasurementExport, initializeApp, subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations, orderBy } from '../api/client';
+import { WHO_0_TO_5 } from '../data/anthropometry';
+import { getPreferredColorScheme, saveColorScheme, subscribeColorScheme } from '../theme/colorScheme';
+import { actionTooltipProps } from '../ui/actionTooltip';
+import { Ruler, LogOut, Plus, MapPin, Clock, Baby, XCircle, ChevronDown, ChevronLeft, ChevronRight, Loader2, LayoutDashboard, Users, Trash2, Menu, AlertTriangle, TrendingDown, AlertCircle, Minus, Utensils, Gift, ClipboardCheck, CheckSquare, History, Filter, RotateCcw, UserRound, X, Moon, Sun } from '../ui/icons';
+import { showSuccess } from '../ui/notifications';
+import { openReleaseNotes } from '../ui/releaseNotes';
 export function formatChildName(value) {
     return value
         .toLowerCase()
@@ -18,7 +17,6 @@ export function formatChildName(value) {
 const app = initializeApp({
     projectId: import.meta.env.VITE_APP_ID || 'siposyandu-377b6'
 });
-const auth = getAuth(app);
 export const db = getFirestore(app);
 export const appId = import.meta.env.VITE_APP_ID || 'siposyandu-377b6';
 const XLSX_SCRIPT_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
@@ -1472,63 +1470,6 @@ const MeasurementModal = ({ child, onClose }) => {
                         Native.createElement(Button, { variant: "secondary", type: "button", onClick: () => setActiveMenu('history'), className: "flex-1" }, "Kembali ke Riwayat"),
                         Native.createElement(Button, { variant: "primary", type: "submit", disabled: loading, className: "flex-1" }, "Simpan Pengukuran"))))))));
 };
-const LoginScreen = ({ onLogin }) => {
-    const [role, setRole] = useState(ROLES.KADER);
-    const [selectedDesa, setSelectedDesa] = useState(Object.keys(DATA_WILAYAH)[0]);
-    const [selectedPosyandu, setSelectedPosyandu] = useState(DATA_WILAYAH[Object.keys(DATA_WILAYAH)[0]][0]);
-    const [loading, setLoading] = useState(false);
-    const [errorMsg, setErrorMsg] = useState(null);
-    const handleLogin = async () => {
-        setLoading(true);
-        setErrorMsg(null);
-        let userData = { role, desa: null, posyandu: null };
-        if (role === ROLES.KADER) {
-            userData.desa = selectedDesa;
-            userData.posyandu = selectedPosyandu;
-        }
-        else if (role === ROLES.BIDAN) {
-            userData.desa = selectedDesa;
-            userData.posyandu = null;
-        }
-        else {
-            userData.desa = null;
-            userData.posyandu = null;
-        }
-        try {
-            await signInAnonymously(auth);
-            onLogin(userData);
-        }
-        catch (error) {
-            console.error("Gagal masuk: " + error.message);
-            setErrorMsg("Gagal Login (Anonim): " + error.message + ". Cek tab Auth di Firebase Console.");
-        }
-        finally {
-            setLoading(false);
-        }
-    };
-    return (Native.createElement("div", { className: "min-h-screen bg-slate-50 flex items-center justify-center p-4" },
-        Native.createElement("div", { className: "w-full max-w-md" },
-            Native.createElement("div", { className: "bg-white rounded-3xl shadow-xl overflow-hidden" },
-                Native.createElement("div", { className: "bg-emerald-600 p-8 text-center" },
-                    Native.createElement("div", { className: "inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-full mb-4 backdrop-blur-sm p-2" },
-                        Native.createElement("img", { src: "/logo-puskesmas-32981.svg", alt: "Logo Puskesmas Gumukmas", className: "w-10 h-10 object-contain" })),
-                    Native.createElement("h1", { className: "text-2xl font-bold text-white" }, "E-Posyandu"),
-                    Native.createElement("p", { className: "text-white font-medium text-sm mt-1" }, "UPTD Puskesmas Gumukmas"),
-                    Native.createElement("p", { className: "text-emerald-100 text-xs mt-1" }, "Sistem Informasi Gizi & Kesehatan Ibu Anak")),
-                Native.createElement("div", { className: "p-8 space-y-6" },
-                    Native.createElement(InputGroup, { label: "Pilih Peran Akses" },
-                        Native.createElement(Select, { value: role, onChange: (e) => setRole(e.target.value), options: Object.values(ROLES).map(r => ({ value: r, label: r })) })),
-                    (role === ROLES.KADER || role === ROLES.BIDAN) && (Native.createElement(InputGroup, { label: "Pilih Desa" },
-                        Native.createElement(Select, { value: selectedDesa, onChange: (e) => { setSelectedDesa(e.target.value); setSelectedPosyandu(DATA_WILAYAH[e.target.value][0]); }, options: Object.keys(DATA_WILAYAH).map(d => ({ value: d, label: d })) }))),
-                    role === ROLES.KADER && (Native.createElement(InputGroup, { label: "Pilih Posyandu" },
-                        Native.createElement(Select, { value: selectedPosyandu, onChange: (e) => setSelectedPosyandu(e.target.value), options: DATA_WILAYAH[selectedDesa].map(p => ({ value: p, label: p })) }))),
-                    errorMsg && (Native.createElement("div", { className: "bg-rose-50 border border-rose-100 p-3 rounded-xl text-rose-600 text-xs break-all" },
-                        Native.createElement("strong", null, "Error:"),
-                        " ",
-                        errorMsg)),
-                    Native.createElement(Button, { onClick: handleLogin, disabled: loading, className: "w-full justify-center mt-4" }, loading ? 'Memproses...' : 'Masuk Dashboard')),
-                Native.createElement("div", { className: "bg-slate-50 px-8 py-4 text-center text-xs text-slate-400" }, "\u00A9 2026 UPTD Puskesmas Gumukmas")))));
-};
 // --- MAIN DASHBOARD LAYOUT & LOGIC ---
 const EMPTY_DASHBOARD_STATS = {
     S: 0, D: 0, N: 0, T: 0, B: 0, O: 0,
@@ -2731,20 +2672,3 @@ export const Dashboard = ({ user, onLogout }) => {
         pmtModalData && (Native.createElement(PmtModal, { child: pmtModalData.child, category: pmtModalData.category, onClose: () => setPmtModalData(null) })),
         pmtMonitoringData && (Native.createElement(PmtMonitoringModal, { program: pmtMonitoringData.program, child: pmtMonitoringData.child, onClose: () => setPmtMonitoringData(null) }))));
 };
-export default function App() {
-    const [user, setUser] = useState(null);
-    const [initializing, setInitializing] = useState(true);
-    useEffect(() => { const initAuth = async () => { try {
-        await signInAnonymously(auth);
-    }
-    catch (err) {
-        console.error("Auth Init Failed:", err);
-    } }; initAuth(); const unsubscribe = onAuthStateChanged(auth, (authUser) => { if (!authUser)
-        setUser(null); setInitializing(false); }); return () => unsubscribe(); }, []);
-    if (initializing)
-        return (Native.createElement("div", { className: "h-screen w-full flex items-center justify-center bg-slate-50" },
-            Native.createElement(Loader2, { className: "w-10 h-10 animate-spin text-emerald-600" })));
-    if (!user)
-        return Native.createElement(LoginScreen, { onLogin: setUser });
-    return Native.createElement(Dashboard, { user: user, onLogout: () => { signOut(auth); setUser(null); } });
-}

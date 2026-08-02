@@ -12,7 +12,7 @@ import {
   queueMutation,
   removeCachedDocument,
   subscribeToOfflineStore
-} from './offlineStore';
+} from '../services/offlineStore';
 
 export type AuthUser = {
   uid: string;

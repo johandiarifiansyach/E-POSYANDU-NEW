@@ -1,4 +1,4 @@
-import Native from './dom';
+import Native from '../runtime/dom';
 
 type IconProps = Record<string, unknown> & { className?: string; size?: number | string };
 type IconNode = [string, Record<string, string>];

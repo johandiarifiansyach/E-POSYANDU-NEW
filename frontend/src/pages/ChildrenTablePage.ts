@@ -1,7 +1,7 @@
 // @ts-nocheck
-import Native from '../native/dom';
+import Native from '../runtime/dom';
 import IosPagination from '../components/IosPagination';
-import { ChevronDown, FileDown, FileText, FileUp, Filter, Gift, Loader2, Pencil, Plus, RotateCcw, Ruler, Search, Trash2, Utensils, X } from '../native/icons';
+import { ChevronDown, FileDown, FileText, FileUp, Filter, Gift, Loader2, Pencil, Plus, RotateCcw, Ruler, Search, Trash2, Utensils, X } from '../ui/icons';
 import { Badge, Button, calculateGiziStatus, Card, formatIndoDate, getAgeInMonths, KenaikanBadge, MONTHS, ROLES, StatusBadge } from './DashboardApp';
 function getPageTitle(activeTab, filterMonth, filterYear) {
     if (activeTab === 'recycle_bin')

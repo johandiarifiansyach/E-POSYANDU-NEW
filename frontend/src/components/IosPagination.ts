@@ -1,6 +1,6 @@
 // @ts-nocheck
-import Native from '../native/dom';
-import { ChevronLeft, ChevronRight } from '../native/icons';
+import Native from '../runtime/dom';
+import { ChevronLeft, ChevronRight } from '../ui/icons';
 
 export default function IosPagination({
     currentPage,

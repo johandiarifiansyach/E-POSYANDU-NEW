@@ -23,11 +23,11 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: backend-rust-worker
+          workspaces: backend
       - run: npm ci --prefix frontend
       - run: npm run frontend:check
       - run: npm run integration:test
-      - run: cargo test --manifest-path backend-rust-worker/Cargo.toml
+      - run: cargo test --manifest-path backend/Cargo.toml
       - run: npm run build
 
   end-to-end:
@@ -65,7 +65,7 @@ jobs:
       - run: ./scripts/database/migrate.sh
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      - run: npx --yes wrangler --cwd backend-rust-worker deploy --env=""
+      - run: npx --yes wrangler --cwd backend deploy --env=""
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

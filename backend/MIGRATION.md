@@ -18,7 +18,7 @@
 
 ## Rilis berikutnya
 
-1. Jalankan `cargo test` di `backend-rust-worker` setelah mengubah API.
+1. Jalankan `cargo test` di `backend` setelah mengubah API.
 2. Jalankan `npm run worker:deploy` untuk menerbitkan Worker bila API berubah.
 3. Jalankan `npm run pages:deploy` untuk menerbitkan frontend bila tampilan atau TypeScript berubah.
 4. Uji akun kader, desa, dan gizi setelah perubahan akses atau query data.

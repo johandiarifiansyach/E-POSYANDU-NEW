@@ -1,8 +1,8 @@
 // @ts-nocheck
-import Native, { useEffect, useState } from '../native/dom';
+import { getExclusiveBreastfeedingPage } from '../api/client';
 import IosPagination from '../components/IosPagination';
-import { getExclusiveBreastfeedingPage } from '../lib/supabase-compat';
-import { Baby, CalendarDays, CheckCircle2, Loader2 } from '../native/icons';
+import Native, { useEffect, useState } from '../runtime/dom';
+import { Baby, CalendarDays, CheckCircle2, Loader2 } from '../ui/icons';
 import { Card, formatIndoDate, MONTHS } from './DashboardApp';
 
 const ITEMS_PER_PAGE = 10;

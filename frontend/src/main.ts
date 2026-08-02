@@ -1,7 +1,7 @@
 import { mountApp } from './App';
-import { initializeColorScheme } from './lib/colorScheme';
-import { reportClientError } from './lib/supabase-compat';
-import './index.css';
+import { reportClientError } from './api/client';
+import { initializeColorScheme } from './theme/colorScheme';
+import './styles/index.css';
 
 const rootElement = document.getElementById('root');
 const SERVICE_WORKER_CACHE_VERSION = 'v14';

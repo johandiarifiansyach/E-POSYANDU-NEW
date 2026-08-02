@@ -23,7 +23,7 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
 });
 
 test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
-  const document = await readJson('backend-rust-worker/openapi.json');
+  const document = await readJson('backend/openapi.json');
   const application = await readJson('package.json');
   assert.equal(document.openapi, '3.1.0');
   assert.equal(document.info.version, application.version);
@@ -39,8 +39,8 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
 });
 
 test('manifest dan service worker membentuk shell PWA yang dapat dipasang', async () => {
-  const manifest = await readJson('public/manifest.webmanifest');
-  const serviceWorker = await readFile(resolve(root, 'public/service-worker.js'), 'utf8');
+  const manifest = await readJson('frontend/public/manifest.webmanifest');
+  const serviceWorker = await readFile(resolve(root, 'frontend/public/service-worker.js'), 'utf8');
 
   assert.equal(manifest.start_url, '/');
   assert.equal(manifest.display, 'standalone');
@@ -51,7 +51,7 @@ test('manifest dan service worker membentuk shell PWA yang dapat dipasang', asyn
 });
 
 test('header keamanan frontend mencakup kebijakan utama', async () => {
-  const headers = await readFile(resolve(root, 'public/_headers'), 'utf8');
+  const headers = await readFile(resolve(root, 'frontend/public/_headers'), 'utf8');
   for (const header of [
     'Content-Security-Policy:',
     'Strict-Transport-Security:',

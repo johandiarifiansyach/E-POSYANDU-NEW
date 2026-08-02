@@ -1,8 +1,8 @@
 // @ts-nocheck
-import Native, { useState } from '../native/dom';
-import { showSuccess } from '../native/notifications';
-import { Baby, CheckCircle2, ChevronLeft, MapPin, UserPlus, UserRound, XCircle } from '../native/icons';
-import { addDoc, collection, serverTimestamp, syncPendingMutations } from '../lib/supabase-compat';
+import { addDoc, collection, serverTimestamp, syncPendingMutations } from '../api/client';
+import Native, { useState } from '../runtime/dom';
+import { Baby, CheckCircle2, ChevronLeft, MapPin, UserPlus, UserRound, XCircle } from '../ui/icons';
+import { showSuccess } from '../ui/notifications';
 import { appId, Button, Card, DATA_WILAYAH, db, formatChildName, InputGroup, ROLES, Select } from './DashboardApp';
 const inputClass = 'block w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-sm text-slate-900 transition-colors focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100';
 function randomDigits(length) {

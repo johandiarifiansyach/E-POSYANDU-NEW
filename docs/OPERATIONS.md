@@ -11,7 +11,7 @@
 Variabel, binding KV, dan secret Cloudflare tidak diwariskan antar-environment. Masukkan secret staging secara terpisah:
 
 ```bash
-cd backend-rust-worker
+cd backend
 npx wrangler secret put SUPABASE_URL --env staging
 npx wrangler secret put SUPABASE_PUBLISHABLE_KEY --env staging
 npx wrangler secret put SUPABASE_SECRET_KEY --env staging

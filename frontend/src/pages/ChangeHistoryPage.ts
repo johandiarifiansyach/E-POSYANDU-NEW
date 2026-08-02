@@ -1,6 +1,6 @@
 // @ts-nocheck
-import Native from '../native/dom';
-import { History } from '../native/icons';
+import Native from '../runtime/dom';
+import { History } from '../ui/icons';
 import { Card, formatIndoDateTime } from './DashboardApp';
 export default function ChangeHistoryPage({ changeLogs }) {
     const timestampValue = (value) => {

@@ -1,6 +1,6 @@
 import { APP_VERSION } from '../config/app';
-import { getPreferredColorScheme, saveColorScheme, subscribeColorScheme, type ColorScheme } from '../lib/colorScheme';
-import { closeReleaseNotes, openReleaseNotes } from '../native/releaseNotes';
+import { getPreferredColorScheme, saveColorScheme, subscribeColorScheme, type ColorScheme } from '../theme/colorScheme';
+import { closeReleaseNotes, openReleaseNotes } from '../ui/releaseNotes';
 
 type LoginHandler = (username: string, password: string, turnstileToken?: string) => Promise<void>;
 

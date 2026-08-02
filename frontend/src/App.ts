@@ -1,4 +1,4 @@
-import Native, { createRoot } from './native/dom';
+import Native, { createRoot } from './runtime/dom';
 import {
   getAuth,
   getCurrentAccessProfile,
@@ -6,7 +6,7 @@ import {
   restoreAuthSession,
   signInWithPassword,
   signOut
-} from './lib/supabase-compat';
+} from './api/client';
 
 type UserRole = {
   role: string;
@@ -191,7 +191,7 @@ export function mountApp(container: HTMLElement): Cleanup {
   const renderDashboard = async (user: UserRole) => {
     if (disposed) return;
     showLoading(container);
-    const { default: DashboardPage } = await import('./pages/DashboardPage');
+    const { Dashboard } = await import('./pages/DashboardApp');
     if (disposed) return;
     replaceView(() => {
       const root = createRoot(container);
@@ -203,7 +203,7 @@ export function mountApp(container: HTMLElement): Cleanup {
           window.alert(error instanceof Error ? error.message : 'Tidak dapat keluar dari aplikasi.');
         }
       };
-      root.render(() => Native.createElement(DashboardPage, { user, onLogout: logout }));
+      root.render(() => Native.createElement(Dashboard, { user, onLogout: logout }));
       const stopIdleSession = startIdleSession(async () => {
         await clearSession();
         await renderLogin();
