@@ -14,12 +14,23 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '012_pmt_baseline_measurements.sql');
+  assert.equal(files.at(-1), '013_align_dashboard_child_total.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
     assert.match(sql, /commit;/, `${file} harus ditutup dengan commit`);
   }
+});
+
+test('dashboard dan daftar balita memakai tanggal acuan umur yang sama', async () => {
+  const migration = await readFile(
+    resolve(root, 'database/migrations/013_align_dashboard_child_total.sql'),
+    'utf8'
+  );
+
+  assert.match(migration, /c\.birth_date <= p_month_end/);
+  assert.match(migration, /c\.birth_date > \(p_month_end - interval '60 months'\)::date/);
+  assert.doesNotMatch(migration, /c\.birth_date <= p_month_start/);
 });
 
 test('kontrak OpenAPI memuat endpoint operasional utama', async () => {

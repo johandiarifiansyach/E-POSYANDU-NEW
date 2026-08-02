@@ -16,6 +16,8 @@ Migrasi `011_operational_audit.sql` menambahkan metadata audit, audit login dan 
 
 Migrasi `012_pmt_baseline_measurements.sql` menyimpan tanggal, berat, dan tinggi awal program PMT agar evaluasi mingguan tidak berubah ketika data balita diperbarui.
 
+Migrasi `013_align_dashboard_child_total.sql` menyamakan tanggal acuan umur dashboard dan daftar balita pada hari terakhir bulan laporan, sehingga nilai S selalu sesuai jumlah balita aktif usia 0-59 bulan.
+
 ## Pemeriksaan
 
 ```sql
