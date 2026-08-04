@@ -78,8 +78,18 @@ const changeHistoryEntries = [
       childId: child.id,
       childName: 'Perubahan Terbaru',
       changedBy: 'Ahli Gizi',
-      changes: [{ field: 'nama', oldValue: 'Nama Lama', newValue: 'Nama Terbaru' }],
+      changes: [{ field: 'hasNIK', oldValue: true, newValue: false }],
       timestamp: '2026-08-01T08:00:00.000Z'
+    }
+  },
+  {
+    id: 'change-empty-legacy',
+    data: {
+      childId: child.id,
+      childName: 'Catatan Lama Tanpa Rincian',
+      changedBy: 'Kader Posyandu',
+      changes: [],
+      timestamp: '2026-08-02T08:00:00.000Z'
     }
   }
 ];
@@ -311,9 +321,14 @@ test('riwayat perubahan selalu menampilkan perubahan terbaru paling atas', async
 
   await expect(page.getByRole('heading', { name: 'Riwayat Perubahan Identitas' })).toBeVisible();
   await expect(page.locator('.apple-list-card h4')).toHaveText([
+    'Catatan Lama Tanpa Rincian',
     'Perubahan Terbaru',
     'Perubahan Lama'
   ]);
+  await expect(page.locator('.change-history-empty-detail')).toContainText('rincian perubahan tidak tersedia');
+  await expect(page.getByText('Kepemilikan NIK')).toBeVisible();
+  await expect(page.getByText('Ya', { exact: true })).toBeVisible();
+  await expect(page.getByText('Tidak', { exact: true })).toBeVisible();
 });
 
 test('sidebar desktop dapat diciutkan menjadi ikon dan dibuka kembali', async ({ page }) => {
@@ -347,7 +362,7 @@ test('sidebar desktop dapat diciutkan menjadi ikon dan dibuka kembali', async ({
   await expect(sidebarLabel).toBeVisible();
   await expect(sidebarBrand).toBeVisible();
   await expect(sidebarBrand).toContainText('E-Posyandu');
-  await expect(sidebarBrand).toContainText('v3.4.1');
+  await expect(sidebarBrand).toContainText('v4.4.3');
   await expect(page.getByRole('button', { name: 'Ringkas Menu', exact: true })).toBeVisible();
   await expect(page.locator('.app-sidebar')).toHaveCSS('width', '280px');
 
@@ -418,12 +433,12 @@ test('header bersih, periode berada di panel data, tema dan footer berfungsi', a
   }
 
   await expect(page.locator('.app-footer')).toContainText('© 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach');
-  const versionButton = page.locator('.app-footer').getByRole('button', { name: 'E-Posyandu v3.4.1' });
+  const versionButton = page.locator('.app-footer').getByRole('button', { name: 'E-Posyandu v4.4.3' });
   await expect(versionButton).toBeVisible();
   await versionButton.click();
   const releaseDialog = page.getByRole('dialog', { name: 'Apa yang Baru' });
   await expect(releaseDialog).toBeVisible();
-  await expect(releaseDialog.getByText('2 Agustus 2026', { exact: true }).first()).toBeVisible();
+  await expect(releaseDialog.getByText('4 Agustus 2026', { exact: true }).first()).toBeVisible();
   await expect(releaseDialog.getByText('v1.0.0', { exact: true })).toBeVisible();
   await releaseDialog.getByRole('button', { name: 'Selesai' }).click();
   await expect(releaseDialog).toBeHidden();

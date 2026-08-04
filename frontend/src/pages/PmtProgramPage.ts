@@ -42,7 +42,9 @@ function categoryIcon(category) {
 }
 
 function numericValue(value) {
-  const number = Number(value);
+  const normalized = String(value ?? '').replace(/,/g, '.').trim();
+  if (!normalized) return null;
+  const number = Number(normalized);
   return Number.isFinite(number) && number > 0 ? number : null;
 }
 

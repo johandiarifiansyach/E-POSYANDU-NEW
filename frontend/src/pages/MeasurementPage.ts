@@ -6,6 +6,22 @@ import { CheckCircle2, ChevronLeft, History, Loader2, Plus, Scale, Trash2 } from
 import { showError, showSuccess } from '../ui/notifications';
 import { appId, Button, calculateGiziStatus, Card, db, formatDate, formatIndoDate, getAgeInMonths, getKBM, InputGroup, KenaikanBadge, Select, StatusBadge } from './DashboardApp';
 const inputClass = 'w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm rounded-xl focus:ring-emerald-500 focus:border-emerald-500 block p-2.5 transition-colors';
+const normalizeDecimalInput = (value) => {
+    const raw = String(value ?? '').trim();
+    let result = '';
+    let hasSeparator = false;
+    for (const char of raw) {
+        if (char >= '0' && char <= '9') {
+            result += char;
+            continue;
+        }
+        if (!hasSeparator && char.trim() !== '') {
+            result += '.';
+            hasSeparator = true;
+        }
+    }
+    return result;
+};
 export default function MeasurementPage({ child, onBack }) {
     const [activeMenu, setActiveMenu] = useState('history');
     const [formData, setFormData] = useState({
@@ -26,6 +42,13 @@ export default function MeasurementPage({ child, onBack }) {
     const [loading, setLoading] = useState(false);
     const [loadingHistory, setLoadingHistory] = useState(true);
     const [deletingMeasurementId, setDeletingMeasurementId] = useState(null);
+    const parseLocaleDecimal = (value) => {
+        const normalized = normalizeDecimalInput(String(value ?? '')).trim();
+        if (!normalized)
+            return null;
+        const parsed = Number(normalized);
+        return Number.isFinite(parsed) ? parsed : null;
+    };
     useEffect(() => {
         if (!child.id) {
             setHistory([]);
@@ -47,7 +70,9 @@ export default function MeasurementPage({ child, onBack }) {
     useEffect(() => {
         if (!formData.bb || !formData.tglUkur)
             return;
-        const currentWeight = parseFloat(String(formData.bb));
+        const currentWeight = parseLocaleDecimal(formData.bb);
+        if (currentWeight === null)
+            return;
         const currentDate = new Date(formData.tglUkur);
         const previousMeasurement = history.find((item) => new Date(item.tglUkur).getTime() < currentDate.getTime());
         if (!previousMeasurement) {
@@ -61,7 +86,9 @@ export default function MeasurementPage({ child, onBack }) {
             setFormData((previous) => ({ ...previous, statusNaik: 'O' }));
             return;
         }
-        const previousWeight = parseFloat(String(previousMeasurement.bb));
+        const previousWeight = parseLocaleDecimal(previousMeasurement.bb);
+        if (previousWeight === null)
+            return;
         const gain = (currentWeight - previousWeight) * 1000;
         const measureAgeInMonths = getAgeInMonths(child.tglLahir, currentDate);
         const minGain = getKBM(measureAgeInMonths);
@@ -121,11 +148,39 @@ export default function MeasurementPage({ child, onBack }) {
         event.preventDefault();
         if (!child.id)
             return;
-        const weight = Number(formData.bb);
+        const formElement = event.currentTarget;
+        const readLiveField = (field, fallback) => {
+            const input = formElement?.querySelector?.(`[name="${field}"]`);
+            const liveValue = typeof input?.value === 'string' ? input.value : '';
+            return liveValue || String(fallback ?? '');
+        };
+        const weight = parseLocaleDecimal(readLiveField('bb', formData.bb));
+        const height = parseLocaleDecimal(readLiveField('tb', formData.tb));
+        const lila = parseLocaleDecimal(readLiveField('lila', formData.lila));
+        const lk = parseLocaleDecimal(readLiveField('lk', formData.lk));
         if (!Number.isFinite(weight) || weight < 0.1 || weight > 60) {
             showError('Berat badan harus diisi dalam kilogram, misalnya 3,2 kg. Jangan masukkan 3200 gram.');
             return;
         }
+        if (!Number.isFinite(height) || height < 10 || height > 220) {
+            showError('Tinggi badan harus diisi desimal yang valid, misalnya 78,5 cm.');
+            return;
+        }
+        if (!Number.isFinite(lila) || lila <= 0 || lila > 50) {
+            showError('LiLa harus diisi desimal yang valid, misalnya 13,2 cm.');
+            return;
+        }
+        if (!Number.isFinite(lk) || lk <= 0 || lk > 80) {
+            showError('Lingkar kepala harus diisi desimal yang valid, misalnya 45,5 cm.');
+            return;
+        }
+        const normalizedPayload = {
+            ...formData,
+            bb: weight,
+            tb: height,
+            lila,
+            lk
+        };
         setLoading(true);
         try {
             await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'measurements'), {
@@ -133,15 +188,15 @@ export default function MeasurementPage({ child, onBack }) {
                 childName: child.nama,
                 posyandu: child.posyandu,
                 desa: child.desa,
-                ...formData,
+                ...normalizedPayload,
                 ageInMonths: ageAtMeasure,
                 createdAt: serverTimestamp()
             });
             await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', child.id), {
-                currentBB: formData.bb,
-                currentTB: formData.tb,
-                currentLILA: formData.lila,
-                currentLK: formData.lk,
+                currentBB: weight,
+                currentTB: height,
+                currentLILA: lila,
+                currentLK: lk,
                 lastMeasurementDate: formData.tglUkur,
                 updatedAt: serverTimestamp()
             });
@@ -192,6 +247,18 @@ export default function MeasurementPage({ child, onBack }) {
     };
     const showVitA = measureDate.getMonth() + 1 === 2 || measureDate.getMonth() + 1 === 8;
     const showAsi = ageAtMeasure >= 0 && ageAtMeasure <= 6;
+    const handleDecimalFieldChange = (field) => (event) => {
+        const normalized = normalizeDecimalInput(event.target.value);
+        setFormData((previous) => ({ ...previous, [field]: normalized }));
+    };
+    const handleDecimalFieldBlur = (field) => () => {
+        setFormData((previous) => {
+            const value = String(previous[field] ?? '');
+            if (!value.endsWith('.'))
+                return previous;
+            return { ...previous, [field]: value.slice(0, -1) };
+        });
+    };
     return (Native.createElement("div", { className: "measurement-page apple-page space-y-6", "data-measurement-page": true },
         Native.createElement("div", { className: "flex flex-col lg:flex-row lg:items-end justify-between gap-4" },
             Native.createElement("div", null,
@@ -280,9 +347,12 @@ export default function MeasurementPage({ child, onBack }) {
                         Native.createElement("input", { type: "text", readOnly: true, className: `${inputClass} bg-slate-100 text-slate-500`, value: formData.caraUkur }))),
                 Native.createElement("div", { className: "measurement-form-panel measurement-anthropometry-panel grid grid-cols-1 sm:grid-cols-2 gap-4" },
                     Native.createElement(InputGroup, { label: "Berat Badan (kg)" },
-                        Native.createElement("input", { required: true, min: "0.1", max: "60", type: "number", step: "0.01", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bb, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat badan dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => event.currentTarget.setCustomValidity(''), onChange: (event) => setFormData({ ...formData, bb: event.target.value }) })),
+                        Native.createElement("input", { name: "bb", required: true, type: "text", inputMode: "decimal", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bb, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat badan dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => {
+                                event.currentTarget.setCustomValidity('');
+                                handleDecimalFieldChange('bb')(event);
+                            }, onChange: handleDecimalFieldChange('bb'), onBlur: handleDecimalFieldBlur('bb') })),
                     Native.createElement(InputGroup, { label: lengthHeightLabel },
-                        Native.createElement("input", { required: true, type: "number", step: "0.1", className: inputClass, value: formData.tb, onChange: (event) => setFormData({ ...formData, tb: event.target.value }) }))),
+                        Native.createElement("input", { name: "tb", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.tb, onInput: handleDecimalFieldChange('tb'), onChange: handleDecimalFieldChange('tb'), onBlur: handleDecimalFieldBlur('tb') }))),
                 Native.createElement("div", { className: "measurement-status-panel" },
                     Native.createElement("div", { className: "measurement-status-grid grid grid-cols-2 lg:grid-cols-4 gap-x-4 gap-y-3 text-xs" },
                         Native.createElement("div", null,
@@ -299,9 +369,9 @@ export default function MeasurementPage({ child, onBack }) {
                             Native.createElement(StatusBadge, { status: statusSummary.imtu })))),
                 Native.createElement("div", { className: "measurement-form-panel measurement-additional-panel grid grid-cols-1 sm:grid-cols-2 gap-4" },
                     Native.createElement(InputGroup, { label: "LiLa (cm)" },
-                        Native.createElement("input", { type: "number", step: "0.1", className: inputClass, value: formData.lila, onChange: (event) => setFormData({ ...formData, lila: event.target.value }) })),
+                        Native.createElement("input", { name: "lila", type: "text", inputMode: "decimal", className: inputClass, value: formData.lila, onInput: handleDecimalFieldChange('lila'), onChange: handleDecimalFieldChange('lila'), onBlur: handleDecimalFieldBlur('lila') })),
                     Native.createElement(InputGroup, { label: "Lingkar Kepala (cm)" },
-                        Native.createElement("input", { type: "number", step: "0.1", className: inputClass, value: formData.lk, onChange: (event) => setFormData({ ...formData, lk: event.target.value }) }))),
+                        Native.createElement("input", { name: "lk", type: "text", inputMode: "decimal", className: inputClass, value: formData.lk, onInput: handleDecimalFieldChange('lk'), onChange: handleDecimalFieldChange('lk'), onBlur: handleDecimalFieldBlur('lk') }))),
                 Native.createElement("input", { type: "hidden", value: formData.statusNaik }),
                 Native.createElement(InputGroup, { label: "Pitting Edema Bilateral" },
                     Native.createElement(Select, { value: formData.edema, onChange: (event) => setFormData({ ...formData, edema: event.target.value }), options: [

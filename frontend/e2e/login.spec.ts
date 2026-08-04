@@ -5,7 +5,7 @@ test('login dapat dipakai dengan keyboard, footer rilis, dan pengaturan password
 
   await expect(page.getByRole('heading', { name: 'E-Posyandu' })).toBeVisible();
   await expect(page.locator('.login-footer p').first()).toHaveText('© 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach');
-  const versionButton = page.getByRole('button', { name: 'E-Posyandu v3.4.1' });
+  const versionButton = page.getByRole('button', { name: 'E-Posyandu v4.4.3' });
   await expect(versionButton).toBeVisible();
   await expect(page.locator('.login-glass-card .login-footer')).toHaveCount(0);
   await expect(page.locator('.login-shell > .login-footer')).toBeVisible();
@@ -27,8 +27,8 @@ test('login dapat dipakai dengan keyboard, footer rilis, dan pengaturan password
   await versionButton.click();
   const releaseDialog = page.getByRole('dialog', { name: 'Apa yang Baru' });
   await expect(releaseDialog).toBeVisible();
-  await expect(releaseDialog.getByText('2 Agustus 2026', { exact: true }).first()).toBeVisible();
-  for (const version of ['v3.4.1', 'v3.4.0', 'v3.3.0', 'v3.0.0', 'v2.4.0', 'v2.0.0', 'v1.0.0']) {
+  await expect(releaseDialog.getByText('4 Agustus 2026', { exact: true }).first()).toBeVisible();
+  for (const version of ['v4.4.3', 'v3.4.1', 'v3.4.0', 'v3.3.0', 'v3.0.0', 'v2.4.0', 'v2.0.0', 'v1.0.0']) {
     await expect(releaseDialog.getByText(version, { exact: true })).toBeVisible();
   }
   await expect(releaseDialog.getByText('6 Januari 2026', { exact: true })).toBeVisible();

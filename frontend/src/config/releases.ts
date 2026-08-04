@@ -11,6 +11,19 @@ export type AppRelease = {
 export const RELEASE_HISTORY: AppRelease[] = [
   {
     version: APP_VERSION,
+    releaseDate: '4 Agustus 2026',
+    releaseDateIso: '2026-08-04',
+    title: 'Input Pengukuran Desimal Stabil di HP',
+    changes: [
+      'Kolom BB dan TB kini stabil di ponsel kader dan tidak lagi tiba-tiba kosong saat mengetik.',
+      'Input desimal menerima format koma maupun titik, lalu diseragamkan otomatis agar tetap valid.',
+      'Keyboard numerik ponsel diprioritaskan untuk input BB/TB agar pengisian lebih cepat.',
+      'Penanganan perubahan nilai BB/TB diperkuat supaya tidak tertimpa re-render saat form aktif.',
+      'Pembaruan cache aplikasi dipercepat agar perbaikan segera terpasang di perangkat yang sebelumnya menyimpan versi lama.'
+    ]
+  },
+  {
+    version: '3.4.1',
     releaseDate: '2 Agustus 2026',
     releaseDateIso: '2026-08-02',
     title: 'Pembaruan dan Perbaikan Sistem',

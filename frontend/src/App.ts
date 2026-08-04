@@ -7,6 +7,7 @@ import {
   signInWithPassword,
   signOut
 } from './api/client';
+import { AppLoadingSkeleton } from './ui/skeleton';
 
 type UserRole = {
   role: string;
@@ -54,35 +55,7 @@ function clearStoredUser() {
 }
 
 function showLoading(container: HTMLElement) {
-  const screen = document.createElement('div');
-  screen.className = 'app-loading-screen';
-  const panel = document.createElement('div');
-  panel.className = 'app-loading-panel';
-  panel.setAttribute('role', 'status');
-  panel.setAttribute('aria-label', 'Memuat aplikasi');
-
-  const logo = document.createElement('img');
-  logo.className = 'app-loading-logo';
-  logo.src = '/logo-puskesmas-32981.svg';
-  logo.alt = '';
-  logo.width = 46;
-  logo.height = 46;
-
-  const copy = document.createElement('div');
-  const title = document.createElement('strong');
-  title.textContent = 'E-Posyandu';
-  const status = document.createElement('span');
-  status.textContent = 'Menyiapkan aplikasi';
-  copy.append(title, status);
-
-  const progress = document.createElement('div');
-  progress.className = 'app-loading-progress';
-  progress.setAttribute('aria-hidden', 'true');
-  progress.append(document.createElement('span'));
-
-  panel.append(logo, copy, progress);
-  screen.append(panel);
-  container.replaceChildren(screen);
+  container.replaceChildren(AppLoadingSkeleton({ message: 'Menyiapkan aplikasi' }) as Node);
 }
 
 function startIdleSession(onExpired: () => Promise<void>): Cleanup {

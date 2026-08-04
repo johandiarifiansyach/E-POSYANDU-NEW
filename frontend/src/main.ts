@@ -1,15 +1,20 @@
 import { mountApp } from './App';
 import { reportClientError } from './api/client';
 import { initializeColorScheme } from './theme/colorScheme';
+import { setupProblemReporter } from './ui/problemReporter';
 import './styles/index.css';
 
 const rootElement = document.getElementById('root');
-const SERVICE_WORKER_CACHE_VERSION = 'v14';
+const SERVICE_WORKER_CACHE_VERSION = 'v21';
 const SERVICE_WORKER_MIGRATION_KEY = 'e-posyandu:service-worker-cache-version';
 
 if (!rootElement) throw new Error('Root element tidak ditemukan.');
 
 initializeColorScheme();
+
+const problemReporter = setupProblemReporter({
+  report: (payload) => reportClientError(payload.error, `${payload.source}.manual`, { suppressErrors: false })
+});
 
 window.addEventListener('error', (event) => {
   if (event.filename) {
@@ -19,15 +24,15 @@ window.addEventListener('error', (event) => {
       return;
     }
   }
+  problemReporter.capture(event.error || new Error(event.message || 'Unhandled window error'), 'window.error');
   void reportClientError(event.error || new Error('Unhandled window error'), 'window.error');
 });
 
 window.addEventListener('unhandledrejection', (event) => {
   const error = event.reason instanceof Error ? event.reason : new Error('Unhandled promise rejection');
+  problemReporter.capture(error, 'window.unhandledrejection');
   void reportClientError(error, 'window.unhandledrejection');
 });
-
-mountApp(rootElement);
 
 async function resetLocalServiceWorker() {
   const registrations = await navigator.serviceWorker.getRegistrations();
@@ -49,7 +54,30 @@ async function removeLegacyServiceWorkerCache() {
   const cacheKeys = await caches.keys();
   await Promise.all(cacheKeys.filter((key) => key.startsWith('e-posyandu-')).map((key) => caches.delete(key)));
   window.localStorage.setItem(SERVICE_WORKER_MIGRATION_KEY, SERVICE_WORKER_CACHE_VERSION);
+
+   if (registrations.length > 0 || navigator.serviceWorker.controller) {
+    window.location.reload();
+    throw new Error('Service worker lama direset. Halaman dimuat ulang.');
+  }
 }
+
+async function bootstrap() {
+  if ('serviceWorker' in navigator && import.meta.env.DEV) {
+    await resetLocalServiceWorker();
+  } else if ('serviceWorker' in navigator) {
+    await removeLegacyServiceWorkerCache();
+  }
+
+  mountApp(rootElement);
+}
+
+void bootstrap().catch((error) => {
+  if (error instanceof Error && error.message === 'Service worker lama direset. Halaman dimuat ulang.') {
+    return;
+  }
+  console.warn('Bootstrap aplikasi gagal bersih:', error);
+  mountApp(rootElement);
+});
 
 if ('serviceWorker' in navigator && import.meta.env.DEV) {
   void resetLocalServiceWorker().catch((error) => {

@@ -585,7 +585,12 @@ function stackFrames(error: unknown): string {
     .slice(0, 1_500);
 }
 
-export async function reportClientError(error: unknown, source: string): Promise<void> {
+export async function reportClientError(
+  error: unknown,
+  source: string,
+  options: { suppressErrors?: boolean } = {}
+): Promise<void> {
+  const suppressErrors = options.suppressErrors ?? true;
   if (!usesFastApi() || !isOnline() || !authState.currentUser?.accessToken) return;
   const name = error instanceof Error ? error.name : 'UnknownError';
   try {
@@ -598,7 +603,9 @@ export async function reportClientError(error: unknown, source: string): Promise
         stackFrames: stackFrames(error)
       })
     });
-  } catch {
+  } catch (reportError) {
+    if (!suppressErrors)
+      throw reportError;
     // Error reporting must never interrupt the user's current task.
   }
 }

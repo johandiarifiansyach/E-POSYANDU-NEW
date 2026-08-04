@@ -5,6 +5,22 @@ import { Baby, CheckCircle2, ChevronLeft, MapPin, UserPlus, UserRound, XCircle }
 import { showSuccess } from '../ui/notifications';
 import { appId, Button, Card, DATA_WILAYAH, db, formatChildName, InputGroup, ROLES, Select } from './DashboardApp';
 const inputClass = 'block w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-sm text-slate-900 transition-colors focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100';
+const normalizeDecimalInput = (value) => {
+    const raw = String(value ?? '').trim();
+    let result = '';
+    let hasSeparator = false;
+    for (const char of raw) {
+        if (char >= '0' && char <= '9') {
+            result += char;
+            continue;
+        }
+        if (!hasSeparator && char.trim() !== '') {
+            result += '.';
+            hasSeparator = true;
+        }
+    }
+    return result;
+};
 function randomDigits(length) {
     const values = new Uint32Array(length);
     if (globalThis.crypto?.getRandomValues)
@@ -66,12 +82,43 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
     const [formData, setFormData] = useState(() => initialFormData(user));
     const [saving, setSaving] = useState(false);
     const [errorMessage, setErrorMessage] = useState(null);
+    const parseLocaleDecimal = (value) => {
+        const normalized = normalizeDecimalInput(value).trim();
+        if (!normalized)
+            return null;
+        const parsed = Number(normalized);
+        return Number.isFinite(parsed) ? parsed : null;
+    };
+    const handleDecimalFieldChange = (field) => (event) => {
+        const normalized = normalizeDecimalInput(event.target.value);
+        setFormData((previous) => ({ ...previous, [field]: normalized }));
+    };
+    const handleDecimalFieldBlur = (field) => () => {
+        setFormData((previous) => {
+            const value = String(previous[field] ?? '');
+            if (!value.endsWith('.'))
+                return previous;
+            return { ...previous, [field]: value.slice(0, -1) };
+        });
+    };
     const handleSubmit = async (event) => {
         event.preventDefault();
         setErrorMessage(null);
+        const formElement = event.currentTarget;
+        const readLiveField = (field, fallback) => {
+            const input = formElement?.querySelector?.(`[name="${field}"]`);
+            const liveValue = typeof input?.value === 'string' ? input.value : '';
+            return liveValue || String(fallback ?? '');
+        };
+        const birthWeight = parseLocaleDecimal(readLiveField('bbLahir', formData.bbLahir));
+        const birthLength = parseLocaleDecimal(readLiveField('pbLahir', formData.pbLahir));
+        const birthHeadCircumference = parseLocaleDecimal(readLiveField('lkLahir', formData.lkLahir));
         const submissionData = {
             ...formData,
             nama: formatChildName(formData.nama),
+            bbLahir: birthWeight ?? '',
+            pbLahir: birthLength ?? '',
+            lkLahir: birthHeadCircumference ?? '',
             noKK: formData.hasKK || /^\d{16}$/.test(formData.noKK) ? formData.noKK : generateTemporaryKk(),
             nik: formData.hasNIK || /^\d{16}$/.test(formData.nik) ? formData.nik : generateTemporaryNik(formData, allChildren)
         };
@@ -83,9 +130,16 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
             setErrorMessage('NIK balita harus berisi 16 digit. Centang Tidak punya NIK untuk membuat nomor sementara.');
             return;
         }
-        const birthWeight = Number(submissionData.bbLahir);
         if (!Number.isFinite(birthWeight) || birthWeight < 0.1 || birthWeight > 10) {
             setErrorMessage('Berat lahir harus diisi dalam kilogram, misalnya 3,2 kg. Jangan masukkan 3200 gram.');
+            return;
+        }
+        if (!Number.isFinite(birthLength) || birthLength < 10 || birthLength > 120) {
+            setErrorMessage('Panjang lahir harus diisi desimal yang valid, misalnya 49,5 cm.');
+            return;
+        }
+        if (!Number.isFinite(birthHeadCircumference) || birthHeadCircumference < 10 || birthHeadCircumference > 80) {
+            setErrorMessage('Lingkar kepala lahir harus diisi desimal yang valid, misalnya 33,2 cm.');
             return;
         }
         setFormData(submissionData);
@@ -184,7 +238,7 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
                             Native.createElement("input", { required: true, type: "text", className: inputClass, value: formData.nama, onChange: (event) => setFormData({ ...formData, nama: formatChildName(event.target.value) }) })),
                         Native.createElement("div", { className: "grid grid-cols-2 gap-4" },
                             Native.createElement(InputGroup, { label: "Anak Ke-" },
-                                Native.createElement("input", { required: true, min: "1", type: "number", className: inputClass, value: formData.anakKe, onChange: (event) => setFormData({ ...formData, anakKe: event.target.value }) })),
+                                Native.createElement("input", { required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.anakKe, onChange: handleDecimalFieldChange('anakKe'), onBlur: handleDecimalFieldBlur('anakKe') })),
                             Native.createElement(InputGroup, { label: "Jenis Kelamin" },
                                 Native.createElement(Select, { required: true, value: formData.jk, onChange: (event) => setFormData({ ...formData, jk: event.target.value }), options: genderOptions }))),
                         Native.createElement(InputGroup, { label: "Tanggal Lahir" },
@@ -193,7 +247,7 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
                                     setFormData((previous) => ({ ...previous, tglLahir, nik: previous.hasNIK ? previous.nik : generateTemporaryNik({ ...previous, tglLahir }, allChildren) }));
                                 } })),
                         Native.createElement(InputGroup, { label: "Usia Kehamilan (Minggu)" },
-                            Native.createElement("input", { required: true, min: "1", type: "number", className: inputClass, value: formData.usiaKehamilan, onChange: (event) => setFormData({ ...formData, usiaKehamilan: event.target.value }) })),
+                            Native.createElement("input", { required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.usiaKehamilan, onChange: handleDecimalFieldChange('usiaKehamilan'), onBlur: handleDecimalFieldBlur('usiaKehamilan') })),
                         Native.createElement("div", { className: "space-y-2" },
                             Native.createElement("div", { className: "flex items-center justify-between gap-3" },
                                 Native.createElement("label", { className: "text-xs font-bold uppercase text-slate-500" }, "No. KK"),
@@ -217,11 +271,14 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
                                     Native.createElement("span", null, "Tidak punya NIK"))),
                             Native.createElement("input", { required: formData.hasNIK, readOnly: !formData.hasNIK, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "NIK balita harus 16 digit", type: "text", className: `${inputClass} font-mono ${!formData.hasNIK ? 'bg-slate-200 text-rose-700' : 'bg-white'}`, value: formData.nik, onChange: (event) => setFormData({ ...formData, nik: event.target.value.replace(/\D/g, '') }) })),
                         Native.createElement(InputGroup, { label: "Berat Lahir (kg)" },
-                            Native.createElement("input", { required: true, min: "0.1", max: "10", type: "number", step: "0.01", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bbLahir, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat lahir dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => event.currentTarget.setCustomValidity(''), onChange: (event) => setFormData({ ...formData, bbLahir: event.target.value }) })),
+                            Native.createElement("input", { name: "bbLahir", required: true, type: "text", inputMode: "decimal", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bbLahir, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat lahir dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => {
+                                    event.currentTarget.setCustomValidity('');
+                                    handleDecimalFieldChange('bbLahir')(event);
+                                }, onChange: handleDecimalFieldChange('bbLahir'), onBlur: handleDecimalFieldBlur('bbLahir') })),
                         Native.createElement(InputGroup, { label: "Panjang Lahir (cm)" },
-                            Native.createElement("input", { required: true, min: "0.1", type: "number", step: "0.1", className: inputClass, value: formData.pbLahir, onChange: (event) => setFormData({ ...formData, pbLahir: event.target.value }) })),
+                            Native.createElement("input", { name: "pbLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.pbLahir, onInput: handleDecimalFieldChange('pbLahir'), onChange: handleDecimalFieldChange('pbLahir'), onBlur: handleDecimalFieldBlur('pbLahir') })),
                         Native.createElement(InputGroup, { label: "Lingkar Kepala (cm)" },
-                            Native.createElement("input", { required: true, min: "0.1", type: "number", step: "0.1", className: inputClass, value: formData.lkLahir, onChange: (event) => setFormData({ ...formData, lkLahir: event.target.value }) })),
+                            Native.createElement("input", { name: "lkLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.lkLahir, onInput: handleDecimalFieldChange('lkLahir'), onChange: handleDecimalFieldChange('lkLahir'), onBlur: handleDecimalFieldBlur('lkLahir') })),
                         Native.createElement(InputGroup, { label: "Buku KIA" },
                             Native.createElement(Select, { required: true, value: formData.bukuKIA, onChange: (event) => setFormData({ ...formData, bukuKIA: event.target.value }), options: yesNoOptions })),
                         Native.createElement(InputGroup, { label: "Buku KIA Kecil" },

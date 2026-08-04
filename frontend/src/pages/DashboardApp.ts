@@ -8,6 +8,7 @@ import { actionTooltipProps } from '../ui/actionTooltip';
 import { Ruler, LogOut, Plus, MapPin, Clock, Baby, XCircle, ChevronDown, ChevronLeft, ChevronRight, Loader2, LayoutDashboard, Users, Trash2, Menu, AlertTriangle, TrendingDown, AlertCircle, Minus, Utensils, Gift, ClipboardCheck, CheckSquare, History, Filter, RotateCcw, UserRound, X, Moon, Sun } from '../ui/icons';
 import { showSuccess } from '../ui/notifications';
 import { openReleaseNotes } from '../ui/releaseNotes';
+import { DashboardPageSkeleton } from '../ui/skeleton';
 export function formatChildName(value) {
     return value
         .toLowerCase()
@@ -161,8 +162,31 @@ export const getAgeInMonths = (birthDateString, refDate = new Date()) => {
     return Math.max(months, 0);
 };
 // --- ANTROPOMETRY: PERMENKES NO. 2 TAHUN 2020 / WHO 0-60 BULAN ---
+const normalizeDecimalInput = (value) => {
+    const raw = String(value ?? '').trim();
+    let result = '';
+    let hasSeparator = false;
+    for (const char of raw) {
+        if (char >= '0' && char <= '9') {
+            result += char;
+            continue;
+        }
+        if (!hasSeparator && char.trim() !== '') {
+            result += '.';
+            hasSeparator = true;
+        }
+    }
+    return result;
+};
+const parseLocaleNumber = (value) => {
+    const normalized = normalizeDecimalInput(value).trim();
+    if (!normalized)
+        return null;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+};
 const toPositiveNumber = (value) => {
-    const numberValue = Number(value);
+    const numberValue = parseLocaleNumber(value);
     return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
 };
 const calculateLmsZScore = (value, [l, m, s]) => {
@@ -454,12 +478,17 @@ const PmtModal = ({ child, category, onClose }) => {
         mitra: '',
         mitraLain: '',
         tglPemberian: formatDate(new Date()),
-        siklusKe: 1,
+        siklusKe: '1',
         pmtSesuaiJuknis: 'Ya'
     });
     const [loading, setLoading] = useState(false);
     const handleSubmit = async (e) => {
         e.preventDefault();
+        const siklusKe = parseLocaleNumber(formData.siklusKe);
+        if (!Number.isFinite(siklusKe) || siklusKe <= 0) {
+            showError('Siklus PMT wajib diisi angka desimal yang valid.');
+            return;
+        }
         setLoading(true);
         try {
             await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'pmt_programs'), {
@@ -471,7 +500,7 @@ const PmtModal = ({ child, category, onClose }) => {
                 mitra: formData.mitra,
                 mitraLain: formData.mitraLain,
                 tglPemberian: formData.tglPemberian,
-                siklusKe: Number(formData.siklusKe),
+                siklusKe,
                 pmtSesuaiJuknis: formData.pmtSesuaiJuknis,
                 status: 'Aktif',
                 initialMeasurementDate: child.lastMeasurementDate || formData.tglPemberian,
@@ -491,6 +520,18 @@ const PmtModal = ({ child, category, onClose }) => {
             setLoading(false);
         }
     };
+    const handleSiklusKeChange = (event) => {
+        const normalized = normalizeDecimalInput(event.target.value);
+        setFormData((previous) => ({ ...previous, siklusKe: normalized }));
+    };
+    const handleSiklusKeBlur = () => {
+        setFormData((previous) => {
+            const value = String(previous.siklusKe ?? '');
+            if (!value.endsWith('.'))
+                return previous;
+            return { ...previous, siklusKe: value.slice(0, -1) };
+        });
+    };
     const pmtInputClass = "ios-liquid-control w-full rounded-xl p-2.5";
     return (Native.createElement("div", { className: "ios-modal-backdrop fixed inset-0 z-50 flex items-center justify-center", "data-pmt-create-modal": "true" },
         Native.createElement("div", { className: "ios-liquid-modal ios-pmt-create-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "pmt-create-title" },
@@ -509,7 +550,7 @@ const PmtModal = ({ child, category, onClose }) => {
                     Native.createElement("strong", null, category)),
                 Native.createElement("div", { className: "ios-form-grid ios-form-grid-two" },
                     Native.createElement(InputGroup, { label: "Siklus Ke-" },
-                        Native.createElement("input", { type: "number", required: true, min: "1", className: pmtInputClass, value: formData.siklusKe, onChange: e => setFormData({ ...formData, siklusKe: Number(e.target.value) }) })),
+                        Native.createElement("input", { type: "text", inputMode: "decimal", required: true, className: pmtInputClass, value: formData.siklusKe, onChange: handleSiklusKeChange, onBlur: handleSiklusKeBlur })),
                     Native.createElement(InputGroup, { label: "Jenis PMT" },
                         Native.createElement(Select, { className: "ios-liquid-control", value: formData.jenisPmt, onChange: e => setFormData({ ...formData, jenisPmt: e.target.value }), options: [{ value: 'Pabrikan', label: 'Pabrikan' }, { value: 'Lokal', label: 'Lokal' }] }))),
                 Native.createElement(InputGroup, { label: "Sumber Anggaran" },
@@ -570,12 +611,18 @@ const PmtMonitoringModal = ({ program, child, onClose }) => {
         try {
             if (!program.id)
                 return;
+            const parsedBb = parseLocaleNumber(data.bb);
+            const parsedTb = parseLocaleNumber(data.tb);
+            if (!Number.isFinite(parsedBb) || !Number.isFinite(parsedTb)) {
+                showError('BB dan TB wajib diisi dengan angka desimal yang valid.');
+                return;
+            }
             const updatedMonitorings = {
                 ...program.monitorings,
                 [week]: {
                     tgl: data.tgl,
-                    bb: parseFloat(data.bb),
-                    tb: parseFloat(data.tb),
+                    bb: parsedBb,
+                    tb: parsedTb,
                     caraUkur: caraUkur,
                     days: data.days,
                     pemantauanKesehatan: data.pemantauanKesehatan,
@@ -595,6 +642,18 @@ const PmtMonitoringModal = ({ program, child, onClose }) => {
         const newDays = [...data.days];
         newDays[idx] = !newDays[idx];
         setData({ ...data, days: newDays });
+    };
+    const handleDecimalChange = (field) => (event) => {
+        const normalized = normalizeDecimalInput(event.target.value);
+        setData((previous) => ({ ...previous, [field]: normalized }));
+    };
+    const handleDecimalBlur = (field) => () => {
+        setData((previous) => {
+            const value = String(previous[field] ?? '');
+            if (!value.endsWith('.'))
+                return previous;
+            return { ...previous, [field]: value.slice(0, -1) };
+        });
     };
     const monitoringInputClass = "ios-liquid-control w-full rounded-xl p-2.5";
     return (Native.createElement("div", { className: "ios-modal-backdrop fixed inset-0 z-50 flex items-center justify-center", "data-pmt-monitoring-modal": "true" },
@@ -617,9 +676,9 @@ const PmtMonitoringModal = ({ program, child, onClose }) => {
                         Native.createElement("input", { type: "date", className: monitoringInputClass, value: data.tgl, onChange: e => setData({ ...data, tgl: e.target.value }) })),
                     Native.createElement("div", { className: "ios-form-grid ios-form-grid-two" },
                         Native.createElement(InputGroup, { label: "Berat Badan (kg)" },
-                            Native.createElement("input", { type: "number", step: "0.01", className: monitoringInputClass, value: data.bb, onChange: e => setData({ ...data, bb: e.target.value }) })),
+                            Native.createElement("input", { type: "text", inputMode: "decimal", className: monitoringInputClass, value: data.bb, onChange: handleDecimalChange('bb'), onBlur: handleDecimalBlur('bb') })),
                         Native.createElement(InputGroup, { label: "Tinggi Badan (cm)" },
-                            Native.createElement("input", { type: "number", step: "0.1", className: monitoringInputClass, value: data.tb, onChange: e => setData({ ...data, tb: e.target.value }) }))),
+                            Native.createElement("input", { type: "text", inputMode: "decimal", className: monitoringInputClass, value: data.tb, onChange: handleDecimalChange('tb'), onBlur: handleDecimalBlur('tb') }))),
                     Native.createElement("div", { className: "ios-modal-context ios-measurement-context" },
                         Native.createElement("span", null, "Cara ukur otomatis"),
                         Native.createElement("strong", null, `${caraUkur} \u2022 ${ageAtMeasure} bulan`)),
@@ -730,6 +789,21 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
     }, [formData.hasNIK, formData.tglLahir, formData.posyandu, isEdit, allChildren, initialData]);
     const handleSubmit = async (e) => {
         e.preventDefault();
+        const formElement = e.currentTarget;
+        const readLiveField = (field, fallback) => {
+            const input = formElement?.querySelector?.(`[name="${field}"]`);
+            const liveValue = typeof input?.value === 'string' ? input.value : '';
+            return liveValue || String(fallback ?? '');
+        };
+        const birthWeight = parseLocaleNumber(readLiveField('bbLahir', formData.bbLahir));
+        const birthLength = parseLocaleNumber(readLiveField('pbLahir', formData.pbLahir));
+        const birthHeadCircumference = parseLocaleNumber(readLiveField('lkLahir', formData.lkLahir));
+        const normalizedFormData = {
+            ...formData,
+            bbLahir: birthWeight ?? '',
+            pbLahir: birthLength ?? '',
+            lkLahir: birthHeadCircumference ?? ''
+        };
         setLoading(true);
         try {
             if (isEdit && initialData && initialData.id) {
@@ -750,20 +824,20 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
                         timestamp: serverTimestamp()
                     });
                 }
-                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', initialData.id), { ...formData, updatedAt: serverTimestamp() });
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', initialData.id), { ...normalizedFormData, updatedAt: serverTimestamp() });
             }
             else {
-                const newChildRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'children'), { ...formData, currentBB: formData.bbLahir, currentTB: formData.pbLahir, currentLK: formData.lkLahir, currentLILA: 0, createdAt: serverTimestamp(), createdBy: user.role, deletedAt: null });
+                const newChildRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'children'), { ...normalizedFormData, currentBB: normalizedFormData.bbLahir, currentTB: normalizedFormData.pbLahir, currentLK: normalizedFormData.lkLahir, currentLILA: 0, createdAt: serverTimestamp(), createdBy: user.role, deletedAt: null });
                 // AUTO-FILL FIRST MEASUREMENT FROM BIRTH DATA
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'measurements'), {
                     childId: newChildRef.id,
-                    childName: formData.nama,
-                    posyandu: formData.posyandu,
-                    desa: formData.desa,
-                    tglUkur: formData.tglLahir, // Use Birth Date
-                    bb: formData.bbLahir, // Use Birth Weight
-                    tb: formData.pbLahir, // Use Birth Length
-                    lk: formData.lkLahir, // Use Birth Head Circumference
+                    childName: normalizedFormData.nama,
+                    posyandu: normalizedFormData.posyandu,
+                    desa: normalizedFormData.desa,
+                    tglUkur: normalizedFormData.tglLahir, // Use Birth Date
+                    bb: normalizedFormData.bbLahir, // Use Birth Weight
+                    tb: normalizedFormData.pbLahir, // Use Birth Length
+                    lk: normalizedFormData.lkLahir, // Use Birth Head Circumference
                     lila: '',
                     edema: 'Tidak',
                     kelasIbu: 'Tidak',
@@ -787,6 +861,18 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
         finally {
             setLoading(false);
         }
+    };
+    const handleDecimalFieldChange = (field) => (event) => {
+        const normalized = normalizeDecimalInput(event.target.value);
+        setFormData((previous) => ({ ...previous, [field]: normalized }));
+    };
+    const handleDecimalFieldBlur = (field) => () => {
+        setFormData((previous) => {
+            const value = String(previous[field] ?? '');
+            if (!value.endsWith('.'))
+                return previous;
+            return { ...previous, [field]: value.slice(0, -1) };
+        });
     };
     const inputClass = "w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm rounded-xl focus:ring-emerald-500 focus:border-emerald-500 block p-2.5 transition-colors";
     return (Native.createElement("div", { className: "fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-md overflow-y-auto" },
@@ -842,7 +928,7 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
                         " ",
                         Native.createElement(InputGroup, { label: "Anak Ke-" },
                             " ",
-                            Native.createElement("input", { required: true, type: "number", className: inputClass, value: formData.anakKe, onChange: e => setFormData({ ...formData, anakKe: e.target.value }) }),
+                            Native.createElement("input", { required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.anakKe, onChange: handleDecimalFieldChange('anakKe'), onBlur: handleDecimalFieldBlur('anakKe') }),
                             " "),
                         " ",
                         Native.createElement(InputGroup, { label: "Jenis Kelamin" },
@@ -861,7 +947,7 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
                     " ",
                     Native.createElement(InputGroup, { label: "Usia Kehamilan (Minggu)" },
                         " ",
-                        Native.createElement("input", { required: true, type: "number", className: inputClass, value: formData.usiaKehamilan, onChange: e => setFormData({ ...formData, usiaKehamilan: e.target.value }) }),
+                        Native.createElement("input", { required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.usiaKehamilan, onChange: handleDecimalFieldChange('usiaKehamilan'), onBlur: handleDecimalFieldBlur('usiaKehamilan') }),
                         " "),
                     " "),
                 " ",
@@ -906,17 +992,17 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
                     " ",
                     Native.createElement(InputGroup, { label: "Berat Lahir (kg)" },
                         " ",
-                        Native.createElement("input", { required: true, type: "number", step: "0.01", className: inputClass, value: formData.bbLahir, onChange: e => setFormData({ ...formData, bbLahir: e.target.value }) }),
+                        Native.createElement("input", { name: "bbLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.bbLahir, onInput: handleDecimalFieldChange('bbLahir'), onChange: handleDecimalFieldChange('bbLahir'), onBlur: handleDecimalFieldBlur('bbLahir') }),
                         " "),
                     " ",
                     Native.createElement(InputGroup, { label: "Panjang Lahir (cm)" },
                         " ",
-                        Native.createElement("input", { required: true, type: "number", step: "0.1", className: inputClass, value: formData.pbLahir, onChange: e => setFormData({ ...formData, pbLahir: e.target.value }) }),
+                        Native.createElement("input", { name: "pbLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.pbLahir, onInput: handleDecimalFieldChange('pbLahir'), onChange: handleDecimalFieldChange('pbLahir'), onBlur: handleDecimalFieldBlur('pbLahir') }),
                         " "),
                     " ",
                     Native.createElement(InputGroup, { label: "Lingkar Kepala (cm)" },
                         " ",
-                        Native.createElement("input", { required: true, type: "number", step: "0.1", className: inputClass, value: formData.lkLahir, onChange: e => setFormData({ ...formData, lkLahir: e.target.value }) }),
+                        Native.createElement("input", { name: "lkLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.lkLahir, onInput: handleDecimalFieldChange('lkLahir'), onChange: handleDecimalFieldChange('lkLahir'), onBlur: handleDecimalFieldBlur('lkLahir') }),
                         " "),
                     " "),
                 " ",
@@ -1057,8 +1143,35 @@ const AddChildModal = ({ user, onClose, onSuccess, initialData = null, isEdit = 
         }
         setFormData((previous) => ({ ...previous, nik: generatedNik }));
     }, [allChildren, formData.hasNIK, formData.posyandu, formData.tglLahir, initialData?.id]);
+    const handleDecimalFieldChange = (field) => (event) => {
+        const normalized = normalizeDecimalInput(event.target.value);
+        setFormData((previous) => ({ ...previous, [field]: normalized }));
+    };
+    const handleDecimalFieldBlur = (field) => () => {
+        setFormData((previous) => {
+            const value = String(previous[field] ?? '');
+            if (!value.endsWith('.'))
+                return previous;
+            return { ...previous, [field]: value.slice(0, -1) };
+        });
+    };
     const handleSubmit = async (event) => {
         event.preventDefault();
+        const formElement = event.currentTarget;
+        const readLiveField = (field, fallback) => {
+            const input = formElement?.querySelector?.(`[name="${field}"]`);
+            const liveValue = typeof input?.value === 'string' ? input.value : '';
+            return liveValue || String(fallback ?? '');
+        };
+        const birthWeight = parseLocaleNumber(readLiveField('bbLahir', formData.bbLahir));
+        const birthLength = parseLocaleNumber(readLiveField('pbLahir', formData.pbLahir));
+        const birthHeadCircumference = parseLocaleNumber(readLiveField('lkLahir', formData.lkLahir));
+        const normalizedFormData = {
+            ...formData,
+            bbLahir: birthWeight ?? '',
+            pbLahir: birthLength ?? '',
+            lkLahir: birthHeadCircumference ?? ''
+        };
         setLoading(true);
         try {
             if (isEdit && initialData?.id) {
@@ -1081,16 +1194,16 @@ const AddChildModal = ({ user, onClose, onSuccess, initialData = null, isEdit = 
                     });
                 }
                 await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', initialData.id), {
-                    ...formData,
+                    ...normalizedFormData,
                     updatedAt: serverTimestamp()
                 });
             }
             else {
                 const newChildRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'children'), {
-                    ...formData,
-                    currentBB: formData.bbLahir,
-                    currentTB: formData.pbLahir,
-                    currentLK: formData.lkLahir,
+                    ...normalizedFormData,
+                    currentBB: normalizedFormData.bbLahir,
+                    currentTB: normalizedFormData.pbLahir,
+                    currentLK: normalizedFormData.lkLahir,
                     currentLILA: 0,
                     createdAt: serverTimestamp(),
                     createdBy: user.role,
@@ -1098,13 +1211,13 @@ const AddChildModal = ({ user, onClose, onSuccess, initialData = null, isEdit = 
                 });
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'measurements'), {
                     childId: newChildRef.id,
-                    childName: formData.nama,
-                    posyandu: formData.posyandu,
-                    desa: formData.desa,
-                    tglUkur: formData.tglLahir,
-                    bb: formData.bbLahir,
-                    tb: formData.pbLahir,
-                    lk: formData.lkLahir,
+                    childName: normalizedFormData.nama,
+                    posyandu: normalizedFormData.posyandu,
+                    desa: normalizedFormData.desa,
+                    tglUkur: normalizedFormData.tglLahir,
+                    bb: normalizedFormData.bbLahir,
+                    tb: normalizedFormData.pbLahir,
+                    lk: normalizedFormData.lkLahir,
                     lila: '',
                     edema: 'Tidak',
                     kelasIbu: 'Tidak',
@@ -1169,13 +1282,13 @@ const AddChildModal = ({ user, onClose, onSuccess, initialData = null, isEdit = 
                             Native.createElement("input", { required: true, type: "text", className: inputClass, value: formData.nama, onChange: (event) => setFormData({ ...formData, nama: formatChildName(event.target.value) }) })),
                         Native.createElement("div", { className: "grid grid-cols-2 gap-4" },
                             Native.createElement(InputGroup, { label: "Anak Ke-" },
-                                Native.createElement("input", { required: true, min: "1", type: "number", className: inputClass, value: formData.anakKe, onChange: (event) => setFormData({ ...formData, anakKe: event.target.value }) })),
+                                Native.createElement("input", { required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.anakKe, onChange: handleDecimalFieldChange('anakKe'), onBlur: handleDecimalFieldBlur('anakKe') })),
                             Native.createElement(InputGroup, { label: "Jenis Kelamin" },
                                 Native.createElement(Select, { required: true, value: formData.jk, onChange: (event) => setFormData({ ...formData, jk: event.target.value }), options: genderOptions }))),
                         Native.createElement(InputGroup, { label: "Tanggal Lahir" },
                             Native.createElement("input", { required: true, type: "date", className: inputClass, value: formData.tglLahir, onChange: (event) => setFormData({ ...formData, tglLahir: event.target.value }) })),
                         Native.createElement(InputGroup, { label: "Usia Kehamilan (Minggu)" },
-                            Native.createElement("input", { required: true, min: "1", type: "number", className: inputClass, value: formData.usiaKehamilan, onChange: (event) => setFormData({ ...formData, usiaKehamilan: event.target.value }) })),
+                            Native.createElement("input", { required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.usiaKehamilan, onChange: handleDecimalFieldChange('usiaKehamilan'), onBlur: handleDecimalFieldBlur('usiaKehamilan') })),
                         Native.createElement("div", { className: "space-y-2" },
                             Native.createElement("div", { className: "flex items-center justify-between gap-3" },
                                 Native.createElement("label", { className: "block text-xs font-bold text-slate-500 uppercase tracking-wider" }, "No. KK"),
@@ -1194,11 +1307,14 @@ const AddChildModal = ({ user, onClose, onSuccess, initialData = null, isEdit = 
                     Native.createElement("h3", { className: "font-semibold text-slate-800" }, "Data Kelahiran"),
                     Native.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-4" },
                         Native.createElement(InputGroup, { label: "Berat Lahir (kg)" },
-                            Native.createElement("input", { required: true, min: "0.1", max: "10", type: "number", step: "0.01", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bbLahir, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat lahir dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => event.currentTarget.setCustomValidity(''), onChange: (event) => setFormData({ ...formData, bbLahir: event.target.value }) })),
+                            Native.createElement("input", { name: "bbLahir", required: true, type: "text", inputMode: "decimal", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bbLahir, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat lahir dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => {
+                                    event.currentTarget.setCustomValidity('');
+                                    handleDecimalFieldChange('bbLahir')(event);
+                                }, onChange: handleDecimalFieldChange('bbLahir'), onBlur: handleDecimalFieldBlur('bbLahir') })),
                         Native.createElement(InputGroup, { label: "Panjang Lahir (cm)" },
-                            Native.createElement("input", { required: true, min: "0.1", type: "number", step: "0.1", className: inputClass, value: formData.pbLahir, onChange: (event) => setFormData({ ...formData, pbLahir: event.target.value }) })),
+                            Native.createElement("input", { name: "pbLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.pbLahir, onInput: handleDecimalFieldChange('pbLahir'), onChange: handleDecimalFieldChange('pbLahir'), onBlur: handleDecimalFieldBlur('pbLahir') })),
                         Native.createElement(InputGroup, { label: "Lingkar Kepala (cm)" },
-                            Native.createElement("input", { required: true, min: "0.1", type: "number", step: "0.1", className: inputClass, value: formData.lkLahir, onChange: (event) => setFormData({ ...formData, lkLahir: event.target.value }) }))),
+                            Native.createElement("input", { name: "lkLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.lkLahir, onInput: handleDecimalFieldChange('lkLahir'), onChange: handleDecimalFieldChange('lkLahir'), onBlur: handleDecimalFieldBlur('lkLahir') }))),
                     Native.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-4" },
                         Native.createElement(InputGroup, { label: "Buku KIA" },
                             Native.createElement(Select, { required: true, value: formData.bukuKIA, onChange: (event) => setFormData({ ...formData, bukuKIA: event.target.value }), options: yesNoOptions })),
@@ -1264,7 +1380,9 @@ const MeasurementModal = ({ child, onClose }) => {
     useEffect(() => {
         if (!formData.bb || !formData.tglUkur)
             return;
-        const currentWeight = parseFloat(String(formData.bb));
+        const currentWeight = parseLocaleNumber(formData.bb);
+        if (currentWeight === null)
+            return;
         const currentDate = new Date(formData.tglUkur);
         const prevMeasurement = history.find((m) => new Date(m.tglUkur).getTime() < currentDate.getTime());
         if (!prevMeasurement) {
@@ -1278,7 +1396,9 @@ const MeasurementModal = ({ child, onClose }) => {
             setFormData((prev) => ({ ...prev, statusNaik: 'O' }));
             return;
         }
-        const prevWeight = parseFloat(String(prevMeasurement.bb));
+        const prevWeight = parseLocaleNumber(prevMeasurement.bb);
+        if (prevWeight === null)
+            return;
         const gain = (currentWeight - prevWeight) * 1000;
         const measureAgeInMonths = getAgeInMonths(child.tglLahir, currentDate);
         const minGain = getKBM(measureAgeInMonths);
@@ -1327,6 +1447,23 @@ const MeasurementModal = ({ child, onClose }) => {
     };
     const handleSubmit = async (e) => {
         e.preventDefault();
+        const formElement = e.currentTarget;
+        const readLiveField = (field, fallback) => {
+            const input = formElement?.querySelector?.(`[name="${field}"]`);
+            const liveValue = typeof input?.value === 'string' ? input.value : '';
+            return liveValue || String(fallback ?? '');
+        };
+        const weight = parseLocaleNumber(readLiveField('bb', formData.bb));
+        const height = parseLocaleNumber(readLiveField('tb', formData.tb));
+        const lila = parseLocaleNumber(readLiveField('lila', formData.lila));
+        const lk = parseLocaleNumber(readLiveField('lk', formData.lk));
+        const normalizedPayload = {
+            ...formData,
+            bb: weight ?? formData.bb,
+            tb: height ?? formData.tb,
+            lila: lila ?? formData.lila,
+            lk: lk ?? formData.lk
+        };
         setLoading(true);
         try {
             await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'measurements'), {
@@ -1334,16 +1471,16 @@ const MeasurementModal = ({ child, onClose }) => {
                 childName: child.nama,
                 posyandu: child.posyandu,
                 desa: child.desa,
-                ...formData,
+                ...normalizedPayload,
                 ageInMonths: ageAtMeasure,
                 createdAt: serverTimestamp()
             });
             if (child.id) {
                 await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', child.id), {
-                    currentBB: formData.bb,
-                    currentTB: formData.tb,
-                    currentLILA: formData.lila,
-                    currentLK: formData.lk,
+                    currentBB: normalizedPayload.bb,
+                    currentTB: normalizedPayload.tb,
+                    currentLILA: normalizedPayload.lila,
+                    currentLK: normalizedPayload.lk,
                     lastMeasurementDate: formData.tglUkur,
                     updatedAt: serverTimestamp()
                 });
@@ -1360,6 +1497,18 @@ const MeasurementModal = ({ child, onClose }) => {
     const inputClass = 'w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm rounded-xl focus:ring-emerald-500 focus:border-emerald-500 block p-2.5 transition-colors';
     const showVitA = measureDate.getMonth() + 1 === 2 || measureDate.getMonth() + 1 === 8;
     const showAsi = ageAtMeasure >= 0 && ageAtMeasure <= 6;
+    const handleDecimalFieldChange = (field) => (event) => {
+        const normalized = normalizeDecimalInput(event.target.value);
+        setFormData((previous) => ({ ...previous, [field]: normalized }));
+    };
+    const handleDecimalFieldBlur = (field) => () => {
+        setFormData((previous) => {
+            const value = String(previous[field] ?? '');
+            if (!value.endsWith('.'))
+                return previous;
+            return { ...previous, [field]: value.slice(0, -1) };
+        });
+    };
     return (Native.createElement("div", { className: "fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-md overflow-y-auto" },
         Native.createElement("div", { className: "bg-white rounded-3xl shadow-2xl w-full max-w-6xl max-h-[90vh] overflow-y-auto" },
             Native.createElement("div", { className: "bg-emerald-600 p-6 rounded-t-3xl text-white flex justify-between items-start" },
@@ -1421,19 +1570,19 @@ const MeasurementModal = ({ child, onClose }) => {
                             }))))))) : (Native.createElement("form", { onSubmit: handleSubmit, className: "space-y-6" },
                     Native.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
                         Native.createElement(InputGroup, { label: "Tanggal Pengukuran" },
-                            Native.createElement("input", { required: true, type: "date", className: inputClass, value: formData.tglUkur, onChange: (e) => setFormData({ ...formData, tglUkur: e.target.value }) })),
+                              Native.createElement("input", { required: true, type: "date", className: inputClass, value: formData.tglUkur, onChange: (e) => setFormData((previous) => ({ ...previous, tglUkur: e.target.value })) })),
                         Native.createElement(InputGroup, { label: "Cara Ukur" },
                             Native.createElement("input", { type: "text", readOnly: true, className: `${inputClass} bg-slate-100 text-slate-500`, value: formData.caraUkur }))),
                     Native.createElement("div", { className: "grid grid-cols-2 gap-4" },
                         Native.createElement(InputGroup, { label: "Berat Badan (kg)" },
-                            Native.createElement("input", { required: true, type: "number", step: "0.01", className: inputClass, value: formData.bb, onChange: (e) => setFormData({ ...formData, bb: e.target.value }) })),
+                            Native.createElement("input", { name: "bb", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.bb, onInput: handleDecimalFieldChange('bb'), onChange: handleDecimalFieldChange('bb'), onBlur: handleDecimalFieldBlur('bb') })),
                         Native.createElement(InputGroup, { label: "Tinggi Badan (cm)" },
-                            Native.createElement("input", { required: true, type: "number", step: "0.1", className: inputClass, value: formData.tb, onChange: (e) => setFormData({ ...formData, tb: e.target.value }) }))),
+                            Native.createElement("input", { name: "tb", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.tb, onInput: handleDecimalFieldChange('tb'), onChange: handleDecimalFieldChange('tb'), onBlur: handleDecimalFieldBlur('tb') }))),
                     Native.createElement("div", { className: "grid grid-cols-2 gap-4" },
                         Native.createElement(InputGroup, { label: "LiLa (cm)" },
-                            Native.createElement("input", { type: "number", step: "0.1", className: inputClass, value: formData.lila, onChange: (e) => setFormData({ ...formData, lila: e.target.value }) })),
+                            Native.createElement("input", { name: "lila", type: "text", inputMode: "decimal", className: inputClass, value: formData.lila, onInput: handleDecimalFieldChange('lila'), onChange: handleDecimalFieldChange('lila'), onBlur: handleDecimalFieldBlur('lila') })),
                         Native.createElement(InputGroup, { label: "Lingkar Kepala (cm)" },
-                            Native.createElement("input", { type: "number", step: "0.1", className: inputClass, value: formData.lk, onChange: (e) => setFormData({ ...formData, lk: e.target.value }) }))),
+                            Native.createElement("input", { name: "lk", type: "text", inputMode: "decimal", className: inputClass, value: formData.lk, onInput: handleDecimalFieldChange('lk'), onChange: handleDecimalFieldChange('lk'), onBlur: handleDecimalFieldBlur('lk') }))),
                     Native.createElement("input", { type: "hidden", value: formData.statusNaik }),
                     Native.createElement(InputGroup, { label: "Pitting Edema Bilateral" },
                         Native.createElement(Select, { value: formData.edema, onChange: (e) => setFormData({ ...formData, edema: e.target.value }), options: [
@@ -2660,9 +2809,7 @@ export const Dashboard = ({ user, onLogout }) => {
                     Native.createElement("p", { className: "text-sm font-medium" }, errorMsg))),
                 activeTab !== 'add_child' && activeTab !== 'measurement' && activeTab !== 'change_history' && (Native.createElement("div", { className: "mb-6" },
                     Native.createElement(LocationFilterPanel, { draftDesa: draftDesa, draftPosyandu: draftPosyandu, filterMonth: filterMonth, filterYear: filterYear, onApply: handleApplyLocationFilter, onReset: handleResetLocationFilter, role: user.role, setDraftDesa: setDraftDesa, setDraftPosyandu: setDraftPosyandu, setFilterMonth: setFilterMonth, setFilterYear: setFilterYear, user: user }))),
-                Native.createElement(Native.Suspense, { fallback: Native.createElement("div", { className: "py-12 text-center text-slate-400" },
-                        Native.createElement(Loader2, { className: "w-8 h-8 animate-spin mx-auto mb-2" }),
-                        "Memuat Halaman...") }, activeTab === 'add_child' ? (Native.createElement(AddChildPage, { allChildren: children, onBack: handleBackFromAddChild, onSuccess: handleBackFromAddChild, user: user })) : activeTab === 'measurement' ? (measurementChild ? (Native.createElement(MeasurementPage, { child: measurementChild, onBack: handleBackFromMeasurement })) : (Native.createElement(Card, { className: "p-8 text-center text-slate-500" }, loading ? 'Memuat data balita...' : 'Data balita tidak ditemukan atau tidak dapat diakses.'))) : activeTab === 'dashboard' ? (Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'asi_eksklusif' ? (Native.createElement(ExclusiveBreastfeedingPage, { filterMonth: filterMonth, filterYear: filterYear, refreshKey: dataRevision, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'pmt_program' ? (Native.createElement(PmtProgramPage, { childrenData: children, pmtPrograms: pmtPrograms, onExportPmt: handleExportPmt, onDeleteProgram: handleDeletePmt, onOpenMonitoring: handleOpenPmtMonitoring })) : activeTab === 'change_history' ? (Native.createElement(ChangeHistoryPage, { changeLogs: changeLogs })) : (Native.createElement(ChildrenTablePage, { activeTab: activeTab, currentFilterDate: currentFilterDate, currentPage: currentPage, displayData: tableDisplayData, fileInputRef: fileInputRef, filterMonth: filterMonth, filterYear: filterYear, handleExportMpasi: handleExportMpasi, handleExportPengukuranSigizi: handleExportPengukuranSigizi, handleExportSigizi: handleExportSigizi, handleExportTable: handleExportTable, handleImportIdentitas: handleImportIdentitas, handlePermanentDelete: handlePermanentDelete, handleRestore: handleRestore, itemsPerPage: itemsPerPage, loading: tableLoading, monthlyMeasurements: tableMeasurements, mpasiLogs: tableMpasiLogs, paginatedData: tablePaginatedData, searchTerm: searchTerm, searchDraft: searchDraft, setChildToDelete: setChildToDelete, setChildToMpasi: setChildToMpasi, setCurrentPage: setCurrentPage, onEditChild: handleOpenEditChild, setPmtModalData: setPmtModalData, setSearchDraft: setSearchDraft, onClearSearch: handleClearSearch, onSubmitSearch: handleSearchSubmit, onOpenMeasurement: handleOpenMeasurementPage, onOpenAddChild: handleOpenAddChildPage, setSortOrder: setSortOrder, sortOrder: sortOrder, totalDataCount: tableTotalCount, user: user })))),
+                Native.createElement(Native.Suspense, { fallback: Native.createElement(DashboardPageSkeleton, null) }, activeTab === 'add_child' ? (Native.createElement(AddChildPage, { allChildren: children, onBack: handleBackFromAddChild, onSuccess: handleBackFromAddChild, user: user })) : activeTab === 'measurement' ? (measurementChild ? (Native.createElement(MeasurementPage, { child: measurementChild, onBack: handleBackFromMeasurement })) : (Native.createElement(Card, { className: "p-8 text-center text-slate-500" }, loading ? 'Memuat data balita...' : 'Data balita tidak ditemukan atau tidak dapat diakses.'))) : activeTab === 'dashboard' ? (Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'asi_eksklusif' ? (Native.createElement(ExclusiveBreastfeedingPage, { filterMonth: filterMonth, filterYear: filterYear, refreshKey: dataRevision, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'pmt_program' ? (Native.createElement(PmtProgramPage, { childrenData: children, pmtPrograms: pmtPrograms, onExportPmt: handleExportPmt, onDeleteProgram: handleDeletePmt, onOpenMonitoring: handleOpenPmtMonitoring })) : activeTab === 'change_history' ? (Native.createElement(ChangeHistoryPage, { changeLogs: changeLogs })) : (Native.createElement(ChildrenTablePage, { activeTab: activeTab, currentFilterDate: currentFilterDate, currentPage: currentPage, displayData: tableDisplayData, fileInputRef: fileInputRef, filterMonth: filterMonth, filterYear: filterYear, handleExportMpasi: handleExportMpasi, handleExportPengukuranSigizi: handleExportPengukuranSigizi, handleExportSigizi: handleExportSigizi, handleExportTable: handleExportTable, handleImportIdentitas: handleImportIdentitas, handlePermanentDelete: handlePermanentDelete, handleRestore: handleRestore, itemsPerPage: itemsPerPage, loading: tableLoading, monthlyMeasurements: tableMeasurements, mpasiLogs: tableMpasiLogs, paginatedData: tablePaginatedData, searchTerm: searchTerm, searchDraft: searchDraft, setChildToDelete: setChildToDelete, setChildToMpasi: setChildToMpasi, setCurrentPage: setCurrentPage, onEditChild: handleOpenEditChild, setPmtModalData: setPmtModalData, setSearchDraft: setSearchDraft, onClearSearch: handleClearSearch, onSubmitSearch: handleSearchSubmit, onOpenMeasurement: handleOpenMeasurementPage, onOpenAddChild: handleOpenAddChildPage, setSortOrder: setSortOrder, sortOrder: sortOrder, totalDataCount: tableTotalCount, user: user })))),
             Native.createElement("footer", { className: "app-footer" },
                 Native.createElement("p", null, "\u00A9 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach"),
                 Native.createElement("button", { type: "button", className: "app-version-button", onClick: openReleaseNotes, "aria-haspopup": "dialog", title: "Lihat apa yang baru" }, `E-Posyandu v${APP_VERSION}`))),

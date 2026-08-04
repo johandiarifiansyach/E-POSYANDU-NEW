@@ -1,7 +1,8 @@
 // @ts-nocheck
 import Native from '../runtime/dom';
 import IosPagination from '../components/IosPagination';
-import { ChevronDown, FileDown, FileText, FileUp, Filter, Gift, Loader2, Pencil, Plus, RotateCcw, Ruler, Search, Trash2, Utensils, X } from '../ui/icons';
+import { ChevronDown, FileDown, FileText, FileUp, Filter, Gift, Pencil, Plus, RotateCcw, Ruler, Search, Trash2, Utensils, X } from '../ui/icons';
+import { TableLoadingSkeleton } from '../ui/skeleton';
 import { Badge, Button, calculateGiziStatus, Card, formatIndoDate, getAgeInMonths, KenaikanBadge, MONTHS, ROLES, StatusBadge } from './DashboardApp';
 function getPageTitle(activeTab, filterMonth, filterYear) {
     if (activeTab === 'recycle_bin')
@@ -151,10 +152,7 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                                     Native.createElement("br", null),
                                     "IMT/U"))),
                             Native.createElement("th", { className: "px-4 py-3 text-center text-[10px] font-bold text-slate-500 uppercase tracking-wider" }, "Aksi"))),
-                    Native.createElement("tbody", { className: "bg-white divide-y divide-slate-100" }, loading ? (Native.createElement("tr", null,
-                        Native.createElement("td", { colSpan: 15, className: "px-6 py-12 text-center text-slate-400" },
-                            Native.createElement(Loader2, { className: "w-8 h-8 animate-spin mx-auto mb-2" }),
-                            "Memuat Data..."))) : paginatedData.length === 0 ? (Native.createElement("tr", null,
+                    Native.createElement("tbody", { className: "bg-white divide-y divide-slate-100" }, loading ? (Native.createElement(TableLoadingSkeleton, { columnCount: 15 })) : paginatedData.length === 0 ? (Native.createElement("tr", null,
                         Native.createElement("td", { colSpan: 15, className: "px-6 py-12 text-center text-slate-400" }, "Tidak ada data ditemukan"))) : (paginatedData.map((child, index) => {
                         if (!child.id)
                             return null;

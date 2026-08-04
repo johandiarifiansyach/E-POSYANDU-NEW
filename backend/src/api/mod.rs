@@ -17,6 +17,32 @@ enum Resource {
 const DASHBOARD_CACHE_TTL_SECONDS: u64 = 60;
 const DASHBOARD_CACHE_VERSION_KEY: &str = "dashboard:version:v1";
 const FEATURE_FLAGS_KEY: &str = "feature:flags:v1";
+const CHANGE_AUDIT_MAX_DISTANCE_MS: f64 = 5.0 * 60.0 * 1_000.0;
+const IDENTITY_CHANGE_FIELDS: [&str; 23] = [
+    "nama",
+    "nik",
+    "anakKe",
+    "tglLahir",
+    "jk",
+    "noKK",
+    "hasKK",
+    "hasNIK",
+    "usiaKehamilan",
+    "bbLahir",
+    "pbLahir",
+    "lkLahir",
+    "bukuKIA",
+    "bukuKIAKecil",
+    "imd",
+    "namaOrtu",
+    "nikOrtu",
+    "noHpOrtu",
+    "alamat",
+    "rt",
+    "rw",
+    "desa",
+    "posyandu",
+];
 
 impl Resource {
     fn parse(value: &str) -> Option<Self> {
@@ -122,6 +148,52 @@ fn nullable_value(value: Option<&Value>) -> Value {
     value.cloned().unwrap_or(Value::Null)
 }
 
+fn identity_changes(before: Option<&Value>, after: Option<&Value>) -> Vec<Value> {
+    let before = before.and_then(Value::as_object);
+    let after = after.and_then(Value::as_object);
+    IDENTITY_CHANGE_FIELDS
+        .iter()
+        .filter_map(|field| {
+            let old_value = before
+                .and_then(|data| data.get(*field))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let new_value = after
+                .and_then(|data| data.get(*field))
+                .cloned()
+                .unwrap_or(Value::Null);
+            (old_value != new_value).then(|| {
+                json!({
+                    "field": field,
+                    "oldValue": old_value,
+                    "newValue": new_value,
+                })
+            })
+        })
+        .collect()
+}
+
+fn change_entries_from_payload(data: &Map<String, Value>) -> Vec<Value> {
+    data.get("changes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter_map(|change| {
+            let field = string_value(change.get("field"));
+            let old_value = nullable_value(change.get("oldValue"));
+            let new_value = nullable_value(change.get("newValue"));
+            (!field.trim().is_empty() && old_value != new_value).then(|| {
+                json!({
+                    "field": field,
+                    "oldValue": old_value,
+                    "newValue": new_value,
+                })
+            })
+        })
+        .collect()
+}
+
 fn bool_value(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(value)) => *value,
@@ -135,10 +207,39 @@ fn bool_value(value: Option<&Value>) -> bool {
     }
 }
 
+fn normalize_decimal_text(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut has_separator = false;
+    for character in value.trim().chars() {
+        if character.is_ascii_digit() {
+            normalized.push(character);
+            continue;
+        }
+        if character == '-' && normalized.is_empty() {
+            normalized.push('-');
+            continue;
+        }
+        if !has_separator
+            && matches!(character, '.' | ',' | '\u{066B}' | '\u{066C}' | '\u{FF0C}' | '\u{FE50}' | '\u{FF0E}')
+        {
+            normalized.push('.');
+            has_separator = true;
+        }
+    }
+    normalized
+}
+
 fn number_value(value: Option<&Value>) -> Option<f64> {
     match value {
         Some(Value::Number(value)) => value.as_f64(),
-        Some(Value::String(value)) => value.trim().parse::<f64>().ok(),
+        Some(Value::String(value)) => {
+            let normalized = normalize_decimal_text(value);
+            if normalized.is_empty() || normalized == "-" {
+                None
+            } else {
+                normalized.parse::<f64>().ok()
+            }
+        }
         _ => None,
     }
 }
@@ -788,6 +889,97 @@ fn safe_client_error_field(value: Option<&Value>, max_chars: usize) -> String {
         .collect()
 }
 
+fn optional_env(env: &Env, name: &str) -> Option<String> {
+    env.secret(name)
+        .ok()
+        .or_else(|| env.var(name).ok())
+        .map(|value| value.to_string())
+        .filter(|value| !value.trim().is_empty())
+}
+
+async fn send_client_error_email(
+    env: &Env,
+    scope: &AccessScope,
+    request_id: &str,
+    source: &str,
+    error_type: &str,
+    route: &str,
+    stack_frames: &str,
+) {
+    let Some(api_key) = optional_env(env, "RESEND_API_KEY") else {
+        return;
+    };
+    let Some(email_to) = optional_env(env, "ERROR_REPORT_EMAIL_TO") else {
+        return;
+    };
+    let Some(email_from) = optional_env(env, "ERROR_REPORT_EMAIL_FROM") else {
+        return;
+    };
+
+    let environment = env
+        .var("ENVIRONMENT")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "unknown".into());
+    let subject = format!(
+        "[E-Posyandu][{environment}] Laporan Error Frontend {error_type} ({source})"
+    );
+    let text = format!(
+        "Terjadi error frontend dan pengguna menekan Laporkan Masalah.\n\nrequest_id: {request_id}\nuser_id: {}\nrole: {}\nsource: {source}\nroute: {route}\nerror_type: {error_type}\n\nstack_frames:\n{stack_frames}\n",
+        scope.user_id, scope.role
+    );
+
+    let body = json!({
+        "from": email_from,
+        "to": [email_to],
+        "subject": subject,
+        "text": text,
+    });
+
+    let headers = Headers::new();
+    if headers.set("Authorization", &format!("Bearer {api_key}")).is_err() {
+        return;
+    }
+    if headers.set("Content-Type", "application/json").is_err() {
+        return;
+    }
+
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post);
+    init.with_headers(headers);
+    init.with_body(Some(JsValue::from_str(&body.to_string())));
+
+    let Ok(request) = Request::new_with_init("https://api.resend.com/emails", &init) else {
+        return;
+    };
+    match Fetch::Request(request).send().await {
+        Ok(response) if response.status_code() < 400 => {}
+        Ok(response) => {
+            worker::console_log!(
+                "{}",
+                json!({
+                    "level": "warn",
+                    "event": "client_error_email_failed",
+                    "status": response.status_code(),
+                    "request_id": request_id,
+                    "environment": environment,
+                })
+            );
+        }
+        Err(error) => {
+            worker::console_log!(
+                "{}",
+                json!({
+                    "level": "warn",
+                    "event": "client_error_email_failed",
+                    "error": format!("{error:?}"),
+                    "request_id": request_id,
+                    "environment": environment,
+                })
+            );
+        }
+    }
+}
+
 async fn client_error(mut request: Request, env: &Env) -> ApiResult<Value> {
     let scope = require_scope(&request, env).await?;
     let (request_id, _) = mutation_request_metadata(&request);
@@ -814,6 +1006,16 @@ async fn client_error(mut request: Request, env: &Env) -> ApiResult<Value> {
             "environment": env.var("ENVIRONMENT").map(|value| value.to_string()).unwrap_or_else(|_| "unknown".into())
         })
     );
+    send_client_error_email(
+        env,
+        &scope,
+        &request_id,
+        &source,
+        &error_type,
+        &route,
+        &stack_frames,
+    )
+    .await;
     Ok(json!({ "accepted": true, "requestId": request_id }))
 }
 
@@ -1293,7 +1495,97 @@ async fn enrichment(
             }));
         }
     }
+    if resource == Resource::ChangeLogs {
+        recover_missing_change_details(source_rows, &mut output, env).await;
+    }
     Ok(output)
+}
+
+async fn recover_missing_change_details(
+    source_rows: &[Value],
+    output: &mut BTreeMap<String, Value>,
+    env: &Env,
+) {
+    let missing_logs = source_rows
+        .iter()
+        .filter_map(|source| row_object(source).ok())
+        .filter_map(|row| {
+            let log_id = string_value(row.get("id"));
+            if log_id.is_empty() || output.contains_key(&log_id) {
+                return None;
+            }
+            let child_id = preferred_value(row, "child_id", "legacy_child_id");
+            let changed_at = string_value(row.get("changed_at"));
+            (!child_id.is_empty() && !changed_at.is_empty())
+                .then_some((log_id, child_id, changed_at))
+        })
+        .collect::<Vec<_>>();
+    if missing_logs.is_empty() {
+        return;
+    }
+
+    let mut child_ids = missing_logs
+        .iter()
+        .map(|(_, child_id, _)| child_id.clone())
+        .collect::<Vec<_>>();
+    child_ids.sort();
+    child_ids.dedup();
+    let parameters = vec![
+        (
+            "select".into(),
+            "id,document_id,before_data,after_data,created_at".into(),
+        ),
+        ("resource".into(), "eq.children".into()),
+        ("action".into(), "eq.update".into()),
+        (
+            "document_id".into(),
+            format!("in.({})", child_ids.join(",")),
+        ),
+        ("order".into(), "created_at.asc".into()),
+        ("limit".into(), "1000".into()),
+    ];
+    let Ok((payload, _)) = rest_json(
+        env,
+        rest_path("audit_events", &parameters),
+        Method::Get,
+        None,
+        None,
+        false,
+    )
+    .await
+    else {
+        return;
+    };
+    let Ok(audit_rows) = rows(payload) else {
+        return;
+    };
+
+    for (log_id, child_id, changed_at) in missing_logs {
+        let changed_at_ms = worker::js_sys::Date::parse(&changed_at);
+        if !changed_at_ms.is_finite() {
+            continue;
+        }
+        let nearest = audit_rows
+            .iter()
+            .filter_map(|audit| row_object(audit).ok())
+            .filter(|audit| string_value(audit.get("document_id")) == child_id)
+            .filter_map(|audit| {
+                let audit_time =
+                    worker::js_sys::Date::parse(&string_value(audit.get("created_at")));
+                let distance = (audit_time - changed_at_ms).abs();
+                (audit_time.is_finite() && distance <= CHANGE_AUDIT_MAX_DISTANCE_MS)
+                    .then_some((audit, distance))
+            })
+            .min_by(|left, right| left.1.total_cmp(&right.1))
+            .map(|(audit, _)| audit);
+        let Some(audit) = nearest else {
+            continue;
+        };
+        let changes = identity_changes(audit.get("before_data"), audit.get("after_data"));
+        if !changes.is_empty() {
+            output.insert(log_id, Value::Array(changes));
+        }
+    }
 }
 
 async fn collection_list(request: Request, env: &Env, resource: Resource) -> ApiResult<Value> {
@@ -1934,9 +2226,10 @@ async fn write_monitorings(
 }
 
 async fn write_change_entries(env: &Env, log_id: &str, data: &Map<String, Value>) -> ApiResult<()> {
-    let Some(changes) = data.get("changes").and_then(Value::as_array) else {
-        return Ok(());
-    };
+    let changes = change_entries_from_payload(data);
+    if changes.is_empty() {
+        return Err(api_error(422, "Rincian perubahan identitas wajib diisi."));
+    }
     rest_json(
         env,
         format!("change_log_entries?change_log_id=eq.{log_id}"),
@@ -1946,21 +2239,23 @@ async fn write_change_entries(env: &Env, log_id: &str, data: &Map<String, Value>
         false,
     )
     .await?;
-    let entries = changes.iter().filter_map(Value::as_object).map(|change| json!({
-        "change_log_id": log_id, "field_name": string_value(change.get("field")),
-        "old_value": change.get("oldValue").cloned().unwrap_or(Value::Null), "new_value": change.get("newValue").cloned().unwrap_or(Value::Null),
-    })).collect::<Vec<_>>();
-    if !entries.is_empty() {
-        rest_json(
-            env,
-            "change_log_entries".into(),
-            Method::Post,
-            Some(Value::Array(entries)),
-            Some("return=minimal"),
-            false,
-        )
-        .await?;
-    }
+    let entries = changes
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|change| json!({
+            "change_log_id": log_id, "field_name": string_value(change.get("field")),
+            "old_value": change.get("oldValue").cloned().unwrap_or(Value::Null), "new_value": change.get("newValue").cloned().unwrap_or(Value::Null),
+        }))
+        .collect::<Vec<_>>();
+    rest_json(
+        env,
+        "change_log_entries".into(),
+        Method::Post,
+        Some(Value::Array(entries)),
+        Some("return=minimal"),
+        false,
+    )
+    .await?;
     Ok(())
 }
 
@@ -2049,6 +2344,9 @@ async fn collection_create(
             data.insert("childName".into(), Value::String(child_name));
         }
         Resource::ChangeLogs => {
+            if change_entries_from_payload(&data).is_empty() {
+                return Err(api_error(422, "Rincian perubahan identitas wajib diisi."));
+            }
             let (child_id, child_name, _) =
                 child_for_write(env, &string_value(data.get("childId")), &scope).await?;
             data.insert("childId".into(), Value::String(child_id));
@@ -2631,5 +2929,46 @@ mod tests {
     fn rejects_short_or_unsafe_idempotency_key() {
         assert!(!valid_idempotency_key("short"));
         assert!(!valid_idempotency_key("mutation key with spaces"));
+    }
+
+    #[test]
+    fn extracts_only_identity_changes_from_audit_data() {
+        let before = json!({
+            "nama": "Nama Lama",
+            "hasNIK": true,
+            "currentBB": 8.1,
+            "version": 1
+        });
+        let after = json!({
+            "nama": "Nama Baru",
+            "hasNIK": false,
+            "currentBB": 8.4,
+            "version": 2
+        });
+
+        let changes = identity_changes(Some(&before), Some(&after));
+
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].get("field"), Some(&json!("nama")));
+        assert_eq!(changes[1].get("field"), Some(&json!("hasNIK")));
+    }
+
+    #[test]
+    fn removes_empty_or_unchanged_change_entries() {
+        let data = json!({
+            "changes": [
+                {"field": "nama", "oldValue": "Sama", "newValue": "Sama"},
+                {"field": "", "oldValue": "Lama", "newValue": "Baru"},
+                {"field": "alamat", "oldValue": "Alamat lama", "newValue": "Alamat baru"}
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("change payload");
+
+        let changes = change_entries_from_payload(&data);
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].get("field"), Some(&json!("alamat")));
     }
 }
