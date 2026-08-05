@@ -885,6 +885,19 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
     const handleDecimalFieldBlur = (field) => () => {
         setFormData((previous) => {
             const value = String(previous[field] ?? '');
+            const decimalRules = {
+                bbLahir: { minimum: 0.1, maximum: 10, shift: 2 },
+                pbLahir: { minimum: 10, maximum: 120, shift: 1 },
+                lkLahir: { minimum: 10, maximum: 80, shift: 1 }
+            };
+            const rule = decimalRules[field];
+            if (rule) {
+                const parsed = parseLocaleNumberForRange(value, rule.minimum, rule.maximum, rule.shift);
+                if (Number.isFinite(parsed)) {
+                    const normalized = String(parsed).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+                    return { ...previous, [field]: normalized };
+                }
+            }
             if (!value.endsWith('.'))
                 return previous;
             return { ...previous, [field]: value.slice(0, -1) };
@@ -1166,6 +1179,19 @@ const AddChildModal = ({ user, onClose, onSuccess, initialData = null, isEdit = 
     const handleDecimalFieldBlur = (field) => () => {
         setFormData((previous) => {
             const value = String(previous[field] ?? '');
+            const decimalRules = {
+                bbLahir: { minimum: 0.1, maximum: 10, shift: 2 },
+                pbLahir: { minimum: 10, maximum: 120, shift: 1 },
+                lkLahir: { minimum: 10, maximum: 80, shift: 1 }
+            };
+            const rule = decimalRules[field];
+            if (rule) {
+                const parsed = parseLocaleNumberForRange(value, rule.minimum, rule.maximum, rule.shift);
+                if (Number.isFinite(parsed)) {
+                    const normalized = String(parsed).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+                    return { ...previous, [field]: normalized };
+                }
+            }
             if (!value.endsWith('.'))
                 return previous;
             return { ...previous, [field]: value.slice(0, -1) };
@@ -1520,6 +1546,20 @@ const MeasurementModal = ({ child, onClose }) => {
     const handleDecimalFieldBlur = (field) => () => {
         setFormData((previous) => {
             const value = String(previous[field] ?? '');
+            const decimalRules = {
+                bb: { minimum: 0.1, maximum: 60, shift: 2 },
+                tb: { minimum: 10, maximum: 220, shift: 1 },
+                lila: { minimum: 0.1, maximum: 50, shift: 1 },
+                lk: { minimum: 0.1, maximum: 80, shift: 1 }
+            };
+            const rule = decimalRules[field];
+            if (rule) {
+                const parsed = parseLocaleNumberForRange(value, rule.minimum, rule.maximum, rule.shift);
+                if (Number.isFinite(parsed)) {
+                    const normalized = String(parsed).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+                    return { ...previous, [field]: normalized };
+                }
+            }
             if (!value.endsWith('.'))
                 return previous;
             return { ...previous, [field]: value.slice(0, -1) };

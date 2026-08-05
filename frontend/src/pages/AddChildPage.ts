@@ -112,6 +112,19 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
     const handleDecimalFieldBlur = (field) => () => {
         setFormData((previous) => {
             const value = String(previous[field] ?? '');
+            const decimalRules = {
+                bbLahir: { minimum: 0.1, maximum: 10, shift: 2 },
+                pbLahir: { minimum: 10, maximum: 120, shift: 1 },
+                lkLahir: { minimum: 10, maximum: 80, shift: 1 }
+            };
+            const rule = decimalRules[field];
+            if (rule) {
+                const parsed = parseDecimalForRange(value, rule.minimum, rule.maximum, rule.shift);
+                if (Number.isFinite(parsed)) {
+                    const normalized = String(parsed).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+                    return { ...previous, [field]: normalized };
+                }
+            }
             if (!value.endsWith('.'))
                 return previous;
             return { ...previous, [field]: value.slice(0, -1) };

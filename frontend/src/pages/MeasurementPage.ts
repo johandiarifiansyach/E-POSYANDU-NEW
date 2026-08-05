@@ -270,6 +270,20 @@ export default function MeasurementPage({ child, onBack }) {
     const handleDecimalFieldBlur = (field) => () => {
         setFormData((previous) => {
             const value = String(previous[field] ?? '');
+            const decimalRules = {
+                bb: { minimum: 0.1, maximum: 60, shift: 2 },
+                tb: { minimum: 10, maximum: 220, shift: 1 },
+                lila: { minimum: 0.1, maximum: 50, shift: 1 },
+                lk: { minimum: 0.1, maximum: 80, shift: 1 }
+            };
+            const rule = decimalRules[field];
+            if (rule) {
+                const parsed = parseDecimalForRange(value, rule.minimum, rule.maximum, rule.shift);
+                if (Number.isFinite(parsed)) {
+                    const normalized = String(parsed).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+                    return { ...previous, [field]: normalized };
+                }
+            }
             if (!value.endsWith('.'))
                 return previous;
             return { ...previous, [field]: value.slice(0, -1) };
