@@ -363,12 +363,12 @@ export default function MeasurementPage({ child, onBack }) {
                         Native.createElement("input", { type: "text", readOnly: true, className: `${inputClass} bg-slate-100 text-slate-500`, value: formData.caraUkur }))),
                 Native.createElement("div", { className: "measurement-form-panel measurement-anthropometry-panel grid grid-cols-1 sm:grid-cols-2 gap-4" },
                     Native.createElement(InputGroup, { label: "Berat Badan (kg)" },
-                        Native.createElement("input", { name: "bb", required: true, type: "text", inputMode: "decimal", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bb, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat badan dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => {
+                        Native.createElement("input", { name: "bb", required: true, type: "text", inputMode: "text", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bb, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat badan dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => {
                                 event.currentTarget.setCustomValidity('');
                                 handleDecimalFieldChange('bb')(event);
                             }, onChange: handleDecimalFieldChange('bb'), onBlur: handleDecimalFieldBlur('bb') })),
                     Native.createElement(InputGroup, { label: lengthHeightLabel },
-                        Native.createElement("input", { name: "tb", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.tb, onInput: handleDecimalFieldChange('tb'), onChange: handleDecimalFieldChange('tb'), onBlur: handleDecimalFieldBlur('tb') }))),
+                        Native.createElement("input", { name: "tb", required: true, type: "text", inputMode: "text", className: inputClass, value: formData.tb, onInput: handleDecimalFieldChange('tb'), onChange: handleDecimalFieldChange('tb'), onBlur: handleDecimalFieldBlur('tb') }))),
                 Native.createElement("div", { className: "measurement-status-panel" },
                     Native.createElement("div", { className: "measurement-status-grid grid grid-cols-2 lg:grid-cols-4 gap-x-4 gap-y-3 text-xs" },
                         Native.createElement("div", null,
@@ -385,9 +385,9 @@ export default function MeasurementPage({ child, onBack }) {
                             Native.createElement(StatusBadge, { status: statusSummary.imtu })))),
                 Native.createElement("div", { className: "measurement-form-panel measurement-additional-panel grid grid-cols-1 sm:grid-cols-2 gap-4" },
                     Native.createElement(InputGroup, { label: "LiLa (cm)" },
-                        Native.createElement("input", { name: "lila", type: "text", inputMode: "decimal", className: inputClass, value: formData.lila, onInput: handleDecimalFieldChange('lila'), onChange: handleDecimalFieldChange('lila'), onBlur: handleDecimalFieldBlur('lila') })),
+                        Native.createElement("input", { name: "lila", type: "text", inputMode: "text", className: inputClass, value: formData.lila, onInput: handleDecimalFieldChange('lila'), onChange: handleDecimalFieldChange('lila'), onBlur: handleDecimalFieldBlur('lila') })),
                     Native.createElement(InputGroup, { label: "Lingkar Kepala (cm)" },
-                        Native.createElement("input", { name: "lk", type: "text", inputMode: "decimal", className: inputClass, value: formData.lk, onInput: handleDecimalFieldChange('lk'), onChange: handleDecimalFieldChange('lk'), onBlur: handleDecimalFieldBlur('lk') }))),
+                        Native.createElement("input", { name: "lk", type: "text", inputMode: "text", className: inputClass, value: formData.lk, onInput: handleDecimalFieldChange('lk'), onChange: handleDecimalFieldChange('lk'), onBlur: handleDecimalFieldBlur('lk') }))),
                 Native.createElement("input", { type: "hidden", value: formData.statusNaik }),
                 Native.createElement(InputGroup, { label: "Pitting Edema Bilateral" },
                     Native.createElement(Select, { value: formData.edema, onChange: (event) => setFormData({ ...formData, edema: event.target.value }), options: [
