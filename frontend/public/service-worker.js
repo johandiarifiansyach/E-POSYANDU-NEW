@@ -1,4 +1,4 @@
-const CACHE_NAME = 'e-posyandu-shell-v24';
+const CACHE_NAME = 'e-posyandu-shell-v25';
 const APP_SHELL = [
   '/index.html',
   '/manifest.webmanifest',
@@ -22,18 +22,6 @@ self.addEventListener('activate', (event) => {
       self.clients.claim()
     ])
   );
-});
-
-self.addEventListener('message', (event) => {
-  if (event.data?.type !== 'CACHE_URLS' || !Array.isArray(event.data.urls)) return;
-  const urls = event.data.urls.filter((value) => {
-    if (typeof value !== 'string') return false;
-    const url = new URL(value, self.location.origin);
-    return url.origin === self.location.origin && url.pathname.startsWith('/assets/');
-  });
-  if (urls.length > 0) {
-    event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(urls)));
-  }
 });
 
 self.addEventListener('fetch', (event) => {

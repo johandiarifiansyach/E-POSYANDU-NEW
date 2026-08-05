@@ -5,7 +5,7 @@ import { setupProblemReporter } from './ui/problemReporter';
 import './styles/index.css';
 
 const rootElement = document.getElementById('root');
-const SERVICE_WORKER_CACHE_VERSION = 'v24';
+const SERVICE_WORKER_CACHE_VERSION = 'v25';
 const SERVICE_WORKER_MIGRATION_KEY = 'e-posyandu:service-worker-cache-version';
 
 if (!rootElement) throw new Error('Root element tidak ditemukan.');
@@ -87,12 +87,8 @@ if ('serviceWorker' in navigator && import.meta.env.DEV) {
   window.addEventListener('load', () => {
     const registerServiceWorker = () => {
       void navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' })
-        .then(async () => {
-          const registration = await navigator.serviceWorker.ready;
-          const urls = Array.from(document.querySelectorAll<HTMLScriptElement | HTMLLinkElement>('script[src], link[rel="stylesheet"][href]'))
-            .map((element) => element instanceof HTMLScriptElement ? element.src : element.href)
-            .filter(Boolean);
-          registration.active?.postMessage({ type: 'CACHE_URLS', urls });
+        .then(() => {
+          // Keep the service worker lean on low-spec devices; browser HTTP cache handles hashed assets.
         })
         .catch((error) => {
           console.error('Pendaftaran mode offline gagal:', error);
