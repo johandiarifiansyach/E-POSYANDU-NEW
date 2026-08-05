@@ -89,6 +89,22 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
         const parsed = Number(normalized);
         return Number.isFinite(parsed) ? parsed : null;
     };
+    const parseDecimalForRange = (value, minimum, maximum, decimalShiftLimit = 2) => {
+        const normalized = normalizeDecimalInput(value).trim();
+        if (!normalized)
+            return null;
+        const direct = Number(normalized);
+        if (Number.isFinite(direct) && direct >= minimum && direct <= maximum)
+            return direct;
+        if (!normalized.includes('.')) {
+            for (let shift = 1; shift <= decimalShiftLimit; shift += 1) {
+                const candidate = Number(normalized) / Math.pow(10, shift);
+                if (Number.isFinite(candidate) && candidate >= minimum && candidate <= maximum)
+                    return candidate;
+            }
+        }
+        return Number.isFinite(direct) ? direct : null;
+    };
     const handleDecimalFieldChange = (field) => (event) => {
         const normalized = normalizeDecimalInput(event.target.value);
         setFormData((previous) => ({ ...previous, [field]: normalized }));
@@ -110,9 +126,9 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
             const liveValue = typeof input?.value === 'string' ? input.value : '';
             return liveValue || String(fallback ?? '');
         };
-        const birthWeight = parseLocaleDecimal(readLiveField('bbLahir', formData.bbLahir));
-        const birthLength = parseLocaleDecimal(readLiveField('pbLahir', formData.pbLahir));
-        const birthHeadCircumference = parseLocaleDecimal(readLiveField('lkLahir', formData.lkLahir));
+        const birthWeight = parseDecimalForRange(readLiveField('bbLahir', formData.bbLahir), 0.1, 10, 2);
+        const birthLength = parseDecimalForRange(readLiveField('pbLahir', formData.pbLahir), 10, 120, 1);
+        const birthHeadCircumference = parseDecimalForRange(readLiveField('lkLahir', formData.lkLahir), 10, 80, 1);
         const submissionData = {
             ...formData,
             nama: formatChildName(formData.nama),

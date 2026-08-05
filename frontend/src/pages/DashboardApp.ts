@@ -185,6 +185,22 @@ const parseLocaleNumber = (value) => {
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : null;
 };
+const parseLocaleNumberForRange = (value, minimum, maximum, decimalShiftLimit = 2) => {
+    const normalized = normalizeDecimalInput(value).trim();
+    if (!normalized)
+        return null;
+    const direct = Number(normalized);
+    if (Number.isFinite(direct) && direct >= minimum && direct <= maximum)
+        return direct;
+    if (!normalized.includes('.')) {
+        for (let shift = 1; shift <= decimalShiftLimit; shift += 1) {
+            const candidate = Number(normalized) / Math.pow(10, shift);
+            if (Number.isFinite(candidate) && candidate >= minimum && candidate <= maximum)
+                return candidate;
+        }
+    }
+    return Number.isFinite(direct) ? direct : null;
+};
 const toPositiveNumber = (value) => {
     const numberValue = parseLocaleNumber(value);
     return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
@@ -795,9 +811,9 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
             const liveValue = typeof input?.value === 'string' ? input.value : '';
             return liveValue || String(fallback ?? '');
         };
-        const birthWeight = parseLocaleNumber(readLiveField('bbLahir', formData.bbLahir));
-        const birthLength = parseLocaleNumber(readLiveField('pbLahir', formData.pbLahir));
-        const birthHeadCircumference = parseLocaleNumber(readLiveField('lkLahir', formData.lkLahir));
+        const birthWeight = parseLocaleNumberForRange(readLiveField('bbLahir', formData.bbLahir), 0.1, 10, 2);
+        const birthLength = parseLocaleNumberForRange(readLiveField('pbLahir', formData.pbLahir), 10, 120, 1);
+        const birthHeadCircumference = parseLocaleNumberForRange(readLiveField('lkLahir', formData.lkLahir), 10, 80, 1);
         const normalizedFormData = {
             ...formData,
             bbLahir: birthWeight ?? '',
@@ -1163,9 +1179,9 @@ const AddChildModal = ({ user, onClose, onSuccess, initialData = null, isEdit = 
             const liveValue = typeof input?.value === 'string' ? input.value : '';
             return liveValue || String(fallback ?? '');
         };
-        const birthWeight = parseLocaleNumber(readLiveField('bbLahir', formData.bbLahir));
-        const birthLength = parseLocaleNumber(readLiveField('pbLahir', formData.pbLahir));
-        const birthHeadCircumference = parseLocaleNumber(readLiveField('lkLahir', formData.lkLahir));
+        const birthWeight = parseLocaleNumberForRange(readLiveField('bbLahir', formData.bbLahir), 0.1, 10, 2);
+        const birthLength = parseLocaleNumberForRange(readLiveField('pbLahir', formData.pbLahir), 10, 120, 1);
+        const birthHeadCircumference = parseLocaleNumberForRange(readLiveField('lkLahir', formData.lkLahir), 10, 80, 1);
         const normalizedFormData = {
             ...formData,
             bbLahir: birthWeight ?? '',
@@ -1453,10 +1469,10 @@ const MeasurementModal = ({ child, onClose }) => {
             const liveValue = typeof input?.value === 'string' ? input.value : '';
             return liveValue || String(fallback ?? '');
         };
-        const weight = parseLocaleNumber(readLiveField('bb', formData.bb));
-        const height = parseLocaleNumber(readLiveField('tb', formData.tb));
-        const lila = parseLocaleNumber(readLiveField('lila', formData.lila));
-        const lk = parseLocaleNumber(readLiveField('lk', formData.lk));
+        const weight = parseLocaleNumberForRange(readLiveField('bb', formData.bb), 0.1, 60, 2);
+        const height = parseLocaleNumberForRange(readLiveField('tb', formData.tb), 10, 220, 1);
+        const lila = parseLocaleNumberForRange(readLiveField('lila', formData.lila), 0.1, 50, 1);
+        const lk = parseLocaleNumberForRange(readLiveField('lk', formData.lk), 0.1, 80, 1);
         const normalizedPayload = {
             ...formData,
             bb: weight ?? formData.bb,

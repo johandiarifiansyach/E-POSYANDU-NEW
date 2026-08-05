@@ -49,6 +49,22 @@ export default function MeasurementPage({ child, onBack }) {
         const parsed = Number(normalized);
         return Number.isFinite(parsed) ? parsed : null;
     };
+    const parseDecimalForRange = (value, minimum, maximum, decimalShiftLimit = 2) => {
+        const normalized = normalizeDecimalInput(String(value ?? '')).trim();
+        if (!normalized)
+            return null;
+        const direct = Number(normalized);
+        if (Number.isFinite(direct) && direct >= minimum && direct <= maximum)
+            return direct;
+        if (!normalized.includes('.')) {
+            for (let shift = 1; shift <= decimalShiftLimit; shift += 1) {
+                const candidate = Number(normalized) / Math.pow(10, shift);
+                if (Number.isFinite(candidate) && candidate >= minimum && candidate <= maximum)
+                    return candidate;
+            }
+        }
+        return Number.isFinite(direct) ? direct : null;
+    };
     useEffect(() => {
         if (!child.id) {
             setHistory([]);
@@ -154,10 +170,10 @@ export default function MeasurementPage({ child, onBack }) {
             const liveValue = typeof input?.value === 'string' ? input.value : '';
             return liveValue || String(fallback ?? '');
         };
-        const weight = parseLocaleDecimal(readLiveField('bb', formData.bb));
-        const height = parseLocaleDecimal(readLiveField('tb', formData.tb));
-        const lila = parseLocaleDecimal(readLiveField('lila', formData.lila));
-        const lk = parseLocaleDecimal(readLiveField('lk', formData.lk));
+        const weight = parseDecimalForRange(readLiveField('bb', formData.bb), 0.1, 60, 2);
+        const height = parseDecimalForRange(readLiveField('tb', formData.tb), 10, 220, 1);
+        const lila = parseDecimalForRange(readLiveField('lila', formData.lila), 0.1, 50, 1);
+        const lk = parseDecimalForRange(readLiveField('lk', formData.lk), 0.1, 80, 1);
         if (!Number.isFinite(weight) || weight < 0.1 || weight > 60) {
             showError('Berat badan harus diisi dalam kilogram, misalnya 3,2 kg. Jangan masukkan 3200 gram.');
             return;

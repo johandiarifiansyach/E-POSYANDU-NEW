@@ -1,4 +1,4 @@
-const CACHE_NAME = 'e-posyandu-shell-v21';
+const CACHE_NAME = 'e-posyandu-shell-v22';
 const APP_SHELL = [
   '/index.html',
   '/manifest.webmanifest',
