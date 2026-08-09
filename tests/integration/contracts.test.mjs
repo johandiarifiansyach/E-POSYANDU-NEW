@@ -193,3 +193,29 @@ test('header keamanan frontend mencakup kebijakan utama', async () => {
     assert.match(headers, new RegExp(header));
   }
 });
+
+test('deployment diperiksa berkala dan backup hanya disimpan dalam bentuk terenkripsi', async () => {
+  const smokeScript = await readFile(
+    resolve(root, 'scripts/operations/smoke-deployment.mjs'),
+    'utf8'
+  );
+  const smokeWorkflow = await readFile(
+    resolve(root, '.github/workflows/deployment-smoke.yml'),
+    'utf8'
+  );
+  const backupWorkflow = await readFile(
+    resolve(root, '.github/workflows/database-backup.yml'),
+    'utf8'
+  );
+  const ciWorkflow = await readFile(resolve(root, '.github/workflows/ci.yml'), 'utf8');
+
+  assert.match(smokeScript, /SMOKE_REQUIRE_SECURITY_HEADERS/);
+  assert.match(smokeScript, /history\.items\.length <= 10/);
+  assert.match(smokeWorkflow, /17 \*\/6 \* \* \*/);
+  assert.match(backupWorkflow, /aes-256-cbc/);
+  assert.match(backupWorkflow, /BACKUP_ENCRYPTION_PASSWORD/);
+  assert.match(backupWorkflow, /retention-days: 14/);
+  assert.doesNotMatch(backupWorkflow, /upload-artifact[\s\S]+e-posyandu\.dump(?:\n|$)/);
+  assert.match(ciWorkflow, /npm run check/);
+  assert.match(ciWorkflow, /services\/nutrition-grpc/);
+});

@@ -1,10 +1,39 @@
-// @ts-nocheck
 import Native from '../runtime/dom';
 import IosPagination from '../components/IosPagination';
 import { History, Loader2, RotateCcw } from '../ui/icons';
 import { Card, formatIndoDateTime } from './DashboardApp';
 
-const FIELD_LABELS = {
+type TimestampLike = Date | string | number | {
+    seconds?: number;
+    toDate?: () => Date;
+};
+
+type IdentityChange = {
+    field: string;
+    oldValue: unknown;
+    newValue: unknown;
+};
+
+export type ChangeHistoryItem = {
+    id: string;
+    childName?: string;
+    changedBy?: string;
+    changes?: IdentityChange[];
+    timestamp?: TimestampLike;
+};
+
+type ChangeHistoryPageProps = {
+    changeLogs: ChangeHistoryItem[];
+    loading?: boolean;
+    error?: string | null;
+    currentPage?: number;
+    total?: number;
+    pageSize?: number;
+    onPageChange?: (page: number) => void;
+    onRetry?: () => void;
+};
+
+const FIELD_LABELS: Record<string, string> = {
     nama: 'Nama lengkap',
     nik: 'NIK balita',
     anakKe: 'Anak ke-',
@@ -30,8 +59,8 @@ const FIELD_LABELS = {
     posyandu: 'Posyandu'
 };
 
-const fieldLabel = (field) => FIELD_LABELS[field] || String(field || 'Data identitas');
-const changeValue = (field, value) => {
+const fieldLabel = (field: string) => FIELD_LABELS[field] || String(field || 'Data identitas');
+const changeValue = (field: string, value: unknown): string => {
     if (value === null || value === undefined || value === '')
         return 'Kosong';
     if (typeof value === 'boolean')
@@ -41,7 +70,7 @@ const changeValue = (field, value) => {
     if (Array.isArray(value))
         return value.length > 0 ? value.join(', ') : 'Kosong';
     if (typeof value === 'object')
-        return JSON.stringify(value);
+        return JSON.stringify(value) || 'Kosong';
     return String(value);
 };
 
@@ -54,14 +83,19 @@ export default function ChangeHistoryPage({
     pageSize = 10,
     onPageChange,
     onRetry
-}) {
-    const timestampValue = (value) => {
+}: ChangeHistoryPageProps) {
+    const timestampValue = (value: TimestampLike | undefined): number => {
         if (!value)
             return 0;
-        if (typeof value.toDate === 'function')
-            return value.toDate().getTime();
-        if (typeof value.seconds === 'number')
-            return value.seconds * 1000;
+        if (value instanceof Date)
+            return value.getTime();
+        if (typeof value === 'object') {
+            if (typeof value.toDate === 'function')
+                return value.toDate().getTime();
+            if (typeof value.seconds === 'number')
+                return value.seconds * 1000;
+            return 0;
+        }
         const parsed = new Date(value).getTime();
         return Number.isNaN(parsed) ? 0 : parsed;
     };
@@ -88,11 +122,11 @@ export default function ChangeHistoryPage({
             return Native.createElement(Card, { key: log.id, className: "apple-list-card p-4" },
             Native.createElement("div", { className: "flex justify-between items-start mb-2" },
                 Native.createElement("div", null,
-                    Native.createElement("h4", { className: "font-bold text-slate-800" }, log.childName),
+                    Native.createElement("h4", { className: "font-bold text-slate-800" }, log.childName || 'Balita'),
                     Native.createElement("p", { className: "text-xs text-slate-500" },
                         formatIndoDateTime(log.timestamp),
                         " - Oleh: ",
-                        log.changedBy)),
+                        log.changedBy || 'Petugas')),
                 Native.createElement(History, { className: "w-5 h-5 text-amber-500" })),
             Native.createElement("div", { className: "bg-slate-50 rounded-lg p-3 space-y-2 text-xs" }, changes.length === 0 ? (Native.createElement("p", { className: "change-history-empty-detail text-slate-500" }, "Pembaruan identitas tercatat, tetapi rincian perubahan tidak tersedia pada catatan lama.")) : changes.map((change, index) => (Native.createElement("div", { key: index, className: "flex flex-col sm:flex-row gap-1 sm:gap-2 sm:items-center border-b border-slate-200 last:border-0 pb-1 last:pb-0" },
                 Native.createElement("span", { className: "font-semibold text-slate-600 w-36" }, fieldLabel(change.field)),

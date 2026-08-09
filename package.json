@@ -14,6 +14,7 @@
     "db:migrate": "./scripts/database/migrate.sh",
     "db:backup": "./scripts/database/backup.sh",
     "db:restore-drill": "./scripts/database/restore-drill.sh",
+    "deployment:smoke": "node scripts/operations/smoke-deployment.mjs",
     "env:check": "./scripts/environment/check-database-isolation.sh",
     "r2:prepare": "./scripts/storage/prepare-r2.sh",
     "worker:check": "cargo check --manifest-path backend/Cargo.toml",

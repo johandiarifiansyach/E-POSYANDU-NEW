@@ -1,6 +1,14 @@
-// @ts-nocheck
 import Native from '../runtime/dom';
 import { ChevronLeft, ChevronRight } from '../ui/icons';
+
+type IosPaginationProps = {
+    currentPage: number;
+    totalPages: number;
+    disablePrevious?: boolean;
+    disableNext?: boolean;
+    onPrevious: () => void;
+    onNext: () => void;
+};
 
 export default function IosPagination({
     currentPage,
@@ -9,7 +17,7 @@ export default function IosPagination({
     disableNext = false,
     onPrevious,
     onNext
-}) {
+}: IosPaginationProps) {
     return (Native.createElement("nav", { className: "ios-pagination", "aria-label": "Navigasi halaman tabel" },
         Native.createElement("button", { type: "button", className: "ios-pagination-button", disabled: disablePrevious, onClick: onPrevious, title: "Halaman sebelumnya", "aria-label": "Kembali ke halaman sebelumnya" },
             Native.createElement(ChevronLeft, { className: "h-4 w-4", "aria-hidden": "true" }),

@@ -23,11 +23,11 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: backend
+          workspaces: |
+            backend
+            services/nutrition-grpc
       - run: npm ci --prefix frontend
-      - run: npm run frontend:check
-      - run: npm run integration:test
-      - run: cargo test --manifest-path backend/Cargo.toml
+      - run: npm run check
       - run: npm run build
 
   end-to-end:
@@ -74,3 +74,8 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - run: npm run deployment:smoke
+        env:
+          SMOKE_FRONTEND_URL: https://e-posyandu.pages.dev
+          SMOKE_API_URL: https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev
+          SMOKE_REQUIRE_SECURITY_HEADERS: 'true'

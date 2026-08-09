@@ -1,11 +1,22 @@
-// @ts-nocheck
 import Native from '../runtime/dom';
+import type { DashboardStatsResponse, MonitoringStatus } from '../api/client';
 import { Activity, AlertTriangle, Baby, CircleOff, Minus, Scale, TrendingUp, UserPlus, Users } from '../ui/icons';
 import { Card, MONTHS } from './DashboardApp';
-export default function DashboardOverviewPage({ stats, loading = false, monitoringStatus, filterMonth, filterYear, viewDesa, viewPosyandu }) {
+
+type DashboardOverviewPageProps = {
+    stats: DashboardStatsResponse;
+    loading?: boolean;
+    monitoringStatus?: MonitoringStatus | null;
+    filterMonth: number;
+    filterYear: number;
+    viewDesa?: string | null;
+    viewPosyandu?: string | null;
+};
+
+export default function DashboardOverviewPage({ stats, loading = false, monitoringStatus, filterMonth, filterYear, viewDesa, viewPosyandu }: DashboardOverviewPageProps) {
     const workerStatus = monitoringStatus?.worker?.status;
     const monitoringMessage = workerStatus === 'down'
-        ? `Worker laporan tidak tersedia setelah ${monitoringStatus.worker.consecutiveFailures || 3} pemeriksaan. Login dan input data tetap dapat digunakan.`
+        ? `Worker laporan tidak tersedia setelah ${monitoringStatus?.worker.consecutiveFailures || 3} pemeriksaan. Login dan input data tetap dapat digunakan.`
         : workerStatus === 'degraded'
             ? 'Worker laporan sedang lambat atau gagal diperiksa. Sistem akan memeriksa ulang otomatis.'
             : workerStatus === 'unconfigured'
@@ -38,7 +49,7 @@ export default function DashboardOverviewPage({ stats, loading = false, monitori
             Native.createElement("div", null,
                 Native.createElement("p", { className: "font-bold" }, "Status pemrosesan laporan"),
                 Native.createElement("p", { className: "mt-1" }, monitoringMessage))),
-        storageMessage && Native.createElement("div", { role: "status", "aria-live": "polite", className: `ios-inline-notification ${storageStatus.status === 'warning' ? 'ios-inline-notification-error' : 'ios-inline-notification-warning'} system-health-notice flex items-start gap-3` },
+        storageMessage && Native.createElement("div", { role: "status", "aria-live": "polite", className: `ios-inline-notification ${storageStatus?.status === 'warning' ? 'ios-inline-notification-error' : 'ios-inline-notification-warning'} system-health-notice flex items-start gap-3` },
             Native.createElement(AlertTriangle, { className: "w-5 h-5 flex-shrink-0" }),
             Native.createElement("div", null,
                 Native.createElement("p", { className: "font-bold" }, "Kapasitas penyimpanan ekspor"),

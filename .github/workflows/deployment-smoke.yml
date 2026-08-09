@@ -1,0 +1,28 @@
+name: Deployment Smoke Test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */6 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run deployment:smoke
+        env:
+          SMOKE_FRONTEND_URL: https://e-posyandu.pages.dev
+          SMOKE_API_URL: https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev
+          SMOKE_REQUIRE_SECURITY_HEADERS: 'true'

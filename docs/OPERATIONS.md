@@ -42,7 +42,17 @@ Salin template frontend yang sesuai menjadi file lokal tanpa akhiran `.example`.
 5. Terapkan migrasi di production.
 6. Jalankan `npm run worker:deploy`, lalu `npm run pages:deploy`.
 
-Workflow [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) menjalankan TypeScript check, contract test, unit test Rust, build, dan E2E desktop/ponsel. Deploy production baru aktif setelah repository variable `AUTO_DEPLOY=true` dan secret `DATABASE_URL`, `CLOUDFLARE_API_TOKEN`, serta `CLOUDFLARE_ACCOUNT_ID` tersedia pada GitHub Environment `production`.
+Workflow [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) menjalankan TypeScript check, contract test, unit test Rust, build, dan E2E desktop/ponsel. Deploy production baru aktif setelah repository variable `AUTO_DEPLOY=true` dan secret `DATABASE_URL`, `CLOUDFLARE_API_TOKEN`, serta `CLOUDFLARE_ACCOUNT_ID` tersedia pada GitHub Environment `production`. Setelah deploy, smoke test memeriksa frontend, security headers, health API, dan OpenAPI.
+
+Smoke test production juga berjalan setiap enam jam melalui `deployment-smoke.yml`. Pemeriksaan manual dapat dijalankan tanpa kredensial:
+
+```bash
+SMOKE_FRONTEND_URL='https://e-posyandu.pages.dev' \
+SMOKE_API_URL='https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev' \
+npm run deployment:smoke
+```
+
+Untuk staging, `SMOKE_ACCESS_TOKEN` opsional dapat diisi sesaat saat menjalankan manual. Token tersebut menambahkan pemeriksaan endpoint riwayat berautentikasi dan memastikan API tidak mengembalikan lebih dari 10 data per halaman. Jangan simpan access token sebagai file atau secret jangka panjang.
 
 ## Audit dan dokumentasi API
 
@@ -105,15 +115,22 @@ npm run db:restore-drill -- backups/e-posyandu-YYYYMMDDTHHMMSSZ.dump
 
 Lakukan uji restore sedikitnya setiap tiga bulan dan sebelum migration destruktif. Script menolak target yang sama dengan `DATABASE_URL` bila keduanya diberikan.
 
+Workflow `database-backup.yml` membuat backup mingguan dan hanya mengunggah dump yang sudah dienkripsi AES-256. Artifact terenkripsi disimpan 14 hari. Aktifkan dengan repository variable `ENABLE_SCHEDULED_BACKUP=true`, lalu isi secret berikut pada GitHub Environment `production`:
+
+- `DATABASE_URL`
+- `BACKUP_ENCRYPTION_PASSWORD` minimal 24 karakter acak
+
+Uji restore bulanan bersifat opt-in karena akan membersihkan database target. Isi `RESTORE_DATABASE_URL` dan salinan `BACKUP_ENCRYPTION_PASSWORD` pada Environment `staging`, lalu set `ENABLE_MONTHLY_RESTORE_DRILL=true`. Uji restore juga dapat dipicu manual dengan opsi `run_restore_drill`. Database target wajib khusus pengujian dan tidak boleh berisi data aktif.
+
 ## Penyimpanan
 
 PostgreSQL tetap menjadi sumber data tunggal. IndexedDB menyimpan cache dan antrean offline per perangkat. Cloudflare Cache API dan KV hanya menyimpan ringkasan/versi cache. Upstash Redis hanya menyimpan hash pembatas login.
 
-Cloudflare R2 dipakai untuk hasil ekspor besar dan lampiran privat. Jalur upload worker dibatasi 50 MB, berkas hanya dapat diunduh oleh pemilik job atau Admin Gizi, dan PostgreSQL hanya menyimpan metadata objek.
+Cloudflare R2 aktif untuk hasil ekspor besar dan lampiran privat. Jalur upload worker dibatasi 50 MB, berkas hanya dapat diunduh oleh pemilik job atau Admin Gizi, dan PostgreSQL hanya menyimpan metadata objek.
 
 Bucket memakai kelas Standard. Objek sementara `jobs/` kedaluwarsa setelah 7 hari. Cron Worker memeriksa kapasitas setiap 10 menit; ketika total mencapai 9 GiB, file job tertua dihapus sampai kapasitas turun ke 8 GiB. Batas pengaman ini sengaja lebih rendah dari jatah gratis 10 GB. Lampiran permanen tidak dihapus otomatis.
 
-Aktivasi akun R2 tetap harus dilakukan satu kali melalui Cloudflare Dashboard. Setelah aktif, jalankan:
+Saat membuat environment Cloudflare baru, aktivasi akun R2 dilakukan satu kali melalui Dashboard, lalu jalankan:
 
 ```bash
 npm run r2:prepare

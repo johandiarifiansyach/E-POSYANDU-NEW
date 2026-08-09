@@ -1,0 +1,95 @@
+name: Encrypted Database Backup
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_restore_drill:
+        description: Uji restore ke database non-production setelah backup
+        required: true
+        type: boolean
+        default: false
+  schedule:
+    - cron: '0 18 * * 6'
+    - cron: '0 19 1 * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    if: github.event_name == 'workflow_dispatch' || vars.ENABLE_SCHEDULED_BACKUP == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    outputs:
+      artifact-name: ${{ steps.metadata.outputs.artifact-name }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Validate backup secrets
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_ENCRYPTION_PASSWORD: ${{ secrets.BACKUP_ENCRYPTION_PASSWORD }}
+        run: |
+          test -n "$DATABASE_URL" || { echo 'Secret DATABASE_URL belum diisi.' >&2; exit 1; }
+          test ${#BACKUP_ENCRYPTION_PASSWORD} -ge 24 || { echo 'BACKUP_ENCRYPTION_PASSWORD minimal 24 karakter.' >&2; exit 1; }
+      - name: Create and encrypt backup
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_ENCRYPTION_PASSWORD: ${{ secrets.BACKUP_ENCRYPTION_PASSWORD }}
+        run: |
+          ./scripts/database/backup.sh "$RUNNER_TEMP/e-posyandu.dump"
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+            -in "$RUNNER_TEMP/e-posyandu.dump" \
+            -out "$RUNNER_TEMP/e-posyandu.dump.enc" \
+            -pass env:BACKUP_ENCRYPTION_PASSWORD
+          rm -f "$RUNNER_TEMP/e-posyandu.dump"
+          cd "$RUNNER_TEMP"
+          sha256sum e-posyandu.dump.enc > e-posyandu.dump.enc.sha256
+      - id: metadata
+        run: echo "artifact-name=e-posyandu-backup-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact-name }}
+          path: |
+            ${{ runner.temp }}/e-posyandu.dump.enc
+            ${{ runner.temp }}/e-posyandu.dump.enc.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  restore-drill:
+    needs: backup
+    if: >-
+      needs.backup.result == 'success' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.run_restore_drill) ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 19 1 * *' && vars.ENABLE_MONTHLY_RESTORE_DRILL == 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.backup.outputs.artifact-name }}
+          path: ${{ runner.temp }}/backup
+      - name: Verify, decrypt, and restore
+        env:
+          RESTORE_DATABASE_URL: ${{ secrets.RESTORE_DATABASE_URL }}
+          BACKUP_ENCRYPTION_PASSWORD: ${{ secrets.BACKUP_ENCRYPTION_PASSWORD }}
+          CONFIRM_RESTORE_DRILL: RESTORE-TEST
+        run: |
+          test -n "$RESTORE_DATABASE_URL" || { echo 'Secret RESTORE_DATABASE_URL belum diisi.' >&2; exit 1; }
+          cd "$RUNNER_TEMP/backup"
+          sha256sum --check e-posyandu.dump.enc.sha256
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in e-posyandu.dump.enc \
+            -out "$RUNNER_TEMP/e-posyandu-restore.dump" \
+            -pass env:BACKUP_ENCRYPTION_PASSWORD
+          cd "$GITHUB_WORKSPACE"
+          ./scripts/database/restore-drill.sh "$RUNNER_TEMP/e-posyandu-restore.dump"
+          rm -f "$RUNNER_TEMP/e-posyandu-restore.dump"
