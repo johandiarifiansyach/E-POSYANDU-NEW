@@ -266,6 +266,7 @@ test('backup diverifikasi dan restore drill memeriksa isi database', async () =>
   assert.match(verify, /pg_restore --list/);
   assert.match(verify, /schema_migrations/);
   assert.match(restore, /pg_restore --dbname="\$RESTORE_DATABASE_URL"/);
+  assert.match(restore, /--schema=public/);
   assert.match(restore, /Tabel public\.children tidak ditemukan setelah restore/);
   assert.match(restore, /latest_migration/);
 });

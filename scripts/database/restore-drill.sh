@@ -19,6 +19,7 @@ command -v pg_restore >/dev/null 2>&1 || { echo "pg_restore belum terpasang." >&
 command -v psql >/dev/null 2>&1 || { echo "psql belum terpasang." >&2; exit 1; }
 
 pg_restore --dbname="$RESTORE_DATABASE_URL" \
+  --schema=public \
   --clean \
   --if-exists \
   --no-owner \
