@@ -252,7 +252,10 @@ test('monitoring terpadu dan load test Queue gRPC memiliki batas aman', async ()
   assert.match(monitor, /health\/ready/);
   assert.match(monitor, /nutrition-worker/);
   assert.match(monitorWorkflow, /7,37 \* \* \* \*/);
-  assert.match(queueLoad, /LOAD_ACCESS_TOKEN/);
+  assert.match(queueLoad, /LOAD_SUPABASE_URL/);
+  assert.match(queueLoad, /LOAD_SUPABASE_PUBLISHABLE_KEY/);
+  assert.match(queueLoad, /LOAD_TEST_EMAIL/);
+  assert.match(queueLoad, /grant_type=password/);
   assert.match(queueLoad, /Math\.min\(50/);
   assert.match(grpcLoad, /LOAD_GRPC_CONCURRENCY/);
   assert.match(grpcLoad, /"p95": p95/);

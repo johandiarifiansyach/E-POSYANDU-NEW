@@ -1,6 +1,49 @@
 const apiUrl = process.env.LOAD_API_URL || 'https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev';
-const accessToken = process.env.LOAD_ACCESS_TOKEN;
-if (!accessToken) throw new Error('LOAD_ACCESS_TOKEN wajib diisi untuk load test Queue.');
+const staticAccessToken = process.env.LOAD_ACCESS_TOKEN?.trim();
+const supabaseUrl = process.env.LOAD_SUPABASE_URL?.trim().replace(/\/$/, '');
+const supabasePublishableKey = process.env.LOAD_SUPABASE_PUBLISHABLE_KEY?.trim();
+const testEmail = process.env.LOAD_TEST_EMAIL?.trim();
+const testPassword = process.env.LOAD_TEST_PASSWORD;
+
+async function obtainAccessToken() {
+  const credentials = [supabaseUrl, supabasePublishableKey, testEmail, testPassword];
+  const hasAnyCredential = credentials.some(Boolean);
+  const hasAllCredentials = credentials.every(Boolean);
+
+  if (hasAnyCredential && !hasAllCredentials) {
+    throw new Error(
+      'Secret autentikasi load test belum lengkap. Isi LOAD_SUPABASE_URL, LOAD_SUPABASE_PUBLISHABLE_KEY, LOAD_TEST_EMAIL, dan LOAD_TEST_PASSWORD.',
+    );
+  }
+
+  if (hasAllCredentials) {
+    const response = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: {
+        apikey: supabasePublishableKey,
+        Authorization: `Bearer ${supabasePublishableKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email: testEmail, password: testPassword }),
+    });
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok || !payload.access_token) {
+      const detail = payload.error_description || payload.msg || payload.message;
+      throw new Error(detail || `Autentikasi akun uji gagal dengan status ${response.status}.`);
+    }
+
+    return payload.access_token;
+  }
+
+  if (staticAccessToken) return staticAccessToken;
+
+  throw new Error(
+    'Autentikasi load test belum diatur. Gunakan kredensial akun uji agar access token dibuat otomatis.',
+  );
+}
+
+const accessToken = await obtainAccessToken();
 
 const jobCount = Math.min(50, Math.max(1, Number(process.env.LOAD_QUEUE_JOBS) || 5));
 const concurrency = Math.min(10, Math.max(1, Number(process.env.LOAD_QUEUE_CONCURRENCY) || 2));

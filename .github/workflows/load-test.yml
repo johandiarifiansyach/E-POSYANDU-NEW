@@ -33,7 +33,10 @@ jobs:
       - name: Run end-to-end Queue and gRPC load test
         env:
           LOAD_API_URL: https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev
-          LOAD_ACCESS_TOKEN: ${{ secrets.LOAD_ACCESS_TOKEN }}
+          LOAD_SUPABASE_URL: ${{ secrets.LOAD_SUPABASE_URL }}
+          LOAD_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.LOAD_SUPABASE_PUBLISHABLE_KEY }}
+          LOAD_TEST_EMAIL: ${{ secrets.LOAD_TEST_EMAIL }}
+          LOAD_TEST_PASSWORD: ${{ secrets.LOAD_TEST_PASSWORD }}
           LOAD_QUEUE_JOBS: ${{ inputs.jobs }}
           LOAD_QUEUE_CONCURRENCY: ${{ inputs.concurrency }}
           LOAD_QUEUE_ITEMS: ${{ inputs.items_per_job }}
