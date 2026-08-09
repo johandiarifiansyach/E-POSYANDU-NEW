@@ -245,13 +245,18 @@ test('sinkronisasi offline mendeteksi konflik dan tidak menimpa perubahan diam-d
 test('monitoring terpadu dan load test Queue gRPC memiliki batas aman', async () => {
   const monitor = await readFile(resolve(root, 'scripts/operations/monitor-system.mjs'), 'utf8');
   const monitorWorkflow = await readFile(resolve(root, '.github/workflows/system-monitor.yml'), 'utf8');
+  const workerConfig = await readFile(resolve(root, 'backend/wrangler.toml'), 'utf8');
   const queueLoad = await readFile(resolve(root, 'scripts/operations/load-queue.mjs'), 'utf8');
   const grpcLoad = await readFile(resolve(root, 'services/nutrition-grpc/src/bin/load.rs'), 'utf8');
   const loadWorkflow = await readFile(resolve(root, '.github/workflows/load-test.yml'), 'utf8');
 
   assert.match(monitor, /health\/ready/);
   assert.match(monitor, /nutrition-worker/);
-  assert.match(monitorWorkflow, /7,37 \* \* \* \*/);
+  assert.match(monitorWorkflow, /7,37 23 \* \* SUN-THU/);
+  assert.match(monitorWorkflow, /7,37 0-10 \* \* MON-FRI/);
+  assert.match(workerConfig, /50 22 \* \* SUN-THU/);
+  assert.match(workerConfig, /\*\/10 23 \* \* SUN-THU/);
+  assert.match(workerConfig, /\*\/10 0-10 \* \* MON-FRI/);
   assert.match(queueLoad, /LOAD_SUPABASE_URL/);
   assert.match(queueLoad, /LOAD_SUPABASE_PUBLISHABLE_KEY/);
   assert.match(queueLoad, /LOAD_TEST_EMAIL/);

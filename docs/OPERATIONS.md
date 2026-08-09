@@ -93,7 +93,7 @@ Pantau setiap hari pada masa awal rilis:
 
 Jangan menulis NIK, KK, nama balita, token, password, atau isi formulir ke log runtime.
 
-Pemeriksaan terpadu tersedia pada `GET /api/v1/health/ready`. Endpoint ini memeriksa konfigurasi database, KV, Queue, R2, dan status nutrition worker tanpa membaca data balita. GitHub Actions menjalankannya setiap 30 menit bersama pemeriksaan frontend dan health Render melalui `system-monitor.yml`.
+Pemeriksaan terpadu tersedia pada `GET /api/v1/health/ready`. Endpoint ini memeriksa konfigurasi database, KV, Queue, R2, dan status nutrition worker tanpa membaca data balita. GitHub Actions menjalankannya setiap 30 menit pada Senin-Jumat pukul 06.07-17.37 WIB bersama pemeriksaan frontend dan health Render melalui `system-monitor.yml`. Pemeriksaan manual tetap dapat dijalankan kapan saja.
 
 Jalankan pemeriksaan yang sama dari komputer pengelola dengan:
 
@@ -105,7 +105,7 @@ Laporan JSON dapat disimpan dengan `MONITOR_OUTPUT_PATH=/lokasi/laporan.json`. H
 
 Error JavaScript setelah pengguna login dikirim ke `POST /api/v1/client-errors`. Payload hanya berisi jenis error, route tanpa query, sumber, dan frame stack; pesan error serta data formulir tidak dikirim.
 
-Cron memeriksa `RUST_WORKER_HEALTH_URL` setiap 10 menit. Status disimpan di KV dan dibaca dashboard hanya oleh Admin Gizi. Untuk alarm di luar aplikasi, isi secret HTTPS `MONITORING_ALERT_WEBHOOK_URL`, atau isi `RESEND_API_KEY`, `MONITORING_ALERT_EMAIL_TO`, dan `ERROR_REPORT_EMAIL_FROM`. Alarm dikirim saat kegagalan ketiga dan sekali lagi saat layanan pulih, tanpa membawa data balita.
+Cron melakukan pemanasan pada 05.50 WIB lalu memeriksa `RUST_WORKER_HEALTH_URL` setiap 10 menit pada Senin-Jumat pukul 06.00-17.50 WIB. Di luar jam tersebut Render dibiarkan sleep. Status disimpan di KV dan dibaca dashboard hanya oleh Admin Gizi. Untuk alarm di luar aplikasi, isi secret HTTPS `MONITORING_ALERT_WEBHOOK_URL`, atau isi `RESEND_API_KEY`, `MONITORING_ALERT_EMAIL_TO`, dan `ERROR_REPORT_EMAIL_FROM`. Alarm dikirim saat kegagalan ketiga dan sekali lagi saat layanan pulih, tanpa membawa data balita.
 
 ## Backup dan uji restore
 
@@ -157,7 +157,7 @@ PostgreSQL tetap menjadi sumber data tunggal. IndexedDB menyimpan cache dan antr
 
 Cloudflare R2 aktif untuk hasil ekspor besar dan lampiran privat. Jalur upload worker dibatasi 50 MB, berkas hanya dapat diunduh oleh pemilik job atau Admin Gizi, dan PostgreSQL hanya menyimpan metadata objek.
 
-Bucket memakai kelas Standard. Objek sementara `jobs/` kedaluwarsa setelah 7 hari. Cron Worker memeriksa kapasitas setiap 10 menit; ketika total mencapai 9 GiB, file job tertua dihapus sampai kapasitas turun ke 8 GiB. Batas pengaman ini sengaja lebih rendah dari jatah gratis 10 GB. Lampiran permanen tidak dihapus otomatis.
+Bucket memakai kelas Standard. Objek sementara `jobs/` kedaluwarsa setelah 7 hari. Cron Worker memeriksa kapasitas bersama jadwal jam kerja; ketika total mencapai 9 GiB, file job tertua dihapus sampai kapasitas turun ke 8 GiB. Batas pengaman ini sengaja lebih rendah dari jatah gratis 10 GB. Lampiran permanen tidak dihapus otomatis.
 
 Saat membuat environment Cloudflare baru, aktivasi akun R2 dilakukan satu kali melalui Dashboard, lalu jalankan:
 
