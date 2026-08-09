@@ -3,9 +3,9 @@ name: System Monitor
 on:
   workflow_dispatch:
   schedule:
-    # UTC: 06:07-17:37 WIB on Monday-Friday.
-    - cron: '7,37 23 * * SUN-THU'
-    - cron: '7,37 0-10 * * MON-FRI'
+    # UTC: 07:07-16:00 WIB on Monday-Friday.
+    - cron: '7,37 0-8 * * MON-FRI'
+    - cron: '0 9 * * MON-FRI'
 
 permissions:
   contents: read
