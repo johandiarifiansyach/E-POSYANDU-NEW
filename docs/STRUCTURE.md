@@ -23,7 +23,10 @@ E-POSYANDU/
 │   ├── scripts/             Generator artefak backend
 │   └── src/
 │       ├── api/             Endpoint CRUD, sinkronisasi, ekspor, dan cache
+│       ├── graphql.rs       Query baca GraphQL dengan scope wilayah yang sama
 │       └── lib.rs           Entry point Worker, auth, keamanan, dan routing
+├── services/
+│   └── nutrition-grpc/      Worker job berat Rust dan pull consumer Queue
 ├── database/migrations/     Migration PostgreSQL berurutan
 ├── docs/                    Dokumentasi arsitektur dan operasional
 ├── scripts/database/        Backup, restore, dan penerapan migration
@@ -37,5 +40,8 @@ E-POSYANDU/
 - Akses jaringan frontend hanya ditambahkan melalui `frontend/src/api`.
 - Kode penyimpanan browser dan sinkronisasi lokal ditempatkan di `frontend/src/services`.
 - Endpoint backend ditempatkan di `backend/src/api`; `lib.rs` hanya mengurus pintu masuk, autentikasi, keamanan, dan dispatch.
+- REST dipakai untuk autentikasi, CRUD, sinkronisasi ringan, pembuatan job, progres, dan unduhan. GraphQL hanya untuk query baca dashboard dan laporan terpaginasikan; gRPC hanya untuk validasi, kalkulasi, ekspor, dan normalisasi batch internal.
+- Cloudflare Queue hanya membawa ID job. Payload dan status tetap berada di PostgreSQL agar pesan kecil, dapat diulang secara idempoten, dan tidak menyimpan data kesehatan di antrean.
+- PostgreSQL adalah sumber data tunggal. Dashboard, daftar balita, masalah gizi, dan ASI eksklusif memakai fungsi laporan serta aturan cakupan yang sama; replika baca baru diperlukan setelah metrik produksi membuktikan kebutuhan.
 - Setiap perubahan struktur database wajib menjadi migration baru di `database/migrations`.
 - Jangan menyimpan output build, cache, `.env`, `.dev.vars`, backup, atau credential ke Git.

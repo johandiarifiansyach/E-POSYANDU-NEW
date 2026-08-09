@@ -9,6 +9,7 @@ use worker::{
 };
 
 mod api;
+mod graphql;
 
 const SCOPE_CACHE_TTL_MS: f64 = 90_000.0;
 const LOGIN_IP_WINDOW_SECONDS: u64 = 600;
@@ -530,6 +531,24 @@ async fn nutrition_batch(mut request: Request, env: &Env) -> ApiResult<serde_jso
     }
     let standards = standards()?;
     Ok(json!(calculate_nutrition(&payload.items, &standards)))
+}
+
+async fn internal_background_job(mut request: Request, env: &Env) -> ApiResult<serde_json::Value> {
+    let method = request.method();
+    let path = request.path();
+    let body = if method == Method::Get {
+        String::new()
+    } else {
+        request
+            .text()
+            .await
+            .map_err(|_| ApiFailure::new(422, "Data job Worker tidak valid."))?
+    };
+    if body.len() > 70_000_000 {
+        return Err(ApiFailure::new(413, "Data job Worker terlalu besar."));
+    }
+    verify_internal_request(&request, &body, env)?;
+    api::internal_background_job(method, &path, &body, env).await
 }
 
 fn failure_response(error: ApiFailure, origin: Option<&str>, request_id: &str) -> Result<Response> {
@@ -1196,7 +1215,12 @@ async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
 async fn dispatch(request: Request, env: &Env, context: &Context) -> ApiResult<serde_json::Value> {
     match (request.method(), request.path().as_str()) {
         (Method::Get, "/api/v1/openapi.json") => openapi_document(),
+        (Method::Post, "/api/v1/graphql") => graphql::execute(request, env).await,
+        (Method::Get, "/api/v1/graphql/schema") => Ok(graphql::schema_document()),
         (Method::Post, "/internal/v1/nutrition/batch") => nutrition_batch(request, env).await,
+        _ if request.path().starts_with("/internal/v1/jobs/") => {
+            internal_background_job(request, env).await
+        }
         (Method::Post, "/api/v1/auth/login") => login(request, env, context).await,
         (Method::Get, "/api/v1/me") => {
             let scope = require_scope(&request, env).await?;
@@ -1291,6 +1315,35 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
         log_request(&env, &request_id, &method, &path, 200, started_at);
         return Ok(response);
     }
+    if request.method() == Method::Get
+        && path.starts_with("/api/v1/jobs/")
+        && path.ends_with("/file")
+    {
+        let id = path
+            .trim_start_matches("/api/v1/jobs/")
+            .trim_end_matches("/file")
+            .trim_matches('/');
+        let (status, response) = match api::download_background_job_file(request, &env, id).await {
+            Ok(response) => (
+                200,
+                with_api_headers(
+                    response,
+                    origin.as_deref(),
+                    "private, no-store",
+                    &request_id,
+                )?,
+            ),
+            Err(error) => {
+                let status = error.status;
+                (
+                    status,
+                    failure_response(error, origin.as_deref(), &request_id)?,
+                )
+            }
+        };
+        log_request(&env, &request_id, &method, &path, status, started_at);
+        return Ok(response);
+    }
     let (status, response) = match dispatch(request, &env, &context).await {
         Ok(payload) => success_response(
             &payload,
@@ -1309,4 +1362,28 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
     };
     log_request(&env, &request_id, &method, &path, status, started_at);
     Ok(response)
+}
+
+#[event(scheduled)]
+pub async fn keep_nutrition_worker_awake(
+    _event: worker::ScheduledEvent,
+    env: Env,
+    _context: worker::ScheduleContext,
+) {
+    let Some(health_url) = optional_secret(&env, "RUST_WORKER_HEALTH_URL") else {
+        return;
+    };
+    let Ok(health_url) = url::Url::parse(&health_url) else {
+        worker::console_warn!("RUST_WORKER_HEALTH_URL tidak valid.");
+        return;
+    };
+
+    match Fetch::Url(health_url).send().await {
+        Ok(response) if response.status_code() < 400 => {}
+        Ok(response) => worker::console_warn!(
+            "Health check nutrition worker gagal dengan status {}.",
+            response.status_code()
+        ),
+        Err(error) => worker::console_warn!("Health check nutrition worker gagal: {error}"),
+    }
 }

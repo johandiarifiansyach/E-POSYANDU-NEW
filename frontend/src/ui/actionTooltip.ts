@@ -1,10 +1,26 @@
 let tooltipElement: HTMLDivElement | null = null;
 let dismissListenersRegistered = false;
+let dismissedPointer: { x: number; y: number } | null = null;
+
+function dismissAfterAction(event: Event) {
+  if (event instanceof MouseEvent) {
+    dismissedPointer = { x: event.clientX, y: event.clientY };
+  }
+  hideActionTooltip();
+}
+
+function clearDismissedPointer(event: MouseEvent) {
+  if (!dismissedPointer) return;
+  if (Math.abs(event.clientX - dismissedPointer.x) > 1 || Math.abs(event.clientY - dismissedPointer.y) > 1) {
+    dismissedPointer = null;
+  }
+}
 
 function registerDismissListeners() {
   if (dismissListenersRegistered) return;
   dismissListenersRegistered = true;
-  document.addEventListener('click', hideActionTooltip, true);
+  document.addEventListener('click', dismissAfterAction, true);
+  document.addEventListener('mousemove', clearDismissedPointer, { passive: true });
   window.addEventListener('hashchange', hideActionTooltip);
   window.addEventListener('resize', hideActionTooltip);
 }
@@ -21,6 +37,12 @@ function ensureTooltip() {
 }
 
 export function showActionTooltip(label: string, event: Event) {
+  if (
+    dismissedPointer
+    && event instanceof MouseEvent
+    && Math.abs(event.clientX - dismissedPointer.x) <= 1
+    && Math.abs(event.clientY - dismissedPointer.y) <= 1
+  ) return;
   const target = event.currentTarget;
   if (!(target instanceof HTMLElement) || !label) return;
 

@@ -8,7 +8,8 @@ CORS_ORIGINS=http://localhost:5173,http://localhost:5174,https://e-posyandu.page
 # Hanya gunakan pada `wrangler dev` lokal saat layanan Turnstile tidak dapat
 # dijangkau. Jangan pernah membuat variabel ini di dashboard Cloudflare.
 LOCAL_TURNSTILE_BYPASS=true
-# Opsional. Hanya diperlukan bila endpoint internal /internal/v1/nutrition/batch dipakai.
+# Opsional. Wajib sama dengan layanan gRPC saat endpoint internal kalkulasi
+# atau job Queue dipakai.
 RUST_WORKER_SHARED_SECRET=replace-with-a-long-random-secret
 # Opsional. Upstash Redis dipakai untuk pembatasan percobaan login lintas
 # instance Worker. Bila belum diisi, Worker memakai pembatas lokal sebagai

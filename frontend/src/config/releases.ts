@@ -11,6 +11,32 @@ export type AppRelease = {
 export const RELEASE_HISTORY: AppRelease[] = [
   {
     version: APP_VERSION,
+    releaseDate: '5 Agustus 2026',
+    releaseDateIso: '2026-08-05',
+    title: 'Sinkronisasi Penimbangan Terisolasi',
+    changes: [
+      'Penimbangan baru tidak lagi dianggap gagal akibat antrean perubahan identitas lama yang bermasalah.',
+      'Setiap perubahan offline menerima hasil sinkronisasi sendiri sehingga kegagalan satu data tidak menghambat data lainnya.',
+      'Nilai berat lama yang telanjur ditulis dalam gram dikonversi aman ke kilogram sebelum disimpan dan dihitung.',
+      'Payload BB penimbangan dan pembaruan ringkasan balita diuji sampai proses simpan pada desktop dan ponsel.',
+      'Cache aplikasi diperbarui agar perbaikan segera diterima perangkat kader.'
+    ]
+  },
+  {
+    version: '4.4.4',
+    releaseDate: '5 Agustus 2026',
+    releaseDateIso: '2026-08-05',
+    title: 'Form Stabil dan Penimbangan Lebih Ringan',
+    changes: [
+      'Kolom identitas dan penimbangan kini tetap terisi saat digunakan pada ponsel, tablet, maupun desktop.',
+      'Runtime native mempertahankan elemen, fokus, posisi kursor, dan keyboard saat formulir diperbarui.',
+      'Pemrosesan ganda pada input desimal dihapus agar BB, TB, LiLA, serta lingkar kepala tidak saling menimpa.',
+      'Status gizi real-time di form penimbangan dihapus agar pengisian lebih ringan; hasil status tetap tersedia pada tabel riwayat.',
+      'Pengujian pengisian form ditambahkan untuk tampilan desktop dan ponsel.'
+    ]
+  },
+  {
+    version: '4.4.3',
     releaseDate: '4 Agustus 2026',
     releaseDateIso: '2026-08-04',
     title: 'Input Pengukuran Desimal Stabil di HP',

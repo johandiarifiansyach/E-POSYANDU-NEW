@@ -184,7 +184,7 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
                 createdBy: user.role,
                 deletedAt: null
             });
-            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'measurements'), {
+            const birthMeasurementRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'measurements'), {
                 childId: newChildRef.id,
                 childName: submissionData.nama,
                 posyandu: submissionData.posyandu,
@@ -204,7 +204,7 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
                 ageInMonths: 0,
                 createdAt: serverTimestamp()
             });
-            await syncPendingMutations();
+            await syncPendingMutations([newChildRef.mutationId, birthMeasurementRef.mutationId]);
             showSuccess('Data balita berhasil ditambahkan.');
             onSuccess();
         }
@@ -264,19 +264,19 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
                         Native.createElement("h3", { className: "font-semibold" }, "Identitas dan Kelahiran")),
                     Native.createElement("div", { className: "grid grid-cols-1 gap-4 md:grid-cols-2" },
                         Native.createElement(InputGroup, { label: "Nama Lengkap Balita" },
-                            Native.createElement("input", { required: true, type: "text", className: inputClass, value: formData.nama, onChange: (event) => setFormData({ ...formData, nama: formatChildName(event.target.value) }) })),
+                            Native.createElement("input", { name: "nama", required: true, type: "text", className: inputClass, value: formData.nama, onChange: (event) => setFormData((previous) => ({ ...previous, nama: formatChildName(event.target.value) })) })),
                         Native.createElement("div", { className: "grid grid-cols-2 gap-4" },
                             Native.createElement(InputGroup, { label: "Anak Ke-" },
-                                Native.createElement("input", { required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.anakKe, onChange: handleDecimalFieldChange('anakKe'), onBlur: handleDecimalFieldBlur('anakKe') })),
+                                Native.createElement("input", { name: "anakKe", required: true, type: "text", inputMode: "numeric", className: inputClass, value: formData.anakKe, onChange: handleDecimalFieldChange('anakKe'), onBlur: handleDecimalFieldBlur('anakKe') })),
                             Native.createElement(InputGroup, { label: "Jenis Kelamin" },
                                 Native.createElement(Select, { required: true, value: formData.jk, onChange: (event) => setFormData({ ...formData, jk: event.target.value }), options: genderOptions }))),
                         Native.createElement(InputGroup, { label: "Tanggal Lahir" },
-                            Native.createElement("input", { required: true, type: "date", className: `${inputClass} min-h-12 text-base`, value: formData.tglLahir, onChange: (event) => {
+                            Native.createElement("input", { name: "tglLahir", required: true, type: "date", className: `${inputClass} min-h-12 text-base`, value: formData.tglLahir, onChange: (event) => {
                                     const tglLahir = event.target.value;
                                     setFormData((previous) => ({ ...previous, tglLahir, nik: previous.hasNIK ? previous.nik : generateTemporaryNik({ ...previous, tglLahir }, allChildren) }));
                                 } })),
                         Native.createElement(InputGroup, { label: "Usia Kehamilan (Minggu)" },
-                            Native.createElement("input", { required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.usiaKehamilan, onChange: handleDecimalFieldChange('usiaKehamilan'), onBlur: handleDecimalFieldBlur('usiaKehamilan') })),
+                            Native.createElement("input", { name: "usiaKehamilan", required: true, type: "text", inputMode: "numeric", className: inputClass, value: formData.usiaKehamilan, onChange: handleDecimalFieldChange('usiaKehamilan'), onBlur: handleDecimalFieldBlur('usiaKehamilan') })),
                         Native.createElement("div", { className: "space-y-2" },
                             Native.createElement("div", { className: "flex items-center justify-between gap-3" },
                                 Native.createElement("label", { className: "text-xs font-bold uppercase text-slate-500" }, "No. KK"),
@@ -287,7 +287,7 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
                                         } }),
                                     Native.createElement("span", { className: "ios-form-switch-track", "aria-hidden": "true" }),
                                     Native.createElement("span", null, "Tidak punya KK"))),
-                            Native.createElement("input", { required: formData.hasKK, readOnly: !formData.hasKK, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "No. KK harus 16 digit", type: "text", className: `${inputClass} font-mono ${!formData.hasKK ? 'bg-slate-200 text-slate-500' : 'bg-white'}`, value: formData.noKK, onChange: (event) => setFormData({ ...formData, noKK: event.target.value.replace(/\D/g, '') }) })),
+                            Native.createElement("input", { name: "noKK", required: formData.hasKK, readOnly: !formData.hasKK, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "No. KK harus 16 digit", type: "text", className: `${inputClass} font-mono ${!formData.hasKK ? 'bg-slate-200 text-slate-500' : 'bg-white'}`, value: formData.noKK, onChange: (event) => setFormData((previous) => ({ ...previous, noKK: event.target.value.replace(/\D/g, '') })) })),
                         Native.createElement("div", { className: "space-y-2" },
                             Native.createElement("div", { className: "flex items-center justify-between gap-3" },
                                 Native.createElement("label", { className: "text-xs font-bold uppercase text-slate-500" }, "NIK Balita"),
@@ -298,16 +298,16 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
                                         } }),
                                     Native.createElement("span", { className: "ios-form-switch-track", "aria-hidden": "true" }),
                                     Native.createElement("span", null, "Tidak punya NIK"))),
-                            Native.createElement("input", { required: formData.hasNIK, readOnly: !formData.hasNIK, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "NIK balita harus 16 digit", type: "text", className: `${inputClass} font-mono ${!formData.hasNIK ? 'bg-slate-200 text-rose-700' : 'bg-white'}`, value: formData.nik, onChange: (event) => setFormData({ ...formData, nik: event.target.value.replace(/\D/g, '') }) })),
+                            Native.createElement("input", { name: "nik", required: formData.hasNIK, readOnly: !formData.hasNIK, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "NIK balita harus 16 digit", type: "text", className: `${inputClass} font-mono ${!formData.hasNIK ? 'bg-slate-200 text-rose-700' : 'bg-white'}`, value: formData.nik, onChange: (event) => setFormData((previous) => ({ ...previous, nik: event.target.value.replace(/\D/g, '') })) })),
                         Native.createElement(InputGroup, { label: "Berat Lahir (kg)" },
-                            Native.createElement("input", { name: "bbLahir", required: true, type: "text", inputMode: "text", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bbLahir, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat lahir dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => {
+                            Native.createElement("input", { name: "bbLahir", required: true, type: "text", inputMode: "decimal", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bbLahir, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat lahir dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => {
                                     event.currentTarget.setCustomValidity('');
                                     handleDecimalFieldChange('bbLahir')(event);
-                                }, onChange: handleDecimalFieldChange('bbLahir'), onBlur: handleDecimalFieldBlur('bbLahir') })),
+                                }, onBlur: handleDecimalFieldBlur('bbLahir') })),
                         Native.createElement(InputGroup, { label: "Panjang Lahir (cm)" },
-                            Native.createElement("input", { name: "pbLahir", required: true, type: "text", inputMode: "text", className: inputClass, value: formData.pbLahir, onInput: handleDecimalFieldChange('pbLahir'), onChange: handleDecimalFieldChange('pbLahir'), onBlur: handleDecimalFieldBlur('pbLahir') })),
+                            Native.createElement("input", { name: "pbLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.pbLahir, onInput: handleDecimalFieldChange('pbLahir'), onBlur: handleDecimalFieldBlur('pbLahir') })),
                         Native.createElement(InputGroup, { label: "Lingkar Kepala (cm)" },
-                            Native.createElement("input", { name: "lkLahir", required: true, type: "text", inputMode: "text", className: inputClass, value: formData.lkLahir, onInput: handleDecimalFieldChange('lkLahir'), onChange: handleDecimalFieldChange('lkLahir'), onBlur: handleDecimalFieldBlur('lkLahir') })),
+                            Native.createElement("input", { name: "lkLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.lkLahir, onInput: handleDecimalFieldChange('lkLahir'), onBlur: handleDecimalFieldBlur('lkLahir') })),
                         Native.createElement(InputGroup, { label: "Buku KIA" },
                             Native.createElement(Select, { required: true, value: formData.bukuKIA, onChange: (event) => setFormData({ ...formData, bukuKIA: event.target.value }), options: yesNoOptions })),
                         Native.createElement(InputGroup, { label: "Buku KIA Kecil" },
@@ -321,18 +321,18 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
                         Native.createElement("h3", { className: "font-semibold" }, "Data Orang Tua")),
                     Native.createElement("div", { className: "grid grid-cols-1 gap-4 md:grid-cols-2" },
                         Native.createElement(InputGroup, { label: "Nama Orang Tua" },
-                            Native.createElement("input", { required: true, type: "text", className: inputClass, value: formData.namaOrtu, onChange: (event) => setFormData({ ...formData, namaOrtu: event.target.value }) })),
+                            Native.createElement("input", { name: "namaOrtu", required: true, type: "text", className: inputClass, value: formData.namaOrtu, onChange: (event) => setFormData((previous) => ({ ...previous, namaOrtu: event.target.value })) })),
                         Native.createElement(InputGroup, { label: "NIK Orang Tua" },
-                            Native.createElement("input", { required: true, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "NIK orang tua harus 16 digit", type: "text", className: `${inputClass} font-mono`, value: formData.nikOrtu, onChange: (event) => setFormData({ ...formData, nikOrtu: event.target.value.replace(/\D/g, '') }) }))),
+                            Native.createElement("input", { name: "nikOrtu", required: true, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "NIK orang tua harus 16 digit", type: "text", className: `${inputClass} font-mono`, value: formData.nikOrtu, onChange: (event) => setFormData((previous) => ({ ...previous, nikOrtu: event.target.value.replace(/\D/g, '') })) }))),
                     Native.createElement(InputGroup, { label: "Alamat Lengkap" },
-                        Native.createElement("textarea", { required: true, rows: 2, className: inputClass, value: formData.alamat, onChange: (event) => setFormData({ ...formData, alamat: event.target.value }) })),
+                        Native.createElement("textarea", { name: "alamat", required: true, rows: 2, className: inputClass, value: formData.alamat, onChange: (event) => setFormData((previous) => ({ ...previous, alamat: event.target.value })) })),
                     Native.createElement("div", { className: "grid grid-cols-1 gap-4 sm:grid-cols-3" },
                         Native.createElement(InputGroup, { label: "No. HP" },
-                            Native.createElement("input", { required: true, inputMode: "tel", pattern: "[0-9]{8,15}", maxLength: 15, title: "No. HP harus 8 sampai 15 digit", type: "text", className: inputClass, value: formData.noHpOrtu, onChange: (event) => setFormData({ ...formData, noHpOrtu: event.target.value.replace(/\D/g, '') }) })),
+                            Native.createElement("input", { name: "noHpOrtu", required: true, inputMode: "tel", pattern: "[0-9]{8,15}", maxLength: 15, title: "No. HP harus 8 sampai 15 digit", type: "text", className: inputClass, value: formData.noHpOrtu, onChange: (event) => setFormData((previous) => ({ ...previous, noHpOrtu: event.target.value.replace(/\D/g, '') })) })),
                         Native.createElement(InputGroup, { label: "RT" },
-                            Native.createElement("input", { required: true, inputMode: "numeric", type: "text", className: inputClass, value: formData.rt, onChange: (event) => setFormData({ ...formData, rt: event.target.value.replace(/\D/g, '') }) })),
+                            Native.createElement("input", { name: "rt", required: true, inputMode: "numeric", type: "text", className: inputClass, value: formData.rt, onChange: (event) => setFormData((previous) => ({ ...previous, rt: event.target.value.replace(/\D/g, '') })) })),
                         Native.createElement(InputGroup, { label: "RW" },
-                            Native.createElement("input", { required: true, inputMode: "numeric", type: "text", className: inputClass, value: formData.rw, onChange: (event) => setFormData({ ...formData, rw: event.target.value.replace(/\D/g, '') }) })))),
+                            Native.createElement("input", { name: "rw", required: true, inputMode: "numeric", type: "text", className: inputClass, value: formData.rw, onChange: (event) => setFormData((previous) => ({ ...previous, rw: event.target.value.replace(/\D/g, '') })) })))),
                 errorMessage && Native.createElement("p", { role: "alert", className: "ios-inline-notification ios-inline-notification-error" }, errorMessage),
                 Native.createElement("div", { className: "flex flex-col-reverse gap-3 border-t border-slate-200 pt-6 sm:flex-row sm:justify-end" },
                     Native.createElement(Button, { variant: "secondary", type: "button", onClick: onBack, className: "w-full sm:w-auto" },

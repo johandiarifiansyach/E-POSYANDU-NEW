@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: e-posyandu-nutrition-worker
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./services/nutrition-grpc/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_QUEUE_ID
+        sync: false
+      - key: CLOUDFLARE_QUEUES_API_TOKEN
+        sync: false
+      - key: EPOSYANDU_API_URL
+        sync: false
+      - key: RUST_WORKER_SHARED_SECRET
+        sync: false
+      - key: QUEUE_BATCH_SIZE
+        value: "2"
+      - key: QUEUE_POLL_INTERVAL_MS
+        value: "15000"

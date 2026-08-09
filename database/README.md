@@ -18,6 +18,10 @@ Migrasi `012_pmt_baseline_measurements.sql` menyimpan tanggal, berat, dan tinggi
 
 Migrasi `013_align_dashboard_child_total.sql` menyamakan tanggal acuan umur dashboard dan daftar balita pada hari terakhir bulan laporan, sehingga nilai S selalu sesuai jumlah balita aktif usia 0-59 bulan.
 
+Migrasi `014_unify_dashboard_report_counts.sql` menyatukan relasi balita lama dan baru, pemilihan penimbangan bulanan terbaru, cakupan wilayah, serta aturan umur untuk dashboard, daftar masalah gizi, dan ASI eksklusif. Daftar masalah gizi dihitung dan dipaginasi di PostgreSQL agar angka total sama dengan dashboard tanpa membaca seluruh data ke browser.
+
+Migrasi `015_background_grpc_jobs.sql` menambahkan tabel status pekerjaan berat untuk Cloudflare Queue dan gRPC. Payload dan hasil hanya dapat dibaca `service_role`, dilindungi RLS, memakai idempotency key, memiliki masa berlaku, dan dicatat dalam audit operasional.
+
 ## Pemeriksaan
 
 ```sql
@@ -34,7 +38,7 @@ order by table_name;
 select relname, relrowsecurity, relforcerowsecurity
 from pg_class
 where relnamespace = 'public'::regnamespace
-  and relname in ('children', 'measurements', 'mpasi_logs', 'pmt_programs', 'audit_events');
+  and relname in ('children', 'measurements', 'mpasi_logs', 'pmt_programs', 'audit_events', 'background_jobs');
 ```
 
 Tabel aplikasi hanya diberikan kepada `service_role`. Peran `anon` dan `authenticated` tidak menerima grant tabel, sehingga browser wajib melewati Rust Worker. Kebijakan RLS tetap dipertahankan sebagai lapisan keamanan tambahan.

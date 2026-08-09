@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "E-Posyandu Puskesmas Gumukmas API",
-    "version": "4.4.3",
-    "description": "REST API untuk autentikasi, dashboard, data balita, pengukuran, sinkronisasi offline, dan ekspor E-Posyandu."
+    "version": "4.4.5",
+    "description": "REST API untuk autentikasi, CRUD, sinkronisasi, dan ekspor, serta endpoint GraphQL baca E-Posyandu."
   },
   "servers": [
     {
@@ -37,6 +37,46 @@
           "200": {
             "description": "Dokumen OpenAPI"
           }
+        }
+      }
+    },
+    "/api/v1/graphql": {
+      "post": {
+        "summary": "Menjalankan query GraphQL baca sesuai cakupan wilayah pengguna",
+        "operationId": "graphQlQuery",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                  "query": { "type": "string" },
+                  "variables": { "type": "object" },
+                  "operationName": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Hasil query GraphQL atau error GraphQL terstruktur" },
+          "401": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/graphql/schema": {
+      "get": {
+        "summary": "Mengambil schema GraphQL baca",
+        "operationId": "graphQlSchema",
+        "responses": {
+          "200": { "description": "Schema Definition Language GraphQL" }
         }
       }
     },
@@ -187,6 +227,121 @@
             "description": "Hasil sinkronisasi"
           },
           "409": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/v1/jobs": {
+      "post": {
+        "summary": "Membuat pekerjaan berat untuk Queue dan gRPC worker",
+        "operationId": "createBackgroundJob",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackgroundJobCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job masuk antrean",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackgroundJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{jobId}": {
+      "get": {
+        "summary": "Membaca progres dan hasil pekerjaan",
+        "operationId": "getBackgroundJob",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackgroundJob"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{jobId}/file": {
+      "get": {
+        "summary": "Mengunduh hasil Excel atau PDF privat dari R2",
+        "operationId": "downloadBackgroundJobFile",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berkas hasil job"
+          },
+          "404": {
             "$ref": "#/components/responses/ApiError"
           }
         }
@@ -401,6 +556,78 @@
             ]
           },
           "posyandu": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "BackgroundJobCreate": {
+        "type": "object",
+        "required": [
+          "kind",
+          "payload"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "import_validation",
+              "nutrition_report",
+              "export_file",
+              "system_sync"
+            ]
+          },
+          "payload": {
+            "type": "object"
+          }
+        }
+      },
+      "BackgroundJob": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "progress"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "processing",
+              "completed",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "progress": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "result": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "downloadUrl": {
             "type": [
               "string",
               "null"

@@ -104,6 +104,11 @@ type SyncMutationResult = {
   documentId: string;
   operation: PendingMutation['type'];
   document?: ApiDocument;
+  error?: {
+    status: number;
+    code: string;
+    detail: string;
+  };
 };
 
 type SyncChangeSet = {
@@ -127,7 +132,15 @@ export type ChildrenPageRequest = {
   search?: string;
   size?: number;
   sort: string;
-  view?: 'data' | 'recent' | 'recycle' | 'mpasi';
+  view?:
+    | 'data'
+    | 'recent'
+    | 'recycle'
+    | 'mpasi'
+    | 'problem_underweight'
+    | 'problem_stunting'
+    | 'problem_wasting'
+    | 'problem_tidak_naik';
   village?: string;
 };
 
@@ -214,6 +227,31 @@ export type SigiziMeasurementExportRow = {
 
 export type SigiziMeasurementExportResponse = {
   items: SigiziMeasurementExportRow[];
+};
+
+export type BackgroundJobKind =
+  | 'import_validation'
+  | 'nutrition_report'
+  | 'export_file'
+  | 'system_sync';
+
+export type BackgroundJob = {
+  id: string;
+  kind: BackgroundJobKind;
+  status: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  progress: number;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  fileName: string | null;
+  contentType: string | null;
+  sizeBytes: number | null;
+  downloadUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  expiresAt: string;
+  queueConfigured?: boolean;
 };
 
 type LegacyDocument = {
@@ -562,6 +600,38 @@ async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function graphQlRequest<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+  const accessToken = await getAccessToken(authState);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/v1/graphql`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'X-Request-ID': createRequestId()
+      },
+      body: JSON.stringify({ query, variables })
+    });
+  } catch (error) {
+    if (isNetworkError(error)) {
+      throw new Error('Tidak dapat terhubung ke API. Periksa koneksi lalu coba lagi.');
+    }
+    throw error;
+  }
+  let payload: { data?: T; errors?: Array<{ message?: string }> };
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`Permintaan GraphQL gagal (${response.status}).`);
+  }
+  if (!response.ok || payload.errors?.length || !payload.data) {
+    throw new Error(payload.errors?.[0]?.message || `Permintaan GraphQL gagal (${response.status}).`);
+  }
+  return payload.data;
+}
+
 export type FeatureFlags = {
   csvExport: boolean;
   largeExports: boolean;
@@ -572,6 +642,62 @@ export type FeatureFlags = {
 
 export async function getFeatureFlags(): Promise<FeatureFlags> {
   return apiRequest<FeatureFlags>('/features');
+}
+
+export async function createBackgroundJob(
+  kind: BackgroundJobKind,
+  payload: Record<string, unknown>,
+  idempotencyKey = createRequestId()
+): Promise<BackgroundJob> {
+  return apiRequest<BackgroundJob>('/jobs', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify({ kind, payload })
+  });
+}
+
+export async function getBackgroundJob(id: string): Promise<BackgroundJob> {
+  return apiRequest<BackgroundJob>(`/jobs/${encodeURIComponent(id)}`);
+}
+
+export async function waitForBackgroundJob(
+  id: string,
+  options: { intervalMs?: number; timeoutMs?: number } = {}
+): Promise<BackgroundJob> {
+  const intervalMs = Math.max(500, options.intervalMs ?? 1_500);
+  const timeoutMs = Math.max(intervalMs, options.timeoutMs ?? 5 * 60_000);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const job = await getBackgroundJob(id);
+    if (job.status === 'completed') return job;
+    if (job.status === 'failed' || job.status === 'cancelled') {
+      throw new Error(job.error || 'Pekerjaan tidak berhasil diproses.');
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+  }
+  throw new Error('Pekerjaan masih diproses. Silakan periksa kembali sebentar lagi.');
+}
+
+export async function downloadBackgroundJobFile(job: BackgroundJob): Promise<Blob> {
+  if (!job.downloadUrl) throw new Error('Berkas hasil pekerjaan belum tersedia.');
+  const accessToken = await getAccessToken(authState);
+  const response = await fetch(`${API_BASE_URL}${job.downloadUrl}`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'X-Request-ID': createRequestId()
+    }
+  });
+  if (!response.ok) {
+    let detail = 'Berkas hasil pekerjaan tidak dapat diunduh.';
+    try {
+      const payload = await response.json();
+      if (typeof payload?.detail === 'string') detail = payload.detail;
+    } catch {
+      // Keep a safe message when the response is not JSON.
+    }
+    throw new Error(detail);
+  }
+  return response.blob();
 }
 
 function stackFrames(error: unknown): string {
@@ -612,21 +738,45 @@ export async function reportClientError(
 
 export async function getChildrenPage(request: ChildrenPageRequest): Promise<ChildrenPageResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-
-  const parameters = new URLSearchParams({
+  const result = await graphQlRequest<{ childrenPage: ChildrenPageResponse }>(`
+    query ChildrenPage(
+      $asOf: String!
+      $measurementStart: String!
+      $measurementEnd: String!
+      $page: Int!
+      $size: Int!
+      $sort: String!
+      $view: String!
+      $search: String
+      $village: String
+      $posyandu: String
+    ) {
+      childrenPage(
+        asOf: $asOf
+        measurementStart: $measurementStart
+        measurementEnd: $measurementEnd
+        page: $page
+        size: $size
+        sort: $sort
+        view: $view
+        search: $search
+        village: $village
+        posyandu: $posyandu
+      )
+    }
+  `, {
     asOf: request.asOf,
     measurementEnd: request.measurementEnd,
     measurementStart: request.measurementStart,
-    page: String(request.page),
-    size: String(request.size || 10),
-    sort: request.sort
+    page: request.page,
+    size: request.size || 10,
+    sort: request.sort,
+    view: request.view || 'data',
+    search: request.search?.trim() || null,
+    village: request.village?.trim() || null,
+    posyandu: request.posyandu?.trim() || null
   });
-  if (request.search?.trim()) parameters.set('search', request.search.trim());
-  if (request.view) parameters.set('view', request.view);
-  if (request.village?.trim()) parameters.set('village', request.village.trim());
-  if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
-
-  const response = await apiRequest<ChildrenPageResponse>(`/children/page?${parameters.toString()}`);
+  const response = result.childrenPage;
   const now = new Date().toISOString();
   await Promise.all([
     cacheRemoteDocuments('children', response.items.map((item) => ({
@@ -676,17 +826,36 @@ export async function getExclusiveBreastfeedingPage(
   request: ExclusiveBreastfeedingPageRequest
 ): Promise<ExclusiveBreastfeedingPageResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-
-  const parameters = new URLSearchParams({
+  const result = await graphQlRequest<{ exclusiveBreastfeedingPage: ExclusiveBreastfeedingPageResponse }>(`
+    query ExclusiveBreastfeedingPage(
+      $measurementStart: String!
+      $measurementEnd: String!
+      $ageGroup: String!
+      $page: Int!
+      $size: Int!
+      $village: String
+      $posyandu: String
+    ) {
+      exclusiveBreastfeedingPage(
+        measurementStart: $measurementStart
+        measurementEnd: $measurementEnd
+        ageGroup: $ageGroup
+        page: $page
+        size: $size
+        village: $village
+        posyandu: $posyandu
+      )
+    }
+  `, {
     ageGroup: request.ageGroup,
     measurementEnd: request.measurementEnd,
     measurementStart: request.measurementStart,
-    page: String(request.page),
-    size: String(request.size || 10)
+    page: request.page,
+    size: request.size || 10,
+    village: request.village?.trim() || null,
+    posyandu: request.posyandu?.trim() || null
   });
-  if (request.village?.trim()) parameters.set('village', request.village.trim());
-  if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
-  return apiRequest<ExclusiveBreastfeedingPageResponse>(`/exclusive-breastfeeding/page?${parameters.toString()}`);
+  return result.exclusiveBreastfeedingPage;
 }
 
 export async function getChildDetail(id: string): Promise<ApiDocument> {
@@ -697,15 +866,30 @@ export async function getChildDetail(id: string): Promise<ApiDocument> {
 
 export async function getDashboardStats(request: DashboardStatsRequest): Promise<DashboardStatsResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-  const parameters = new URLSearchParams({
-    monthEnd: request.monthEnd,
-    monthStart: request.monthStart,
-    previousMonthEnd: request.previousMonthEnd,
-    previousMonthStart: request.previousMonthStart
+  const data = await graphQlRequest<{ dashboardStats: DashboardStatsResponse }>(`
+    query DashboardStats(
+      $monthStart: String!
+      $monthEnd: String!
+      $previousMonthStart: String!
+      $previousMonthEnd: String!
+      $village: String
+      $posyandu: String
+    ) {
+      dashboardStats(
+        monthStart: $monthStart
+        monthEnd: $monthEnd
+        previousMonthStart: $previousMonthStart
+        previousMonthEnd: $previousMonthEnd
+        village: $village
+        posyandu: $posyandu
+      )
+    }
+  `, {
+    ...request,
+    village: request.village?.trim() || null,
+    posyandu: request.posyandu?.trim() || null
   });
-  if (request.village?.trim()) parameters.set('village', request.village.trim());
-  if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
-  return apiRequest<DashboardStatsResponse>(`/dashboard/stats?${parameters.toString()}`);
+  return data.dashboardStats;
 }
 
 export async function getSigiziMeasurementExport(
@@ -1288,7 +1472,12 @@ async function applyLegacySupabaseMutation(mutation: PendingMutation): Promise<v
   });
 }
 
-let syncPromise: Promise<void> | null = null;
+type SyncRunResult = {
+  errors: Map<string, Error>;
+  syncedCount: number;
+};
+
+let syncPromise: Promise<SyncRunResult> | null = null;
 const syncedMutationListeners = new Set<() => void>();
 
 export function subscribeToSyncedMutations(listener: () => void): () => void {
@@ -1360,7 +1549,7 @@ function syncMutationPayload(mutation: PendingMutation) {
   };
 }
 
-async function syncFastApiBatch(batch: PendingMutation[]): Promise<void> {
+async function syncFastApiBatch(batch: PendingMutation[]): Promise<SyncRunResult> {
   const response = await apiRequest<SyncResponse>('/sync', {
     method: 'POST',
     body: JSON.stringify({ mutations: batch.map(syncMutationPayload), pull: [] })
@@ -1370,9 +1559,18 @@ async function syncFastApiBatch(batch: PendingMutation[]): Promise<void> {
     throw new Error('Respons sinkronisasi tidak lengkap. Data tetap disimpan untuk dicoba kembali.');
   }
 
+  const errors = new Map<string, Error>();
+  let syncedCount = 0;
   for (const mutation of batch) {
     const result = results.get(mutation.id);
+    if (result?.error) {
+      const error = new Error(result.error.detail || 'Perubahan data belum dapat disinkronkan.');
+      errors.set(mutation.id, error);
+      await markMutationError(mutation, error);
+      continue;
+    }
     await completeMutation(mutation);
+    syncedCount += 1;
     if (mutation.type !== 'delete' && result?.document?.id) {
       const document = result.document;
       const now = new Date().toISOString();
@@ -1384,56 +1582,84 @@ async function syncFastApiBatch(batch: PendingMutation[]): Promise<void> {
       }]);
     }
   }
+  return { errors, syncedCount };
 }
 
-export async function syncPendingMutations(): Promise<void> {
+async function runPendingMutationSync(): Promise<SyncRunResult> {
+  const errors = new Map<string, Error>();
+  let syncedCount = 0;
+  const attempted = new Set<string>();
+
+  await runOnlineOperation(async () => {
+    if (usesFastApi()) {
+      while (true) {
+        const pending = orderedPendingMutations(await getPendingMutations())
+          .filter((mutation) => !attempted.has(mutation.id));
+        if (pending.length === 0) break;
+        const batch = pending.slice(0, 25);
+        batch.forEach((mutation) => attempted.add(mutation.id));
+        try {
+          const outcome = await syncFastApiBatch(batch);
+          syncedCount += outcome.syncedCount;
+          outcome.errors.forEach((error, id) => errors.set(id, error));
+        } catch (error) {
+          const normalizedError = error instanceof Error ? error : new Error(String(error));
+          await Promise.all(batch.map((mutation) => markMutationError(mutation, normalizedError)));
+          batch.forEach((mutation) => errors.set(mutation.id, normalizedError));
+          break;
+        }
+      }
+      return;
+    }
+
+    while (true) {
+      const mutation = nextPendingMutation(
+        (await getPendingMutations()).filter((entry) => !attempted.has(entry.id))
+      );
+      if (!mutation) break;
+      attempted.add(mutation.id);
+      try {
+        await applyPendingMutation(mutation);
+        await completeMutation(mutation);
+        syncedCount += 1;
+      } catch (error) {
+        const normalizedError = error instanceof Error ? error : new Error(String(error));
+        await markMutationError(mutation, normalizedError);
+        errors.set(mutation.id, normalizedError);
+      }
+    }
+  });
+
+  if (syncedCount > 0) notifySyncedMutations();
+  return { errors, syncedCount };
+}
+
+export async function syncPendingMutations(focusMutationIds: string[] = []): Promise<void> {
   if (!isOnline()) return;
-  if (syncPromise) {
-    await syncPromise;
-    if ((await getPendingMutations()).length > 0) return syncPendingMutations();
-    return;
+  const focusedIds = new Set(focusMutationIds.filter(Boolean));
+  const collectedErrors = new Map<string, Error>();
+
+  while (true) {
+    if (!syncPromise) {
+      syncPromise = runPendingMutationSync().finally(() => {
+        syncPromise = null;
+      });
+    }
+    const outcome = await syncPromise;
+    outcome.errors.forEach((error, id) => collectedErrors.set(id, error));
+
+    if (focusedIds.size === 0) break;
+    const pendingFocusedMutations = (await getPendingMutations())
+      .filter((mutation) => focusedIds.has(mutation.id));
+    const hasUnattemptedFocusedMutation = pendingFocusedMutations
+      .some((mutation) => !collectedErrors.has(mutation.id));
+    if (!hasUnattemptedFocusedMutation) break;
   }
 
-  syncPromise = (async () => {
-    let syncedCount = 0;
-    try {
-      await runOnlineOperation(async () => {
-        if (usesFastApi()) {
-          let pending = orderedPendingMutations(await getPendingMutations());
-          while (pending.length > 0) {
-            const batch = pending.slice(0, 25);
-            try {
-              await syncFastApiBatch(batch);
-              syncedCount += batch.length;
-            } catch (error) {
-              await Promise.all(batch.map((mutation) => markMutationError(mutation, error)));
-              throw error;
-            }
-            pending = orderedPendingMutations(await getPendingMutations());
-          }
-          return;
-        }
-
-        let mutation = nextPendingMutation(await getPendingMutations());
-        while (mutation) {
-          try {
-            await applyPendingMutation(mutation);
-            await completeMutation(mutation);
-            syncedCount += 1;
-          } catch (error) {
-            await markMutationError(mutation, error);
-            throw error;
-          }
-          mutation = nextPendingMutation(await getPendingMutations());
-        }
-      });
-    } finally {
-      if (syncedCount > 0) notifySyncedMutations();
-    }
-  })().finally(() => {
-    syncPromise = null;
-  });
-  return syncPromise;
+  const relevantErrors = focusedIds.size > 0
+    ? Array.from(collectedErrors).filter(([id]) => focusedIds.has(id))
+    : Array.from(collectedErrors);
+  if (relevantErrors.length > 0) throw relevantErrors[0][1];
 }
 
 function requestSync() {
@@ -1455,21 +1681,21 @@ export async function syncActiveViewFromServer(): Promise<void> {
   });
 }
 
-export async function addDoc(ref: CollectionRef, payload: Record<string, any>): Promise<{ id: string }> {
+export async function addDoc(ref: CollectionRef, payload: Record<string, any>): Promise<{ id: string; mutationId: string }> {
   const now = new Date().toISOString();
   const id = createId();
   const data = normalizeForWrite(payload);
   await putCachedDocument(makeCachedDocument(ref.tableName, id, data, now, now));
-  await queueMutation({ type: 'add', tableName: ref.tableName, documentId: id, payload: { data, createdAt: now } });
+  const mutation = await queueMutation({ type: 'add', tableName: ref.tableName, documentId: id, payload: { data, createdAt: now } });
   requestSync();
-  return { id };
+  return { id, mutationId: mutation.id };
 }
 
 export async function getDocs(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
   return readCachedQuery(ref);
 }
 
-export async function updateDoc(ref: DocRef, patch: Record<string, any>): Promise<void> {
+export async function updateDoc(ref: DocRef, patch: Record<string, any>): Promise<{ mutationId: string }> {
   const now = new Date().toISOString();
   const normalizedPatch = normalizeForWrite(patch);
   const existing = await getCachedDocument(ref.tableName, ref.id);
@@ -1480,13 +1706,14 @@ export async function updateDoc(ref: DocRef, patch: Record<string, any>): Promis
     : undefined;
   const merged = { ...(existing?.data || {}), ...normalizedPatch };
   await putCachedDocument(makeCachedDocument(ref.tableName, ref.id, merged, existing?.createdAt || now, now));
-  await queueMutation({
+  const mutation = await queueMutation({
     type: 'update',
     tableName: ref.tableName,
     documentId: ref.id,
     payload: { data: normalizedPatch, expectedVersion, expectedUpdatedAt }
   });
   requestSync();
+  return { mutationId: mutation.id };
 }
 
 export async function deleteDoc(ref: DocRef): Promise<void> {

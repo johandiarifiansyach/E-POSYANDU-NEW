@@ -1333,9 +1333,9 @@ html[data-theme="dark"] .app-shell.is-sidebar-collapsed .app-sidebar-nav {
   border-right: 1px solid var(--apple-separator);
   background: rgba(246, 246, 248, 0.82);
   box-shadow: 12px 0 36px rgba(0, 0, 0, 0.045);
-  -webkit-backdrop-filter: blur(38px) saturate(180%);
-  backdrop-filter: blur(38px) saturate(180%);
-  transition: width 220ms ease, flex-basis 220ms ease, transform 300ms ease;
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  backdrop-filter: blur(30px) saturate(180%);
+  transition: width 140ms ease-out, flex-basis 140ms ease-out, transform 180ms ease-out;
 }
 
 .sidebar-mobile-toolbar {
@@ -1429,6 +1429,16 @@ html[data-theme="dark"] .app-shell.is-sidebar-collapsed .app-sidebar-nav {
   stroke: currentColor;
   stroke-width: 2.4;
   filter: drop-shadow(0 1px 1px rgba(0, 64, 140, 0.2));
+}
+
+.sidebar-expand-icon,
+.sidebar-expand-label {
+  display: none;
+}
+
+.sidebar-collapse-icon,
+.sidebar-collapse-label {
+  display: inline-flex;
 }
 
 .sidebar-nav-spacer {
@@ -1608,8 +1618,8 @@ html[data-theme="dark"] .app-shell.is-sidebar-collapsed .app-sidebar-nav {
       inset 0 1px 0 rgba(255, 255, 255, 0.9),
       inset 1px 0 0 rgba(255, 255, 255, 0.46),
       inset 0 -1px 0 rgba(113, 126, 148, 0.12);
-    -webkit-backdrop-filter: blur(32px) saturate(190%) brightness(1.04);
-    backdrop-filter: blur(32px) saturate(190%) brightness(1.04);
+    -webkit-backdrop-filter: blur(24px) saturate(185%) brightness(1.04);
+    backdrop-filter: blur(24px) saturate(185%) brightness(1.04);
   }
 
   .app-shell:not(.is-sidebar-collapsed) .app-sidebar::before {
@@ -1654,7 +1664,7 @@ html[data-theme="dark"] .app-shell.is-sidebar-collapsed .app-sidebar-nav {
     display: none !important;
   }
 
-  .sidebar-expanded-dismiss {
+  .app-shell:not(.is-sidebar-collapsed) > .sidebar-expanded-dismiss {
     position: fixed;
     z-index: 40;
     inset: 0;
@@ -1726,6 +1736,16 @@ html[data-theme="dark"] .app-shell.is-sidebar-collapsed .app-sidebar-nav {
     height: 38px;
     flex-basis: 38px;
     border-radius: 12px;
+  }
+
+  .app-shell.is-sidebar-collapsed .sidebar-expand-icon,
+  .app-shell.is-sidebar-collapsed .sidebar-expand-label {
+    display: inline-flex;
+  }
+
+  .app-shell.is-sidebar-collapsed .sidebar-collapse-icon,
+  .app-shell.is-sidebar-collapsed .sidebar-collapse-label {
+    display: none;
   }
 
   .app-shell.is-sidebar-collapsed .sidebar-nav-item {
@@ -2218,8 +2238,7 @@ html[data-theme="dark"] .app-shell.is-sidebar-collapsed .app-sidebar-nav {
 
 .measurement-form-panel,
 .measurement-service-panel,
-.measurement-service-option,
-.measurement-status-panel {
+.measurement-service-option {
   padding: 16px;
   border: 1px solid rgba(60, 60, 67, 0.1);
   border-radius: 16px;
@@ -2241,24 +2260,6 @@ html[data-theme="dark"] .app-shell.is-sidebar-collapsed .app-sidebar-nav {
 
 .measurement-service-panel {
   border-left: 4px solid #ff9500;
-}
-
-.measurement-status-panel {
-  border-color: rgba(0, 122, 255, 0.12);
-  background: rgba(0, 122, 255, 0.055);
-}
-
-.measurement-status-grid > div {
-  min-width: 0;
-  padding: 4px 10px;
-}
-
-.measurement-status-grid p {
-  min-height: 28px;
-  margin-bottom: 6px;
-  color: rgba(60, 60, 67, 0.62);
-  font-size: 11px;
-  font-weight: 700;
 }
 
 .measurement-service-option {
@@ -2492,8 +2493,7 @@ html[data-theme="dark"] .app-shell.is-sidebar-collapsed .app-sidebar-nav {
 
   .measurement-form-panel,
   .measurement-service-panel,
-  .measurement-service-option,
-  .measurement-status-panel {
+  .measurement-service-option {
     padding: 14px;
   }
 
@@ -4657,17 +4657,11 @@ html[data-theme="dark"] .apple-feature-card .bg-gradient-to-r {
 
 html[data-theme="dark"] .measurement-form-panel,
 html[data-theme="dark"] .measurement-service-panel,
-html[data-theme="dark"] .measurement-service-option,
-html[data-theme="dark"] .measurement-status-panel {
+html[data-theme="dark"] .measurement-service-option {
   border-color: rgba(235, 235, 245, 0.12);
   background: rgba(44, 44, 49, 0.82);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
   color: #f5f5f7;
-}
-
-html[data-theme="dark"] .measurement-status-panel {
-  border-color: rgba(100, 210, 255, 0.18);
-  background: rgba(10, 132, 255, 0.12);
 }
 
 html[data-theme="dark"] .measurement-service-vitamin {
@@ -4678,10 +4672,6 @@ html[data-theme="dark"] .measurement-service-vitamin {
 html[data-theme="dark"] .measurement-service-asi {
   border-color: rgba(100, 210, 255, 0.22);
   background: rgba(10, 132, 255, 0.1);
-}
-
-html[data-theme="dark"] .measurement-status-grid p {
-  color: rgba(235, 235, 245, 0.64);
 }
 
 html[data-theme="dark"] .measurement-form-actions {

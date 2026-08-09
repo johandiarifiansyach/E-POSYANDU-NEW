@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.eposyandu.nutrition-grpc</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__INSTALL_DIR__/run-nutrition-grpc.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>EPOSYANDU_GRPC_ENV_FILE</key>
+    <string>__HOME__/.config/e-posyandu/nutrition-grpc.env</string>
+    <key>EPOSYANDU_GRPC_BINARY</key>
+    <string>__INSTALL_DIR__/e-posyandu-nutrition-grpc</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>__INSTALL_DIR__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/EPosyandu/nutrition-grpc.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/EPosyandu/nutrition-grpc-error.log</string>
+</dict>
+</plist>

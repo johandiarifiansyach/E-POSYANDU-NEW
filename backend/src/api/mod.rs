@@ -1,8 +1,11 @@
 use crate::{AccessScope, ApiFailure, ApiResult, hashed_key, require_scope, secret};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use worker::{
-    Cache, Env, Fetch, Headers, Method, Request, RequestInit, Response, wasm_bindgen::JsValue,
+    Cache, Env, Fetch, Headers, HttpMetadata, Method, Request, RequestInit, Response,
+    wasm_bindgen::JsValue,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,6 +21,8 @@ const DASHBOARD_CACHE_TTL_SECONDS: u64 = 60;
 const DASHBOARD_CACHE_VERSION_KEY: &str = "dashboard:version:v1";
 const FEATURE_FLAGS_KEY: &str = "feature:flags:v1";
 const CHANGE_AUDIT_MAX_DISTANCE_MS: f64 = 5.0 * 60.0 * 1_000.0;
+const BACKGROUND_JOB_MAX_BODY_BYTES: usize = 4_000_000;
+const BACKGROUND_JOB_MAX_FILE_BYTES: usize = 50_000_000;
 const IDENTITY_CHANGE_FIELDS: [&str; 23] = [
     "nama",
     "nik",
@@ -220,7 +225,10 @@ fn normalize_decimal_text(value: &str) -> String {
             continue;
         }
         if !has_separator
-            && matches!(character, '.' | ',' | '\u{066B}' | '\u{066C}' | '\u{FF0C}' | '\u{FE50}' | '\u{FF0E}')
+            && matches!(
+                character,
+                '.' | ',' | '\u{066B}' | '\u{066C}' | '\u{FF0C}' | '\u{FE50}' | '\u{FF0E}'
+            )
         {
             normalized.push('.');
             has_separator = true;
@@ -920,9 +928,8 @@ async fn send_client_error_email(
         .var("ENVIRONMENT")
         .map(|value| value.to_string())
         .unwrap_or_else(|_| "unknown".into());
-    let subject = format!(
-        "[E-Posyandu][{environment}] Laporan Error Frontend {error_type} ({source})"
-    );
+    let subject =
+        format!("[E-Posyandu][{environment}] Laporan Error Frontend {error_type} ({source})");
     let text = format!(
         "Terjadi error frontend dan pengguna menekan Laporkan Masalah.\n\nrequest_id: {request_id}\nuser_id: {}\nrole: {}\nsource: {source}\nroute: {route}\nerror_type: {error_type}\n\nstack_frames:\n{stack_frames}\n",
         scope.user_id, scope.role
@@ -936,7 +943,10 @@ async fn send_client_error_email(
     });
 
     let headers = Headers::new();
-    if headers.set("Authorization", &format!("Bearer {api_key}")).is_err() {
+    if headers
+        .set("Authorization", &format!("Bearer {api_key}"))
+        .is_err()
+    {
         return;
     }
     if headers.set("Content-Type", "application/json").is_err() {
@@ -1084,6 +1094,36 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
         "age_youngest" => "birth_date.desc.nullslast,id.asc",
         _ => return Err(api_error(422, "Urutan data balita tidak valid.")),
     };
+    let search = first_query(&query, "search")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    if search.is_some_and(|value| value.chars().count() > 80) {
+        return Err(api_error(422, "Kata pencarian terlalu panjang."));
+    }
+    if matches!(
+        view,
+        "problem_underweight" | "problem_stunting" | "problem_wasting" | "problem_tidak_naik"
+    ) {
+        return rpc(
+            env,
+            "eposyandu_problem_children_page",
+            json!({
+                "p_month_start": measurement_start,
+                "p_month_end": measurement_end,
+                "p_problem": view,
+                "p_page": page,
+                "p_size": size,
+                "p_search": search,
+                "p_sort": sort,
+                "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
+                "p_posyandu": first_query(&query, "posyandu").map(|value| value.trim()).filter(|value| !value.is_empty()),
+                "p_role": scope.role,
+                "p_scope_village": scope.desa,
+                "p_scope_posyandu": scope.posyandu,
+            }),
+        )
+        .await;
+    }
     let mut parameters = vec![
         ("select".into(), "id,name,national_id,has_national_id,birth_date,sex,parent_name,village,posyandu,created_at,updated_at,version".into()),
         ("order".into(), order.into()), ("limit".into(), size.to_string()),
@@ -1116,13 +1156,7 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
         }
         _ => return Err(api_error(422, "Tampilan data balita tidak valid.")),
     }
-    if let Some(search) = first_query(&query, "search")
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    {
-        if search.chars().count() > 80 {
-            return Err(api_error(422, "Kata pencarian terlalu panjang."));
-        }
+    if let Some(search) = search {
         parameters.push((
             "or".into(),
             format!("(name.ilike.*{search}*,national_id.ilike.*{search}*)"),
@@ -1761,14 +1795,17 @@ fn input_integer(data: &Map<String, Value>, key: &str) -> Option<Value> {
 }
 
 fn input_weight(data: &Map<String, Value>, key: &str) -> Option<Value> {
-    data.get(key).map(|value| {
-        number_value(Some(value)).map_or(Value::Null, |value| {
-            json!(if value.abs() >= 1000.0 {
-                value / 1000.0
-            } else {
-                value
-            })
-        })
+    data.get(key)
+        .map(|value| normalized_weight(value).map_or(Value::Null, |value| json!(value)))
+}
+
+fn normalized_weight(value: &Value) -> Option<f64> {
+    number_value(Some(value)).map(|value| {
+        if value.abs() >= 1000.0 {
+            value / 1000.0
+        } else {
+            value
+        }
     })
 }
 
@@ -1794,7 +1831,7 @@ fn validate_weight(
     if value.is_null() || string_value(Some(value)).trim().is_empty() {
         return Ok(());
     }
-    let Some(value) = number_value(Some(value)) else {
+    let Some(value) = normalized_weight(value) else {
         return Err(api_error(
             422,
             format!(
@@ -2753,14 +2790,26 @@ async fn sync_batch(mut request: Request, env: &Env) -> ApiResult<Value> {
             Some(&mutation_id),
             body.as_ref(),
         )?;
-        let document = collections(subrequest, env).await?;
-        mutation_results.push(json!({
-            "id": mutation_id,
-            "resource": resource.name(),
-            "documentId": document_id,
-            "operation": operation,
-            "document": document,
-        }));
+        match collections(subrequest, env).await {
+            Ok(document) => mutation_results.push(json!({
+                "id": mutation_id,
+                "resource": resource.name(),
+                "documentId": document_id,
+                "operation": operation,
+                "document": document,
+            })),
+            Err(error) => mutation_results.push(json!({
+                "id": mutation_id,
+                "resource": resource.name(),
+                "documentId": document_id,
+                "operation": operation,
+                "error": {
+                    "status": error.status,
+                    "code": error.code,
+                    "detail": error.detail,
+                },
+            })),
+        }
     }
 
     let pulls = payload
@@ -2806,6 +2855,427 @@ async fn sync_batch(mut request: Request, env: &Env) -> ApiResult<Value> {
     }))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackgroundJobCreate {
+    kind: String,
+    #[serde(default = "empty_object")]
+    payload: Value,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackgroundJobMessage {
+    job_id: String,
+}
+
+fn empty_object() -> Value {
+    json!({})
+}
+
+fn valid_background_job_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "import_validation" | "nutrition_report" | "export_file" | "system_sync"
+    )
+}
+
+fn safe_job_id(value: &str) -> ApiResult<&str> {
+    let valid = value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        });
+    if valid {
+        Ok(value)
+    } else {
+        Err(api_error(404, "Job tidak ditemukan."))
+    }
+}
+
+fn background_job_public(row: &Value, queue_configured: Option<bool>) -> ApiResult<Value> {
+    let row = row_object(row)?;
+    let id = string_value(row.get("id"));
+    Ok(json!({
+        "id": id,
+        "kind": string_value(row.get("kind")),
+        "status": string_value(row.get("status")),
+        "progress": number_or_null(row.get("progress")),
+        "result": nullable_value(row.get("result")),
+        "error": nullable_value(row.get("error")),
+        "fileName": nullable_value(row.get("file_name")),
+        "contentType": nullable_value(row.get("content_type")),
+        "sizeBytes": number_or_null(row.get("size_bytes")),
+        "downloadUrl": if row.get("object_key").is_some_and(|value| !value.is_null()) {
+            Value::String(format!("/api/v1/jobs/{id}/file"))
+        } else {
+            Value::Null
+        },
+        "createdAt": timestamp_value(row.get("created_at")),
+        "updatedAt": timestamp_value(row.get("updated_at")),
+        "startedAt": timestamp_value(row.get("started_at")),
+        "completedAt": timestamp_value(row.get("completed_at")),
+        "expiresAt": timestamp_value(row.get("expires_at")),
+        "queueConfigured": queue_configured,
+    }))
+}
+
+async fn fetch_background_job(env: &Env, id: &str, include_payload: bool) -> ApiResult<Value> {
+    let select = if include_payload {
+        "id,kind,status,progress,owner_user_id,actor_role,village,posyandu,idempotency_key,request_id,payload,result,error,object_key,file_name,content_type,size_bytes,created_at,updated_at,started_at,completed_at,expires_at"
+    } else {
+        "id,kind,status,progress,owner_user_id,result,error,object_key,file_name,content_type,size_bytes,created_at,updated_at,started_at,completed_at,expires_at"
+    };
+    let (payload, _) = rest_json(
+        env,
+        rest_path(
+            "background_jobs",
+            &[
+                ("select".into(), select.into()),
+                ("id".into(), format!("eq.{id}")),
+                ("limit".into(), "1".into()),
+            ],
+        ),
+        Method::Get,
+        None,
+        None,
+        false,
+    )
+    .await?;
+    rows(payload)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| api_error(404, "Job tidak ditemukan."))
+}
+
+async fn create_background_job(mut request: Request, env: &Env) -> ApiResult<Value> {
+    validate_idempotency_key(&request)?;
+    let scope = require_scope(&request, env).await?;
+    let (request_id, idempotency_key) = mutation_request_metadata(&request);
+    let body = request
+        .text()
+        .await
+        .map_err(|_| api_error(422, "Data job tidak valid."))?;
+    if body.len() > BACKGROUND_JOB_MAX_BODY_BYTES {
+        return Err(api_error(413, "Payload job terlalu besar."));
+    }
+    let job: BackgroundJobCreate =
+        serde_json::from_str(&body).map_err(|_| api_error(422, "Data job tidak valid."))?;
+    let kind = job.kind.trim().to_ascii_lowercase();
+    if !valid_background_job_kind(&kind) || !job.payload.is_object() {
+        return Err(api_error(422, "Jenis atau payload job tidak valid."));
+    }
+    let idempotency_key = idempotency_key.unwrap_or_else(|| request_id.clone());
+    let job_row = json!({
+        "kind": kind,
+        "status": "queued",
+        "progress": 0,
+        "owner_user_id": scope.user_id,
+        "actor_role": scope.role,
+        "village": scope.desa,
+        "posyandu": scope.posyandu,
+        "idempotency_key": idempotency_key,
+        "request_id": request_id,
+        "payload": job.payload,
+    });
+    let (inserted, _) = rest_json(
+        env,
+        "background_jobs?on_conflict=owner_user_id,idempotency_key".into(),
+        Method::Post,
+        Some(job_row),
+        Some("resolution=ignore-duplicates,return=representation"),
+        false,
+    )
+    .await?;
+    let mut stored = rows(inserted)?.into_iter().next();
+    if stored.is_none() {
+        let (existing, _) = rest_json(
+            env,
+            rest_path(
+                "background_jobs",
+                &[
+                    ("select".into(), "*".into()),
+                    ("owner_user_id".into(), format!("eq.{}", scope.user_id)),
+                    ("idempotency_key".into(), format!("eq.{idempotency_key}")),
+                    ("limit".into(), "1".into()),
+                ],
+            ),
+            Method::Get,
+            None,
+            None,
+            false,
+        )
+        .await?;
+        stored = rows(existing)?.into_iter().next();
+    }
+    let stored = stored.ok_or_else(|| api_error(503, "Job belum dapat dibuat."))?;
+    let job_id = string_value(row_object(&stored)?.get("id"));
+    let queue_configured = match env.queue("E_POSYANDU_JOBS") {
+        Ok(queue) => queue
+            .send(BackgroundJobMessage {
+                job_id: job_id.clone(),
+            })
+            .await
+            .is_ok(),
+        Err(_) => false,
+    };
+    let _ = record_operational_audit(
+        env,
+        &scope.user_id,
+        &scope.role,
+        scope.desa.as_deref(),
+        scope.posyandu.as_deref(),
+        &request_id,
+        Some(&idempotency_key),
+        "job_create",
+        "background_jobs",
+        &job_id,
+        None,
+        None,
+        json!({ "kind": kind, "queueConfigured": queue_configured }),
+    )
+    .await;
+    background_job_public(&stored, Some(queue_configured))
+}
+
+async fn get_background_job(request: Request, env: &Env, id: &str) -> ApiResult<Value> {
+    let id = safe_job_id(id)?;
+    let scope = require_scope(&request, env).await?;
+    let row = fetch_background_job(env, id, false).await?;
+    let owner = string_value(row_object(&row)?.get("owner_user_id"));
+    if owner != scope.user_id && scope.role != "Ahli Gizi" {
+        return Err(api_error(404, "Job tidak ditemukan."));
+    }
+    background_job_public(&row, None)
+}
+
+fn background_job_route(path: &str) -> Option<(&str, bool)> {
+    let suffix = path.trim_start_matches("/api/v1/jobs/");
+    let mut parts = suffix.split('/');
+    let id = parts.next()?;
+    let file = parts.next() == Some("file");
+    (parts.next().is_none() && !id.is_empty()).then_some((id, file))
+}
+
+pub(crate) async fn internal_background_job(
+    method: Method,
+    path: &str,
+    body: &str,
+    env: &Env,
+) -> ApiResult<Value> {
+    let suffix = path.trim_start_matches("/internal/v1/jobs/");
+    let mut parts = suffix.split('/');
+    let id = safe_job_id(parts.next().unwrap_or_default())?;
+    let file_upload = parts.next() == Some("file");
+    if parts.next().is_some() {
+        return Err(api_error(404, "Job tidak ditemukan."));
+    }
+    if method == Method::Get && !file_upload {
+        let row = fetch_background_job(env, id, true).await?;
+        let row = row_object(&row)?;
+        return Ok(json!({
+            "id": string_value(row.get("id")),
+            "kind": string_value(row.get("kind")),
+            "status": string_value(row.get("status")),
+            "progress": number_or_null(row.get("progress")),
+            "payload": nullable_value(row.get("payload")),
+            "actorRole": string_value(row.get("actor_role")),
+            "village": nullable_value(row.get("village")),
+            "posyandu": nullable_value(row.get("posyandu")),
+        }));
+    }
+    if method == Method::Patch && !file_upload {
+        let current = fetch_background_job(env, id, true).await?;
+        let current = row_object(&current)?;
+        let previous_status = string_value(current.get("status"));
+        let actor_user_id = string_value(current.get("owner_user_id"));
+        let actor_role = string_value(current.get("actor_role"));
+        let village = string_value(current.get("village"));
+        let posyandu = string_value(current.get("posyandu"));
+        let request_id = string_value(current.get("request_id"));
+        let idempotency_key = string_value(current.get("idempotency_key"));
+        let payload = serde_json::from_str::<Value>(body)
+            .map_err(|_| api_error(422, "Pembaruan job tidak valid."))?;
+        let payload = payload
+            .as_object()
+            .ok_or_else(|| api_error(422, "Pembaruan job tidak valid."))?;
+        let status = string_value(payload.get("status"));
+        if !matches!(
+            status.as_str(),
+            "queued" | "processing" | "completed" | "failed" | "cancelled"
+        ) {
+            return Err(api_error(422, "Status job tidak valid."));
+        }
+        let progress = payload
+            .get("progress")
+            .and_then(Value::as_u64)
+            .filter(|value| *value <= 100)
+            .ok_or_else(|| api_error(422, "Progres job tidak valid."))?;
+        let update = json!({
+            "status": status,
+            "progress": progress,
+            "result": nullable_value(payload.get("result")),
+            "error": nullable_value(payload.get("error")),
+        });
+        let (updated, _) = rest_json(
+            env,
+            rest_path("background_jobs", &[("id".into(), format!("eq.{id}"))]),
+            Method::Patch,
+            Some(update),
+            Some("return=representation"),
+            false,
+        )
+        .await?;
+        let row = rows(updated)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| api_error(404, "Job tidak ditemukan."))?;
+        let audit_action = if previous_status == status {
+            None
+        } else {
+            match status.as_str() {
+                "processing" => Some("job_start"),
+                "completed" => Some("job_complete"),
+                "failed" => Some("job_fail"),
+                _ => None,
+            }
+        };
+        if let Some(action) = audit_action {
+            let _ = record_operational_audit(
+                env,
+                &actor_user_id,
+                &actor_role,
+                (!village.is_empty()).then_some(village.as_str()),
+                (!posyandu.is_empty()).then_some(posyandu.as_str()),
+                &request_id,
+                (!idempotency_key.is_empty()).then_some(idempotency_key.as_str()),
+                action,
+                "background_jobs",
+                id,
+                Some(json!({ "status": previous_status })),
+                Some(json!({ "status": status, "progress": progress })),
+                json!({ "source": "nutrition-grpc" }),
+            )
+            .await;
+        }
+        return background_job_public(&row, None);
+    }
+    if method == Method::Post && file_upload {
+        let payload = serde_json::from_str::<Value>(body)
+            .map_err(|_| api_error(422, "Berkas hasil job tidak valid."))?;
+        let filename = string_value(payload.get("filename"));
+        let content_type = string_value(payload.get("contentType"));
+        let encoded = string_value(payload.get("contentBase64"));
+        let content = BASE64
+            .decode(encoded)
+            .map_err(|_| api_error(422, "Berkas hasil job tidak valid."))?;
+        if content.is_empty() || content.len() > BACKGROUND_JOB_MAX_FILE_BYTES {
+            return Err(api_error(413, "Ukuran berkas hasil job tidak valid."));
+        }
+        let safe_filename = filename
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        if safe_filename.is_empty() {
+            return Err(api_error(422, "Nama berkas hasil job tidak valid."));
+        }
+        fetch_background_job(env, id, false).await?;
+        let object_key = format!("jobs/{id}/{safe_filename}");
+        let bucket = env
+            .bucket("E_POSYANDU_FILES")
+            .map_err(|_| api_error(503, "Penyimpanan R2 belum diaktifkan."))?;
+        bucket
+            .put(&object_key, content.clone())
+            .http_metadata(HttpMetadata {
+                content_type: Some(content_type.clone()),
+                content_disposition: Some(format!("attachment; filename=\"{safe_filename}\"")),
+                cache_control: Some("private, no-store".into()),
+                ..HttpMetadata::default()
+            })
+            .execute()
+            .await
+            .map_err(|_| api_error(503, "Berkas hasil job belum dapat disimpan."))?;
+        rest_json(
+            env,
+            rest_path("background_jobs", &[("id".into(), format!("eq.{id}"))]),
+            Method::Patch,
+            Some(json!({
+                "object_key": object_key,
+                "file_name": safe_filename,
+                "content_type": content_type,
+                "size_bytes": content.len(),
+            })),
+            Some("return=minimal"),
+            false,
+        )
+        .await?;
+        return Ok(json!({
+            "objectKey": object_key,
+            "downloadUrl": format!("/api/v1/jobs/{id}/file"),
+        }));
+    }
+    Err(api_error(405, "Metode API job tidak didukung."))
+}
+
+pub(crate) async fn download_background_job_file(
+    request: Request,
+    env: &Env,
+    id: &str,
+) -> ApiResult<Response> {
+    let id = safe_job_id(id)?;
+    let scope = require_scope(&request, env).await?;
+    let row = fetch_background_job(env, id, false).await?;
+    let row = row_object(&row)?;
+    let owner = string_value(row.get("owner_user_id"));
+    if owner != scope.user_id && scope.role != "Ahli Gizi" {
+        return Err(api_error(404, "Berkas job tidak ditemukan."));
+    }
+    let object_key = string_value(row.get("object_key"));
+    if object_key.is_empty() {
+        return Err(api_error(404, "Berkas job belum tersedia."));
+    }
+    let bucket = env
+        .bucket("E_POSYANDU_FILES")
+        .map_err(|_| api_error(503, "Penyimpanan R2 belum diaktifkan."))?;
+    let object = bucket
+        .get(object_key)
+        .execute()
+        .await
+        .map_err(|_| api_error(503, "Berkas job belum dapat dibaca."))?
+        .ok_or_else(|| api_error(404, "Berkas job tidak ditemukan."))?;
+    let body = object
+        .body()
+        .ok_or_else(|| api_error(503, "Berkas job belum dapat dibaca."))?
+        .response_body()
+        .map_err(|_| api_error(503, "Berkas job belum dapat dibaca."))?;
+    let mut response =
+        Response::from_body(body).map_err(|_| api_error(503, "Berkas job belum dapat dibaca."))?;
+    response
+        .headers_mut()
+        .set("Content-Type", &string_value(row.get("content_type")))
+        .map_err(|_| api_error(503, "Header berkas job tidak dapat dibuat."))?;
+    response
+        .headers_mut()
+        .set(
+            "Content-Disposition",
+            &format!(
+                "attachment; filename=\"{}\"",
+                string_value(row.get("file_name"))
+            ),
+        )
+        .map_err(|_| api_error(503, "Header berkas job tidak dapat dibuat."))?;
+    Ok(response)
+}
+
 async fn collections(request: Request, env: &Env) -> ApiResult<Value> {
     let path = request.path();
     let suffix = path
@@ -2830,6 +3300,7 @@ async fn collections(request: Request, env: &Env) -> ApiResult<Value> {
 pub async fn dispatch(request: Request, env: &Env) -> ApiResult<Value> {
     match (request.method(), request.path().as_str()) {
         (Method::Post, "/api/v1/sync") => sync_batch(request, env).await,
+        (Method::Post, "/api/v1/jobs") => create_background_job(request, env).await,
         (Method::Post, "/api/v1/client-errors") => client_error(request, env).await,
         (Method::Get, "/api/v1/features") => feature_flags(request, env).await,
         (Method::Get, "/api/v1/dashboard/stats") => dashboard(request, env).await,
@@ -2839,6 +3310,19 @@ pub async fn dispatch(request: Request, env: &Env) -> ApiResult<Value> {
         (Method::Get, "/api/v1/children/page") => children_page(request, env).await,
         (Method::Get, "/api/v1/exclusive-breastfeeding/page") => {
             exclusive_breastfeeding_page(request, env).await
+        }
+        _ if request.method() == Method::Get && request.path().starts_with("/api/v1/jobs/") => {
+            let path = request.path();
+            let (id, file) = background_job_route(&path)
+                .ok_or_else(|| api_error(404, "Job tidak ditemukan."))?;
+            if file {
+                Err(api_error(
+                    404,
+                    "Rute unduhan harus ditangani sebagai berkas.",
+                ))
+            } else {
+                get_background_job(request, env, id).await
+            }
         }
         _ if request.path().starts_with("/api/v1/collections/") => collections(request, env).await,
         _ => Err(api_error(404, "Rute API tidak ditemukan.")),
@@ -2918,6 +3402,20 @@ mod tests {
             .expect_err("fractional child order must be rejected");
 
         assert_eq!(error.status, 422);
+    }
+
+    #[test]
+    fn normalizes_legacy_gram_weight_before_validation_and_storage() {
+        let data = json!({"bbLahir": "3200"})
+            .as_object()
+            .cloned()
+            .expect("child payload");
+
+        validate_weight(&data, "bbLahir", "Berat lahir", 10.0)
+            .expect("gram weight should be normalized safely");
+        let payload = map_payload(Resource::Children, &data);
+
+        assert_eq!(payload.get("birth_weight_kg"), Some(&json!(3.2)));
     }
 
     #[test]

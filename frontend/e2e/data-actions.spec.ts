@@ -100,6 +100,7 @@ async function configureAuthenticatedPage(
   includeChildrenCollection = false,
   changeLogs = [] as typeof changeHistoryEntries
 ) {
+  const syncedMutations: Array<Record<string, any>> = [];
   await page.addInitScript(() => {
     window.sessionStorage.setItem('e-posyandu:auth-session', JSON.stringify({
       uid: 'user-regression',
@@ -148,6 +149,31 @@ async function configureAuthenticatedPage(
       } });
       return;
     }
+    if (path.endsWith('/graphql')) {
+      const payload = request.postDataJSON() as { query?: string };
+      if (payload.query?.includes('exclusiveBreastfeedingPage')) {
+        await route.fulfill({ status: 200, headers, json: {
+          data: { exclusiveBreastfeedingPage: { items: [], total: 0 } }
+        } });
+        return;
+      }
+      if (payload.query?.includes('childrenPage')) {
+        await route.fulfill({ status: 200, headers, json: { data: { childrenPage: {
+          items: [child],
+          measurements: [measurement],
+          mpasiLogs: [],
+          total: 1
+        } } } });
+        return;
+      }
+      await route.fulfill({ status: 200, headers, json: { data: { dashboardStats: {
+          S: 1, D: 1, N: 0, T: 1, B: 0, O: 0,
+          asiEksklusif: 0, asiTarget: 0, underweight: 0, stunting: 0, wasting: 0,
+          perD: '100', perN: '0', perT: '100', perAsiEksklusif: '0',
+          perUnderweight: '0', perStunting: '0', perWasting: '0'
+        } } } });
+      return;
+    }
     if (path.endsWith(`/collections/children/${child.id}`)) {
       await route.fulfill({ status: 200, headers, json: child });
       return;
@@ -191,6 +217,9 @@ async function configureAuthenticatedPage(
       if (syncFails) {
         await route.fulfill({ status: 503, headers, json: { detail: 'API uji sedang tidak tersedia.' } });
       } else {
+        const payload = request.postDataJSON() as { mutations?: Array<Record<string, any>> };
+        const mutations = payload.mutations || [];
+        syncedMutations.push(...mutations);
         const cursor = new Date().toISOString();
         const changes = {
           children: { items: includeChildrenCollection ? [child] : [], cursor },
@@ -198,12 +227,44 @@ async function configureAuthenticatedPage(
           pmt_programs: { items: [pmtProgram], cursor },
           change_logs: { items: changeLogs, cursor }
         };
-        await route.fulfill({ status: 200, headers, json: { results: [], changes, cursor: new Date().toISOString() } });
+        const results = mutations.map((mutation) => {
+          if (mutation.resource === 'children' && mutation.data?.bbLahir === 42) {
+            return {
+              id: mutation.id,
+              resource: mutation.resource,
+              documentId: mutation.documentId,
+              operation: mutation.operation,
+              error: {
+                status: 422,
+                code: 'validation_error',
+                detail: 'Berat lahir harus diisi dalam kilogram antara 0,1 sampai 10 kg.'
+              }
+            };
+          }
+          const baseData = mutation.resource === 'children' && mutation.documentId === child.id
+            ? child.data
+            : mutation.resource === 'measurements'
+              ? measurement.data
+              : {};
+          return {
+            id: mutation.id,
+            resource: mutation.resource,
+            documentId: mutation.documentId,
+            operation: mutation.operation,
+            document: mutation.operation === 'delete' ? undefined : {
+              id: mutation.documentId,
+              data: { ...baseData, ...(mutation.data || {}), updatedAt: cursor, version: 2 }
+            }
+          };
+        });
+        await route.fulfill({ status: 200, headers, json: { results, changes, cursor } });
       }
       return;
     }
     await route.fulfill({ status: 404, headers, json: { detail: 'Rute uji tidak tersedia.' } });
   });
+
+  return { syncedMutations };
 }
 
 test('balita yang dihapus tidak muncul kembali ketika pengiriman masih tertunda', async ({ page }) => {
@@ -231,7 +292,15 @@ test('form edit identitas dapat digulir sampai tombol simpan', async ({ page }) 
   await editAction.click();
   await expect(page.locator('.table-action-tooltip')).toHaveCSS('opacity', '0');
   await expect(page.getByRole('heading', { name: 'Edit Identitas Balita' })).toBeVisible();
-  await expect(page.locator('[data-identity-modal] .ios-liquid-modal')).toBeVisible();
+  const identityModal = page.locator('[data-identity-modal] .ios-liquid-modal');
+  await expect(identityModal).toBeVisible();
+
+  const childName = identityModal.locator('input[name="nama"]');
+  const parentName = identityModal.locator('input[name="namaOrtu"]');
+  await childName.fill('balita uji ketikan');
+  await parentName.fill('orang tua tetap');
+  await expect(childName).toHaveValue('Balita Uji Ketikan');
+  await expect(parentName).toHaveValue('orang tua tetap');
 
   const scrollArea = page.locator('[data-identity-modal-scroll]');
   const dimensions = await scrollArea.evaluate((element) => ({
@@ -264,6 +333,22 @@ test('halaman tambah balita memakai simbol dan kontrol bergaya iOS', async ({ pa
   const noKkSwitch = page.getByRole('checkbox', { name: 'Tidak punya KK' });
   await noKkSwitch.check();
   await expect(noKkSwitch).toBeChecked();
+
+  const childName = addChildPage.locator('input[name="nama"]');
+  const birthWeight = addChildPage.locator('input[name="bbLahir"]');
+  const birthLength = addChildPage.locator('input[name="pbLahir"]');
+  const birthHead = addChildPage.locator('input[name="lkLahir"]');
+  const parentName = addChildPage.locator('input[name="namaOrtu"]');
+  await childName.fill('bayi uji form');
+  await birthWeight.fill('3.2');
+  await birthLength.fill('49.5');
+  await birthHead.fill('33.2');
+  await parentName.fill('orang tua bayi');
+  await expect(childName).toHaveValue('Bayi Uji Form');
+  await expect(birthWeight).toHaveValue('3.2');
+  await expect(birthLength).toHaveValue('49.5');
+  await expect(birthHead).toHaveValue('33.2');
+  await expect(parentName).toHaveValue('orang tua bayi');
 
   await expect(page.getByRole('button', { name: 'Batal' }).locator('svg')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Simpan Data Balita' }).locator('svg')).toBeVisible();
@@ -362,7 +447,7 @@ test('sidebar desktop dapat diciutkan menjadi ikon dan dibuka kembali', async ({
   await expect(sidebarLabel).toBeVisible();
   await expect(sidebarBrand).toBeVisible();
   await expect(sidebarBrand).toContainText('E-Posyandu');
-  await expect(sidebarBrand).toContainText('v4.4.3');
+  await expect(sidebarBrand).toContainText('v4.4.5');
   await expect(page.getByRole('button', { name: 'Ringkas Menu', exact: true })).toBeVisible();
   await expect(page.locator('.app-sidebar')).toHaveCSS('width', '280px');
 
@@ -433,7 +518,7 @@ test('header bersih, periode berada di panel data, tema dan footer berfungsi', a
   }
 
   await expect(page.locator('.app-footer')).toContainText('© 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach');
-  const versionButton = page.locator('.app-footer').getByRole('button', { name: 'E-Posyandu v4.4.3' });
+  const versionButton = page.locator('.app-footer').getByRole('button', { name: 'E-Posyandu v4.4.5' });
   await expect(versionButton).toBeVisible();
   await versionButton.click();
   const releaseDialog = page.getByRole('dialog', { name: 'Apa yang Baru' });
@@ -581,7 +666,7 @@ test('mobile landscape memakai Dock ikon tanpa menyempitkan halaman', async ({ p
 });
 
 test('form penimbangan memakai tata letak iOS yang responsif', async ({ page }) => {
-  await configureAuthenticatedPage(page);
+  const { syncedMutations } = await configureAuthenticatedPage(page);
   await page.goto('/#data_balita');
   const measurementAction = page.getByRole('button', { name: 'Pengukuran Balita', exact: true });
   await measurementAction.hover();
@@ -610,10 +695,71 @@ test('form penimbangan memakai tata letak iOS yang responsif', async ({ page }) 
   const measurementPage = page.locator('[data-measurement-page]');
   await expect(measurementPage.locator('.ios-measurement-form')).toBeVisible();
   await expect(measurementPage.locator('.measurement-form-panel')).toHaveCount(3);
-  await expect(measurementPage.locator('.measurement-status-panel')).toBeVisible();
+  await expect(measurementPage.locator('.measurement-status-panel')).toHaveCount(0);
   await expect(measurementPage.locator('.measurement-service-panel')).toBeVisible();
+  const weightInput = measurementPage.locator('input[name="bb"]');
+  const heightInput = measurementPage.locator('input[name="tb"]');
+  const lilaInput = measurementPage.locator('input[name="lila"]');
+  const headInput = measurementPage.locator('input[name="lk"]');
+  await weightInput.fill('5.25');
+  await heightInput.fill('73.5');
+  await lilaInput.fill('13.2');
+  await headInput.fill('44.1');
+  await expect(weightInput).toHaveValue('5.25');
+  await expect(heightInput).toHaveValue('73.5');
+  await expect(lilaInput).toHaveValue('13.2');
+  await expect(headInput).toHaveValue('44.1');
   await expect(page.getByRole('button', { name: 'Simpan Pengukuran' }).locator('svg')).toBeVisible();
+  await page.evaluate(async () => {
+    const offlineStore = await import('/src/services/offlineStore.ts');
+    await offlineStore.queueMutation({
+      type: 'update',
+      tableName: 'children',
+      documentId: 'child-stale-invalid-weight',
+      payload: { data: { bbLahir: 42 } }
+    });
+  });
+  await page.getByRole('button', { name: 'Simpan Pengukuran' }).click();
+  await expect(page.getByText('Data penimbangan berhasil disimpan.')).toBeVisible();
+  await expect(page.getByText(/Data penimbangan belum dapat disimpan/)).toHaveCount(0);
+  await expect.poll(() => syncedMutations.some((mutation) => (
+    mutation.resource === 'measurements' && mutation.data?.bb === 5.25
+  ))).toBe(true);
+  await expect.poll(() => syncedMutations.some((mutation) => (
+    mutation.resource === 'children' && mutation.documentId === child.id && mutation.data?.currentBB === 5.25
+  ))).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+test('riwayat penimbangan dapat diedit tanpa membuat catatan baru', async ({ page }) => {
+  const { syncedMutations } = await configureAuthenticatedPage(page);
+  await page.goto('/#data_balita');
+  await page.getByRole('button', { name: 'Pengukuran Balita', exact: true }).click();
+
+  const editButton = page.getByRole('button', { name: 'Edit penimbangan tanggal 1 Agu 2026' });
+  await page.mouse.move(0, 0);
+  await editButton.hover();
+  await expect(page.locator('.table-action-tooltip')).toHaveText('Edit riwayat penimbangan');
+  await editButton.click();
+
+  const measurementPage = page.locator('[data-measurement-page]');
+  await expect(measurementPage.locator('input[name="bb"]')).toHaveValue('5');
+  await expect(measurementPage.locator('input[name="tb"]')).toHaveValue('73.5');
+  await measurementPage.locator('input[name="bb"]').fill('5.4');
+  await page.getByRole('button', { name: 'Simpan Perubahan' }).click();
+
+  await expect(page.getByText('Data penimbangan berhasil diperbarui.')).toBeVisible();
+  await expect.poll(() => syncedMutations.some((mutation) => (
+    mutation.resource === 'measurements'
+      && mutation.operation === 'update'
+      && mutation.documentId === measurement.id
+      && mutation.data?.bb === 5.4
+  ))).toBe(true);
+  await expect.poll(() => syncedMutations.some((mutation) => (
+    mutation.resource === 'children'
+      && mutation.documentId === child.id
+      && mutation.data?.currentBB === 5.4
+  ))).toBe(true);
 });
 
 test('PMT ditampilkan sebagai tabel mingguan dan dapat difilter per kategori', async ({ page }) => {

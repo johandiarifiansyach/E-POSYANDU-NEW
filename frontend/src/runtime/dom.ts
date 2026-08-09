@@ -48,6 +48,12 @@ const StrictMode = Symbol('DomStrictMode');
 const SVG_ELEMENTS = new Set(['svg', 'path', 'circle', 'line', 'rect', 'polyline', 'polygon', 'ellipse', 'g']);
 let activeRoot: DomRoot | null = null;
 let currentRender: CurrentRender | null = null;
+type ElementEventState = {
+  handlers: Map<string, EventListener>;
+  registered: Set<string>;
+};
+const elementEventStates = new WeakMap<Element, ElementEventState>();
+const elementRefs = new WeakMap<Element, unknown>();
 
 function dependenciesChanged(previous?: readonly unknown[], next?: readonly unknown[]) {
   if (next === undefined) return true;
@@ -202,16 +208,36 @@ function svgAttributeName(name: string) {
   return name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
 }
 
+function setElementEventHandler(element: Element, event: string, handler: EventListener) {
+  let state = elementEventStates.get(element);
+  if (!state) {
+    state = { handlers: new Map(), registered: new Set() };
+    elementEventStates.set(element, state);
+  }
+  state.handlers.set(event, handler);
+  if (state.registered.has(event)) return;
+  state.registered.add(event);
+  element.addEventListener(event, (nativeEvent) => state?.handlers.get(event)?.call(element, nativeEvent));
+}
+
+function applyElementRef(element: Element, ref: unknown) {
+  if (typeof ref === 'function') (ref as (node: Element) => void)(element);
+  else if (typeof ref === 'object' && ref) (ref as { current: Element | null }).current = element;
+}
+
 function applyProps(element: Element, props: Record<string, unknown>, inSvg: boolean) {
   Object.entries(props).forEach(([name, value]) => {
     if (name === 'children' || name === 'key' || value === undefined || value === null) return;
     if (name === 'ref') {
-      if (typeof value === 'function') (value as (node: Element) => void)(element);
-      else if (typeof value === 'object' && value) (value as { current: Element | null }).current = element;
+      elementRefs.set(element, value);
+      applyElementRef(element, value);
       return;
     }
     if (name.startsWith('on') && typeof value === 'function') {
-      element.addEventListener(eventName(name, element), value as EventListener);
+      // onChange untuk input native dipetakan ke event input. Jika komponen juga
+      // menyediakan onInput, memasang keduanya membuat satu ketikan diproses dua kali.
+      if (name === 'onChange' && !(element instanceof HTMLSelectElement) && typeof props.onInput === 'function') return;
+      setElementEventHandler(element, eventName(name, element), value as EventListener);
       return;
     }
     if (name === 'className') {
@@ -296,8 +322,10 @@ function activeField(container: HTMLElement) {
   if (!element || !container.contains(element)) return null;
   return {
     key: element.dataset.domFocusKey,
+    value: element.value,
     selectionStart: 'selectionStart' in element ? element.selectionStart : null,
-    selectionEnd: 'selectionEnd' in element ? element.selectionEnd : null
+    selectionEnd: 'selectionEnd' in element ? element.selectionEnd : null,
+    selectionDirection: 'selectionDirection' in element ? element.selectionDirection : null
   };
 }
 
@@ -306,14 +334,94 @@ function restoreActiveField(container: HTMLElement, active: ReturnType<typeof ac
   const field = Array.from(container.querySelectorAll<HTMLElement>('[data-dom-focus-key]'))
     .find((element) => element.dataset.domFocusKey === active.key);
   if (!field) return;
+  if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement || field instanceof HTMLSelectElement) {
+    if (!(field instanceof HTMLInputElement) || field.type !== 'file') field.value = active.value;
+  }
   field.focus({ preventScroll: true });
   if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
     try {
-      field.setSelectionRange(active.selectionStart, active.selectionEnd);
+      field.setSelectionRange(active.selectionStart, active.selectionEnd, active.selectionDirection ?? undefined);
     } catch {
       // Number and date inputs do not expose a text selection.
     }
   }
+}
+
+function sameNodeType(current: Node, next: Node) {
+  if (current.nodeType !== next.nodeType) return false;
+  if (current instanceof Element && next instanceof Element) {
+    return current.namespaceURI === next.namespaceURI && current.tagName === next.tagName;
+  }
+  return true;
+}
+
+function syncAttributes(current: Element, next: Element) {
+  Array.from(current.attributes).forEach((attribute) => {
+    if (!next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+  });
+  Array.from(next.attributes).forEach((attribute) => {
+    if (current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value);
+  });
+}
+
+function syncEventHandlers(current: Element, next: Element) {
+  const nextState = elementEventStates.get(next);
+  const currentState = elementEventStates.get(current);
+  currentState?.handlers.clear();
+  nextState?.handlers.forEach((handler, event) => setElementEventHandler(current, event, handler));
+}
+
+function syncFormControl(current: Element, next: Element) {
+  const isActive = document.activeElement === current;
+  if (current instanceof HTMLInputElement && next instanceof HTMLInputElement) {
+    current.checked = next.checked;
+    current.indeterminate = next.indeterminate;
+    if (!isActive && current.type !== 'file') current.value = next.value;
+    return;
+  }
+  if (current instanceof HTMLTextAreaElement && next instanceof HTMLTextAreaElement) {
+    if (!isActive) current.value = next.value;
+    return;
+  }
+  if (current instanceof HTMLSelectElement && next instanceof HTMLSelectElement && !isActive) {
+    current.value = next.value;
+  }
+}
+
+function reconcileChildren(currentParent: Node, nextParent: Node) {
+  const nextChildren = Array.from(nextParent.childNodes);
+  nextChildren.forEach((nextChild, index) => {
+    const currentChild = currentParent.childNodes[index];
+    if (!currentChild) {
+      currentParent.appendChild(nextChild);
+      return;
+    }
+    patchNode(currentChild, nextChild);
+  });
+  while (currentParent.childNodes.length > nextChildren.length) {
+    currentParent.lastChild?.remove();
+  }
+}
+
+function patchNode(current: Node, next: Node) {
+  if (!sameNodeType(current, next)) {
+    current.parentNode?.replaceChild(next, current);
+    return;
+  }
+  if (current instanceof Text && next instanceof Text) {
+    if (current.data !== next.data) current.data = next.data;
+    return;
+  }
+  if (!(current instanceof Element) || !(next instanceof Element)) return;
+  syncAttributes(current, next);
+  syncEventHandlers(current, next);
+  const ref = elementRefs.get(next);
+  if (ref !== undefined) {
+    elementRefs.set(current, ref);
+    applyElementRef(current, ref);
+  }
+  reconcileChildren(current, next);
+  syncFormControl(current, next);
 }
 
 function flushEffects(root: DomRoot, kind: EffectHook['kind']) {
@@ -351,7 +459,9 @@ function renderRoot(root: DomRoot) {
     cleanupInstance(instance);
     root.instances.delete(index);
   });
-  root.container.replaceChildren(content);
+  const nextRoot = document.createDocumentFragment();
+  nextRoot.appendChild(content);
+  reconcileChildren(root.container, nextRoot);
   restoreActiveField(root.container, focused);
   window.scrollTo(scrollX, scrollY);
   flushEffects(root, 'layout');

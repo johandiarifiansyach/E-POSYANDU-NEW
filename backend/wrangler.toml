@@ -10,9 +10,16 @@ head_sampling_rate = 0.1
 [build]
 command = "worker-build --release --no-panic-recovery"
 
+[triggers]
+crons = ["*/10 * * * *"]
+
 [[kv_namespaces]]
 binding = "E_POSYANDU_CACHE"
 id = "05421512a237477282deac4d63bd7d8e"
+
+[[queues.producers]]
+binding = "E_POSYANDU_JOBS"
+queue = "e-posyandu-jobs"
 
 # R2 dipakai khusus untuk lampiran privat seperti foto atau dokumen, bukan
 # data balita maupun penimbangan. Aktifkan R2 di Cloudflare Dashboard, buat

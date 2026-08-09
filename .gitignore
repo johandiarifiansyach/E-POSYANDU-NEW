@@ -12,6 +12,8 @@ dist/
 frontend/dist/
 backend/build/
 backend/target/
+target/
+services/*/target/
 backend/.wrangler/
 
 # Runtime credentials stay local. Commit the matching .env.example files instead.

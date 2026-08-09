@@ -4,11 +4,12 @@ import { initializeColorScheme } from './theme/colorScheme';
 import { setupProblemReporter } from './ui/problemReporter';
 import './styles/index.css';
 
-const rootElement = document.getElementById('root');
-const SERVICE_WORKER_CACHE_VERSION = 'v25';
+const rootNode = document.getElementById('root');
+const SERVICE_WORKER_CACHE_VERSION = 'v26';
 const SERVICE_WORKER_MIGRATION_KEY = 'e-posyandu:service-worker-cache-version';
 
-if (!rootElement) throw new Error('Root element tidak ditemukan.');
+if (!rootNode) throw new Error('Root element tidak ditemukan.');
+const rootElement: HTMLElement = rootNode;
 
 initializeColorScheme();
 

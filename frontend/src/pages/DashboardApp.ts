@@ -84,6 +84,14 @@ const shouldDefaultToCompactSidebar = () => {
         return true;
     return window.matchMedia(COMPACT_SIDEBAR_MEDIA_QUERY).matches;
 };
+const applySidebarCollapsedState = (shell, button, collapsed) => {
+    if (shell)
+        shell.classList.toggle('is-sidebar-collapsed', collapsed);
+    if (button) {
+        button.setAttribute('aria-label', collapsed ? 'Perluas Menu' : 'Ringkas Menu');
+        button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+};
 const isDashboardTab = (value) => {
     return DASHBOARD_TABS.includes(value);
 };
@@ -753,7 +761,7 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
     const [formData, setFormData] = useState({ nama: '', nik: '', anakKe: '', tglLahir: '', jk: 'L', noKK: '', hasKK: true, hasNIK: true, usiaKehamilan: '', bbLahir: '', pbLahir: '', lkLahir: '', bukuKIA: 'Ya', bukuKIAKecil: 'Tidak', imd: 'Ya', namaOrtu: '', nikOrtu: '', noHpOrtu: '', alamat: '', rt: '', rw: '', desa: user.role === ROLES.KADER || user.role === ROLES.BIDAN ? (user.desa || Object.keys(DATA_WILAYAH)[0]) : Object.keys(DATA_WILAYAH)[0], posyandu: user.role === ROLES.KADER ? (user.posyandu || DATA_WILAYAH[Object.keys(DATA_WILAYAH)[0]][0]) : DATA_WILAYAH[user.role === ROLES.BIDAN ? (user.desa || Object.keys(DATA_WILAYAH)[0]) : Object.keys(DATA_WILAYAH)[0]][0] });
     const [loading, setLoading] = useState(false);
     useEffect(() => { if (isEdit && initialData)
-        setFormData({ ...initialData, hasKK: true, hasNIK: true }); }, [isEdit, initialData]);
+        setFormData({ ...initialData, hasKK: initialData.hasKK !== false, hasNIK: initialData.hasNIK !== false }); }, [isEdit, initialData?.id]);
     useEffect(() => {
         if (!isEdit || (isEdit && !formData.hasKK)) {
             let newKK = formData.noKK;
@@ -802,7 +810,7 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
             }
             setFormData(prev => ({ ...prev, nik: newNIK }));
         }
-    }, [formData.hasNIK, formData.tglLahir, formData.posyandu, isEdit, allChildren, initialData]);
+    }, [formData.hasNIK, formData.tglLahir, formData.posyandu, isEdit, allChildren, initialData?.id]);
     const handleSubmit = async (e) => {
         e.preventDefault();
         const formElement = e.currentTarget;
@@ -957,7 +965,7 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
                         " ",
                         Native.createElement(InputGroup, { label: "Anak Ke-" },
                             " ",
-                            Native.createElement("input", { required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.anakKe, onChange: handleDecimalFieldChange('anakKe'), onBlur: handleDecimalFieldBlur('anakKe') }),
+                            Native.createElement("input", { required: true, type: "text", inputMode: "numeric", className: inputClass, value: formData.anakKe, onChange: handleDecimalFieldChange('anakKe'), onBlur: handleDecimalFieldBlur('anakKe') }),
                             " "),
                         " ",
                         Native.createElement(InputGroup, { label: "Jenis Kelamin" },
@@ -976,7 +984,7 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
                     " ",
                     Native.createElement(InputGroup, { label: "Usia Kehamilan (Minggu)" },
                         " ",
-                        Native.createElement("input", { required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.usiaKehamilan, onChange: handleDecimalFieldChange('usiaKehamilan'), onBlur: handleDecimalFieldBlur('usiaKehamilan') }),
+                            Native.createElement("input", { required: true, type: "text", inputMode: "numeric", className: inputClass, value: formData.usiaKehamilan, onChange: handleDecimalFieldChange('usiaKehamilan'), onBlur: handleDecimalFieldBlur('usiaKehamilan') }),
                         " "),
                     " "),
                 " ",
@@ -1021,17 +1029,17 @@ const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = null, isE
                     " ",
                     Native.createElement(InputGroup, { label: "Berat Lahir (kg)" },
                         " ",
-                        Native.createElement("input", { name: "bbLahir", required: true, type: "text", inputMode: "text", className: inputClass, value: formData.bbLahir, onInput: handleDecimalFieldChange('bbLahir'), onChange: handleDecimalFieldChange('bbLahir'), onBlur: handleDecimalFieldBlur('bbLahir') }),
+                        Native.createElement("input", { name: "bbLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.bbLahir, onInput: handleDecimalFieldChange('bbLahir'), onChange: handleDecimalFieldChange('bbLahir'), onBlur: handleDecimalFieldBlur('bbLahir') }),
                         " "),
                     " ",
                     Native.createElement(InputGroup, { label: "Panjang Lahir (cm)" },
                         " ",
-                        Native.createElement("input", { name: "pbLahir", required: true, type: "text", inputMode: "text", className: inputClass, value: formData.pbLahir, onInput: handleDecimalFieldChange('pbLahir'), onChange: handleDecimalFieldChange('pbLahir'), onBlur: handleDecimalFieldBlur('pbLahir') }),
+                        Native.createElement("input", { name: "pbLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.pbLahir, onInput: handleDecimalFieldChange('pbLahir'), onChange: handleDecimalFieldChange('pbLahir'), onBlur: handleDecimalFieldBlur('pbLahir') }),
                         " "),
                     " ",
                     Native.createElement(InputGroup, { label: "Lingkar Kepala (cm)" },
                         " ",
-                        Native.createElement("input", { name: "lkLahir", required: true, type: "text", inputMode: "text", className: inputClass, value: formData.lkLahir, onInput: handleDecimalFieldChange('lkLahir'), onChange: handleDecimalFieldChange('lkLahir'), onBlur: handleDecimalFieldBlur('lkLahir') }),
+                        Native.createElement("input", { name: "lkLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.lkLahir, onInput: handleDecimalFieldChange('lkLahir'), onChange: handleDecimalFieldChange('lkLahir'), onBlur: handleDecimalFieldBlur('lkLahir') }),
                         " "),
                     " "),
                 " ",
@@ -1141,8 +1149,8 @@ const AddChildModal = ({ user, onClose, onSuccess, initialData = null, isEdit = 
     const [loading, setLoading] = useState(false);
     useEffect(() => {
         if (isEdit && initialData)
-            setFormData({ ...initialData, hasKK: true, hasNIK: true });
-    }, [initialData, isEdit]);
+            setFormData({ ...initialData, hasKK: initialData.hasKK !== false, hasNIK: initialData.hasNIK !== false });
+    }, [initialData?.id, isEdit]);
     useEffect(() => {
         if (!formData.hasKK) {
             setFormData((previous) => ({ ...previous, noKK: `350904${generateRandomDigits(10)}` }));
@@ -1313,73 +1321,73 @@ const AddChildModal = ({ user, onClose, onSuccess, initialData = null, isEdit = 
                         Native.createElement(InputGroup, { label: "Desa" },
                             Native.createElement(Select, { value: formData.desa, onChange: (event) => {
                                     const desa = event.target.value;
-                                    setFormData({ ...formData, desa, posyandu: DATA_WILAYAH[desa][0] });
+                                    setFormData((previous) => ({ ...previous, desa, posyandu: DATA_WILAYAH[desa][0] }));
                                 }, disabled: user.role === ROLES.KADER || user.role === ROLES.BIDAN, required: true, options: Object.keys(DATA_WILAYAH).map((desa) => ({ value: desa, label: desa })) })),
                         Native.createElement(InputGroup, { label: "Posyandu" },
-                            Native.createElement(Select, { value: formData.posyandu, onChange: (event) => setFormData({ ...formData, posyandu: event.target.value }), disabled: user.role === ROLES.KADER, required: true, options: (DATA_WILAYAH[formData.desa] || []).map((posyandu) => ({ value: posyandu, label: posyandu })) })))),
+                            Native.createElement(Select, { value: formData.posyandu, onChange: (event) => setFormData((previous) => ({ ...previous, posyandu: event.target.value })), disabled: user.role === ROLES.KADER, required: true, options: (DATA_WILAYAH[formData.desa] || []).map((posyandu) => ({ value: posyandu, label: posyandu })) })))),
                 Native.createElement("section", { className: "space-y-4" },
                     Native.createElement("h3", { className: "font-semibold text-slate-800" }, "Identitas Balita"),
                     Native.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-6" },
                         Native.createElement(InputGroup, { label: "Nama Lengkap Balita" },
-                            Native.createElement("input", { required: true, type: "text", className: inputClass, value: formData.nama, onChange: (event) => setFormData({ ...formData, nama: formatChildName(event.target.value) }) })),
+                            Native.createElement("input", { name: "nama", required: true, type: "text", className: inputClass, value: formData.nama, onChange: (event) => setFormData((previous) => ({ ...previous, nama: formatChildName(event.target.value) })) })),
                         Native.createElement("div", { className: "grid grid-cols-2 gap-4" },
                             Native.createElement(InputGroup, { label: "Anak Ke-" },
-                                Native.createElement("input", { required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.anakKe, onChange: handleDecimalFieldChange('anakKe'), onBlur: handleDecimalFieldBlur('anakKe') })),
+                                Native.createElement("input", { name: "anakKe", required: true, type: "text", inputMode: "numeric", className: inputClass, value: formData.anakKe, onChange: handleDecimalFieldChange('anakKe'), onBlur: handleDecimalFieldBlur('anakKe') })),
                             Native.createElement(InputGroup, { label: "Jenis Kelamin" },
-                                Native.createElement(Select, { required: true, value: formData.jk, onChange: (event) => setFormData({ ...formData, jk: event.target.value }), options: genderOptions }))),
+                                Native.createElement(Select, { required: true, value: formData.jk, onChange: (event) => setFormData((previous) => ({ ...previous, jk: event.target.value })), options: genderOptions }))),
                         Native.createElement(InputGroup, { label: "Tanggal Lahir" },
-                            Native.createElement("input", { required: true, type: "date", className: inputClass, value: formData.tglLahir, onChange: (event) => setFormData({ ...formData, tglLahir: event.target.value }) })),
+                            Native.createElement("input", { name: "tglLahir", required: true, type: "date", className: inputClass, value: formData.tglLahir, onChange: (event) => setFormData((previous) => ({ ...previous, tglLahir: event.target.value })) })),
                         Native.createElement(InputGroup, { label: "Usia Kehamilan (Minggu)" },
-                            Native.createElement("input", { required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.usiaKehamilan, onChange: handleDecimalFieldChange('usiaKehamilan'), onBlur: handleDecimalFieldBlur('usiaKehamilan') })),
+                            Native.createElement("input", { name: "usiaKehamilan", required: true, type: "text", inputMode: "numeric", className: inputClass, value: formData.usiaKehamilan, onChange: handleDecimalFieldChange('usiaKehamilan'), onBlur: handleDecimalFieldBlur('usiaKehamilan') })),
                         Native.createElement("div", { className: "space-y-2" },
                             Native.createElement("div", { className: "flex items-center justify-between gap-3" },
                                 Native.createElement("label", { className: "block text-xs font-bold text-slate-500 uppercase tracking-wider" }, "No. KK"),
                                 Native.createElement("label", { className: "flex items-center gap-2 cursor-pointer text-xs text-emerald-600 font-medium hover:text-emerald-700 normal-case" },
-                                    Native.createElement("input", { type: "checkbox", className: "rounded text-emerald-600 focus:ring-emerald-500", checked: !formData.hasKK, onChange: (event) => setFormData({ ...formData, hasKK: !event.target.checked }) }),
+                                    Native.createElement("input", { type: "checkbox", className: "rounded text-emerald-600 focus:ring-emerald-500", checked: !formData.hasKK, onChange: (event) => setFormData((previous) => ({ ...previous, hasKK: !event.target.checked })) }),
                                     "Tidak punya KK")),
-                            Native.createElement("input", { required: formData.hasKK, readOnly: !formData.hasKK, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "No. KK harus 16 digit", type: "text", className: `${inputClass} font-mono tracking-wider ${!formData.hasKK ? 'bg-slate-200 text-slate-500' : 'bg-white'}`, value: formData.noKK, onChange: (event) => setFormData({ ...formData, noKK: event.target.value.replace(/\D/g, '') }) })),
+                            Native.createElement("input", { name: "noKK", required: formData.hasKK, readOnly: !formData.hasKK, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "No. KK harus 16 digit", type: "text", className: `${inputClass} font-mono tracking-wider ${!formData.hasKK ? 'bg-slate-200 text-slate-500' : 'bg-white'}`, value: formData.noKK, onChange: (event) => setFormData((previous) => ({ ...previous, noKK: event.target.value.replace(/\D/g, '') })) })),
                         Native.createElement("div", { className: "space-y-2" },
                             Native.createElement("div", { className: "flex items-center justify-between gap-3" },
                                 Native.createElement("label", { className: "block text-xs font-bold text-slate-500 uppercase tracking-wider" }, "NIK Balita"),
                                 Native.createElement("label", { className: "flex items-center gap-2 cursor-pointer text-xs text-emerald-600 font-medium hover:text-emerald-700 normal-case" },
-                                    Native.createElement("input", { type: "checkbox", className: "rounded text-emerald-600 focus:ring-emerald-500", checked: !formData.hasNIK, onChange: (event) => setFormData({ ...formData, hasNIK: !event.target.checked }) }),
+                                    Native.createElement("input", { type: "checkbox", className: "rounded text-emerald-600 focus:ring-emerald-500", checked: !formData.hasNIK, onChange: (event) => setFormData((previous) => ({ ...previous, hasNIK: !event.target.checked })) }),
                                     "Tidak punya NIK")),
-                            Native.createElement("input", { required: formData.hasNIK, readOnly: !formData.hasNIK, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "NIK balita harus 16 digit", type: "text", className: `${inputClass} font-mono tracking-wider ${!formData.hasNIK ? 'bg-slate-200 text-slate-500' : 'bg-white'}`, value: formData.nik, onChange: (event) => setFormData({ ...formData, nik: event.target.value.replace(/\D/g, '') }) })))),
+                            Native.createElement("input", { name: "nik", required: formData.hasNIK, readOnly: !formData.hasNIK, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "NIK balita harus 16 digit", type: "text", className: `${inputClass} font-mono tracking-wider ${!formData.hasNIK ? 'bg-slate-200 text-slate-500' : 'bg-white'}`, value: formData.nik, onChange: (event) => setFormData((previous) => ({ ...previous, nik: event.target.value.replace(/\D/g, '') })) })))),
                 Native.createElement("section", { className: "space-y-4" },
                     Native.createElement("h3", { className: "font-semibold text-slate-800" }, "Data Kelahiran"),
                     Native.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-4" },
                         Native.createElement(InputGroup, { label: "Berat Lahir (kg)" },
-                            Native.createElement("input", { name: "bbLahir", required: true, type: "text", inputMode: "text", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bbLahir, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat lahir dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => {
+                            Native.createElement("input", { name: "bbLahir", required: true, type: "text", inputMode: "decimal", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bbLahir, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat lahir dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => {
                                     event.currentTarget.setCustomValidity('');
                                     handleDecimalFieldChange('bbLahir')(event);
-                                }, onChange: handleDecimalFieldChange('bbLahir'), onBlur: handleDecimalFieldBlur('bbLahir') })),
+                                }, onBlur: handleDecimalFieldBlur('bbLahir') })),
                         Native.createElement(InputGroup, { label: "Panjang Lahir (cm)" },
-                            Native.createElement("input", { name: "pbLahir", required: true, type: "text", inputMode: "text", className: inputClass, value: formData.pbLahir, onInput: handleDecimalFieldChange('pbLahir'), onChange: handleDecimalFieldChange('pbLahir'), onBlur: handleDecimalFieldBlur('pbLahir') })),
+                            Native.createElement("input", { name: "pbLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.pbLahir, onInput: handleDecimalFieldChange('pbLahir'), onBlur: handleDecimalFieldBlur('pbLahir') })),
                         Native.createElement(InputGroup, { label: "Lingkar Kepala (cm)" },
-                            Native.createElement("input", { name: "lkLahir", required: true, type: "text", inputMode: "text", className: inputClass, value: formData.lkLahir, onInput: handleDecimalFieldChange('lkLahir'), onChange: handleDecimalFieldChange('lkLahir'), onBlur: handleDecimalFieldBlur('lkLahir') }))),
+                            Native.createElement("input", { name: "lkLahir", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.lkLahir, onInput: handleDecimalFieldChange('lkLahir'), onBlur: handleDecimalFieldBlur('lkLahir') }))),
                     Native.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-4" },
                         Native.createElement(InputGroup, { label: "Buku KIA" },
-                            Native.createElement(Select, { required: true, value: formData.bukuKIA, onChange: (event) => setFormData({ ...formData, bukuKIA: event.target.value }), options: yesNoOptions })),
+                            Native.createElement(Select, { required: true, value: formData.bukuKIA, onChange: (event) => setFormData((previous) => ({ ...previous, bukuKIA: event.target.value })), options: yesNoOptions })),
                         Native.createElement(InputGroup, { label: "Buku KIA Kecil" },
-                            Native.createElement(Select, { required: true, value: formData.bukuKIAKecil, onChange: (event) => setFormData({ ...formData, bukuKIAKecil: event.target.value }), options: yesNoOptions })),
+                            Native.createElement(Select, { required: true, value: formData.bukuKIAKecil, onChange: (event) => setFormData((previous) => ({ ...previous, bukuKIAKecil: event.target.value })), options: yesNoOptions })),
                         Native.createElement(InputGroup, { label: "IMD" },
-                            Native.createElement(Select, { required: true, value: formData.imd, onChange: (event) => setFormData({ ...formData, imd: event.target.value }), options: yesNoOptions })))),
+                            Native.createElement(Select, { required: true, value: formData.imd, onChange: (event) => setFormData((previous) => ({ ...previous, imd: event.target.value })), options: yesNoOptions })))),
                 Native.createElement("section", { className: "space-y-4 border-t border-slate-100 pt-6" },
                     Native.createElement("h3", { className: "font-semibold text-slate-800" }, "Data Orang Tua"),
                     Native.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-6" },
                         Native.createElement(InputGroup, { label: "Nama Orang Tua" },
-                            Native.createElement("input", { required: true, type: "text", className: inputClass, value: formData.namaOrtu, onChange: (event) => setFormData({ ...formData, namaOrtu: event.target.value }) })),
+                            Native.createElement("input", { name: "namaOrtu", required: true, type: "text", className: inputClass, value: formData.namaOrtu, onChange: (event) => setFormData((previous) => ({ ...previous, namaOrtu: event.target.value })) })),
                         Native.createElement(InputGroup, { label: "NIK Orang Tua" },
-                            Native.createElement("input", { required: true, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "NIK orang tua harus 16 digit", type: "text", className: `${inputClass} font-mono tracking-wider`, value: formData.nikOrtu, onChange: (event) => setFormData({ ...formData, nikOrtu: event.target.value.replace(/\D/g, '') }) }))),
+                            Native.createElement("input", { name: "nikOrtu", required: true, inputMode: "numeric", pattern: "[0-9]{16}", maxLength: 16, title: "NIK orang tua harus 16 digit", type: "text", className: `${inputClass} font-mono tracking-wider`, value: formData.nikOrtu, onChange: (event) => setFormData((previous) => ({ ...previous, nikOrtu: event.target.value.replace(/\D/g, '') })) }))),
                     Native.createElement(InputGroup, { label: "Alamat Lengkap" },
-                        Native.createElement("textarea", { required: true, rows: 2, className: inputClass, value: formData.alamat, onChange: (event) => setFormData({ ...formData, alamat: event.target.value }) })),
+                        Native.createElement("textarea", { name: "alamat", required: true, rows: 2, className: inputClass, value: formData.alamat, onChange: (event) => setFormData((previous) => ({ ...previous, alamat: event.target.value })) })),
                     Native.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-4" },
                         Native.createElement(InputGroup, { label: "No. HP" },
-                            Native.createElement("input", { required: true, inputMode: "tel", pattern: "[0-9]{8,15}", maxLength: 15, title: "No. HP harus 8 sampai 15 digit", type: "text", className: inputClass, value: formData.noHpOrtu, onChange: (event) => setFormData({ ...formData, noHpOrtu: event.target.value.replace(/\D/g, '') }) })),
+                            Native.createElement("input", { name: "noHpOrtu", required: true, inputMode: "tel", pattern: "[0-9]{8,15}", maxLength: 15, title: "No. HP harus 8 sampai 15 digit", type: "text", className: inputClass, value: formData.noHpOrtu, onChange: (event) => setFormData((previous) => ({ ...previous, noHpOrtu: event.target.value.replace(/\D/g, '') })) })),
                         Native.createElement(InputGroup, { label: "RT" },
-                            Native.createElement("input", { required: true, inputMode: "numeric", type: "text", className: inputClass, value: formData.rt, onChange: (event) => setFormData({ ...formData, rt: event.target.value.replace(/\D/g, '') }) })),
+                            Native.createElement("input", { name: "rt", required: true, inputMode: "numeric", type: "text", className: inputClass, value: formData.rt, onChange: (event) => setFormData((previous) => ({ ...previous, rt: event.target.value.replace(/\D/g, '') })) })),
                         Native.createElement(InputGroup, { label: "RW" },
-                            Native.createElement("input", { required: true, inputMode: "numeric", type: "text", className: inputClass, value: formData.rw, onChange: (event) => setFormData({ ...formData, rw: event.target.value.replace(/\D/g, '') }) })))),
+                            Native.createElement("input", { name: "rw", required: true, inputMode: "numeric", type: "text", className: inputClass, value: formData.rw, onChange: (event) => setFormData((previous) => ({ ...previous, rw: event.target.value.replace(/\D/g, '') })) })))),
                 Native.createElement("div", { className: "identity-modal-actions ios-modal-actions" },
                     Native.createElement(Button, { variant: "secondary", onClick: onClose, className: "ios-modal-secondary w-full md:w-auto" }, "Batal"),
                     Native.createElement(Button, { variant: "primary", type: "submit", disabled: loading, className: "ios-modal-primary w-full md:w-auto" }, loading ? 'Menyimpan...' : isEdit ? 'Perbarui Data' : 'Simpan Data'))))));
@@ -1631,14 +1639,14 @@ const MeasurementModal = ({ child, onClose }) => {
                             Native.createElement("input", { type: "text", readOnly: true, className: `${inputClass} bg-slate-100 text-slate-500`, value: formData.caraUkur }))),
                     Native.createElement("div", { className: "grid grid-cols-2 gap-4" },
                         Native.createElement(InputGroup, { label: "Berat Badan (kg)" },
-                            Native.createElement("input", { name: "bb", required: true, type: "text", inputMode: "text", className: inputClass, value: formData.bb, onInput: handleDecimalFieldChange('bb'), onChange: handleDecimalFieldChange('bb'), onBlur: handleDecimalFieldBlur('bb') })),
+                            Native.createElement("input", { name: "bb", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.bb, onInput: handleDecimalFieldChange('bb'), onChange: handleDecimalFieldChange('bb'), onBlur: handleDecimalFieldBlur('bb') })),
                         Native.createElement(InputGroup, { label: "Tinggi Badan (cm)" },
-                            Native.createElement("input", { name: "tb", required: true, type: "text", inputMode: "text", className: inputClass, value: formData.tb, onInput: handleDecimalFieldChange('tb'), onChange: handleDecimalFieldChange('tb'), onBlur: handleDecimalFieldBlur('tb') }))),
+                            Native.createElement("input", { name: "tb", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.tb, onInput: handleDecimalFieldChange('tb'), onChange: handleDecimalFieldChange('tb'), onBlur: handleDecimalFieldBlur('tb') }))),
                     Native.createElement("div", { className: "grid grid-cols-2 gap-4" },
                         Native.createElement(InputGroup, { label: "LiLa (cm)" },
-                            Native.createElement("input", { name: "lila", type: "text", inputMode: "text", className: inputClass, value: formData.lila, onInput: handleDecimalFieldChange('lila'), onChange: handleDecimalFieldChange('lila'), onBlur: handleDecimalFieldBlur('lila') })),
+                            Native.createElement("input", { name: "lila", type: "text", inputMode: "decimal", className: inputClass, value: formData.lila, onInput: handleDecimalFieldChange('lila'), onChange: handleDecimalFieldChange('lila'), onBlur: handleDecimalFieldBlur('lila') })),
                         Native.createElement(InputGroup, { label: "Lingkar Kepala (cm)" },
-                            Native.createElement("input", { name: "lk", type: "text", inputMode: "text", className: inputClass, value: formData.lk, onInput: handleDecimalFieldChange('lk'), onChange: handleDecimalFieldChange('lk'), onBlur: handleDecimalFieldBlur('lk') }))),
+                            Native.createElement("input", { name: "lk", type: "text", inputMode: "decimal", className: inputClass, value: formData.lk, onInput: handleDecimalFieldChange('lk'), onChange: handleDecimalFieldChange('lk'), onBlur: handleDecimalFieldBlur('lk') }))),
                     Native.createElement("input", { type: "hidden", value: formData.statusNaik }),
                     Native.createElement(InputGroup, { label: "Pitting Edema Bilateral" },
                         Native.createElement(Select, { value: formData.edema, onChange: (e) => setFormData({ ...formData, edema: e.target.value }), options: [
@@ -1707,7 +1715,7 @@ export const Dashboard = ({ user, onLogout }) => {
     const [measurementBackTab, setMeasurementBackTab] = useState('data_balita');
     const [addChildBackTab, setAddChildBackTab] = useState('data_balita');
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-    const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => shouldDefaultToCompactSidebar());
+    const sidebarCollapsedRef = useRef(shouldDefaultToCompactSidebar());
     const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
     const [colorScheme, setColorScheme] = useState(() => getPreferredColorScheme());
     const [filterMonth, setFilterMonth] = useState(new Date().getMonth() + 1);
@@ -1718,6 +1726,8 @@ export const Dashboard = ({ user, onLogout }) => {
     const [draftPosyandu, setDraftPosyandu] = useState(user.role === ROLES.KADER ? (user.posyandu || '') : '');
     const fileInputRef = useRef(null);
     const accountMenuRef = useRef(null);
+    const appShellRef = useRef(null);
+    const sidebarCollapseButtonRef = useRef(null);
     const sidebarTooltipRef = useRef(null);
     useEffect(() => subscribeColorScheme(setColorScheme), []);
     useEffect(() => {
@@ -1744,7 +1754,8 @@ export const Dashboard = ({ user, onLogout }) => {
         const handleLayoutChange = (event) => {
             if (!event.matches)
                 return;
-            setIsSidebarCollapsed(true);
+            sidebarCollapsedRef.current = true;
+            applySidebarCollapsedState(appShellRef.current, sidebarCollapseButtonRef.current, true);
             setIsSidebarOpen(false);
         };
         compactLayout.addEventListener('change', handleLayoutChange);
@@ -1759,7 +1770,16 @@ export const Dashboard = ({ user, onLogout }) => {
     const [pagedChildrenLoading, setPagedChildrenLoading] = useState(false);
     const [dataRevision, setDataRevision] = useState(0);
     const itemsPerPage = 10;
-    const serverPagedChildTabs = ['data_balita', 'recent', 'recycle_bin', 'mpasi'];
+    const serverPagedChildTabs = [
+        'data_balita',
+        'recent',
+        'recycle_bin',
+        'mpasi',
+        'problem_underweight',
+        'problem_stunting',
+        'problem_wasting',
+        'problem_tidak_naik'
+    ];
     const isServerPagedChildTab = serverPagedChildTabs.includes(activeTab);
     useEffect(() => {
         const syncTabFromHash = () => {
@@ -2031,7 +2051,7 @@ export const Dashboard = ({ user, onLogout }) => {
             return matchDesa && matchPosyandu;
         });
     }, [children, viewDesa, viewPosyandu]);
-    const currentFilterDate = useMemo(() => new Date(filterYear, filterMonth - 1, 1), [filterYear, filterMonth]);
+    const currentFilterDate = useMemo(() => new Date(filterYear, filterMonth, 0), [filterYear, filterMonth]);
     const activeChildren = useMemo(() => filteredByLocation.filter(c => {
         if (c.deletedAt)
             return false;
@@ -2580,45 +2600,6 @@ export const Dashboard = ({ user, onLogout }) => {
         switch (activeTab) {
             case 'recycle_bin': return deletedChildren;
             case 'recent': return newInputs;
-            case 'problem_underweight':
-                return activeChildren.filter(c => {
-                    if (!c.id)
-                        return false;
-                    const m = monthlyMeasurements[c.id];
-                    if (!m || !m.bb)
-                        return false;
-                    const age = getAgeInMonths(c.tglLahir, new Date(m.tglUkur));
-                    return ["Berat Sangat Kurang", "Berat Kurang"].includes(calculateGiziStatus(m.bb, 'BBU', age, c.jk));
-                });
-            case 'problem_stunting':
-                return activeChildren.filter(c => {
-                    if (!c.id)
-                        return false;
-                    const m = monthlyMeasurements[c.id];
-                    if (!m || !m.tb)
-                        return false;
-                    const age = getAgeInMonths(c.tglLahir, new Date(m.tglUkur));
-                    return ["Sangat Pendek", "Pendek"].includes(calculateGiziStatus(m.tb, 'TBU', age, c.jk, null, m.caraUkur));
-                });
-            case 'problem_wasting':
-                return activeChildren.filter(c => {
-                    if (!c.id)
-                        return false;
-                    const m = monthlyMeasurements[c.id];
-                    if (!m || !m.bb || !m.tb)
-                        return false;
-                    const age = getAgeInMonths(c.tglLahir, new Date(m.tglUkur));
-                    return ["Gizi Buruk", "Gizi Kurang"].includes(calculateGiziStatus(m.bb, 'BBTB', age, c.jk, m.tb, m.caraUkur));
-                });
-            case 'problem_tidak_naik':
-                return activeChildren.filter(c => {
-                    if (!c.id)
-                        return false;
-                    const m = monthlyMeasurements[c.id];
-                    if (!m)
-                        return false;
-                    return m.statusNaik === 'T';
-                });
             case 'mpasi':
                 return activeChildren.filter(c => {
                     const age = getAgeInMonths(c.tglLahir, currentFilterDate);
@@ -2627,18 +2608,6 @@ export const Dashboard = ({ user, onLogout }) => {
             default: return activeChildren;
         }
     };
-    const countUnderweight = useMemo(() => activeChildren.filter(c => { if (!c.id)
-        return false; const m = monthlyMeasurements[c.id]; if (!m || !m.bb)
-        return false; const age = getAgeInMonths(c.tglLahir, new Date(m.tglUkur)); return ["Berat Sangat Kurang", "Berat Kurang"].includes(calculateGiziStatus(m.bb, 'BBU', age, c.jk)); }).length, [activeChildren, monthlyMeasurements]);
-    const countStunting = useMemo(() => activeChildren.filter(c => { if (!c.id)
-        return false; const m = monthlyMeasurements[c.id]; if (!m || !m.tb)
-        return false; const age = getAgeInMonths(c.tglLahir, new Date(m.tglUkur)); return ["Sangat Pendek", "Pendek"].includes(calculateGiziStatus(m.tb, 'TBU', age, c.jk, null, m.caraUkur)); }).length, [activeChildren, monthlyMeasurements]);
-    const countWasting = useMemo(() => activeChildren.filter(c => { if (!c.id)
-        return false; const m = monthlyMeasurements[c.id]; if (!m || !m.bb || !m.tb)
-        return false; const age = getAgeInMonths(c.tglLahir, new Date(m.tglUkur)); return ["Gizi Buruk", "Gizi Kurang"].includes(calculateGiziStatus(m.bb, 'BBTB', age, c.jk, m.tb, m.caraUkur)); }).length, [activeChildren, monthlyMeasurements]);
-    const countTidakNaik = useMemo(() => activeChildren.filter(c => { if (!c.id)
-        return false; const m = monthlyMeasurements[c.id]; if (!m)
-        return false; return m.statusNaik === 'T'; }).length, [activeChildren, monthlyMeasurements]);
     const rawDisplayData = isServerPagedChildTab
         ? []
         : getDisplayData().filter(c => c.nama.toLowerCase().includes(searchTerm.toLowerCase()) || c.nik.includes(searchTerm));
@@ -2751,8 +2720,13 @@ export const Dashboard = ({ user, onLogout }) => {
         measurement: 'Penimbangan Balita'
     };
     const pageTitle = pageTitles[activeTab] || 'E-Posyandu';
+    const setSidebarCollapsed = (collapsed) => {
+        sidebarCollapsedRef.current = collapsed;
+        hideSidebarTooltip();
+        applySidebarCollapsedState(appShellRef.current, sidebarCollapseButtonRef.current, collapsed);
+    };
     const showSidebarTooltip = (label, event) => {
-        if (!isSidebarCollapsed)
+        if (!sidebarCollapsedRef.current)
             return;
         const tooltip = sidebarTooltipRef.current;
         if (!tooltip)
@@ -2783,10 +2757,10 @@ export const Dashboard = ({ user, onLogout }) => {
             Native.createElement("span", { className: "sidebar-nav-icon" },
                 Native.createElement(Icon, { className: "w-5 h-5" })),
             Native.createElement("span", { className: "sidebar-nav-label text-sm text-left" }, label))));
-    return (Native.createElement("div", { className: `app-shell font-sans text-slate-900 flex ${isSidebarCollapsed ? 'is-sidebar-collapsed' : ''}` },
+    return (Native.createElement("div", { ref: appShellRef, className: `app-shell font-sans text-slate-900 flex ${sidebarCollapsedRef.current ? 'is-sidebar-collapsed' : ''}` },
         isSidebarOpen && (Native.createElement("div", { className: "sidebar-scrim fixed inset-0 z-40 md:hidden", onClick: () => setIsSidebarOpen(false), "aria-hidden": "true" })),
-        !isSidebarCollapsed && (Native.createElement("button", { type: "button", className: "sidebar-expanded-dismiss", onClick: () => setIsSidebarCollapsed(true), "aria-label": "Ringkas menu samping" })),
-        Native.createElement("aside", { className: `app-sidebar fixed md:sticky top-0 h-screen flex flex-col z-50 transition-transform duration-300 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}` },
+        Native.createElement("button", { type: "button", className: "sidebar-expanded-dismiss", onClick: () => setSidebarCollapsed(true), "aria-label": "Ringkas menu samping" }),
+        Native.createElement("aside", { className: `app-sidebar fixed md:sticky top-0 h-screen flex flex-col z-50 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}` },
             Native.createElement("div", { className: "sidebar-mobile-toolbar md:hidden" },
                 Native.createElement("span", null, "Daftar Menu"),
                 Native.createElement("button", { type: "button", onClick: () => setIsSidebarOpen(false), title: "Tutup menu", "aria-label": "Tutup menu" },
@@ -2800,13 +2774,16 @@ export const Dashboard = ({ user, onLogout }) => {
                         Native.createElement("span", null, `v${APP_VERSION}`)),
                     Native.createElement("p", null, "UPTD Puskesmas Gumukmas"))),
             Native.createElement("nav", { className: "app-sidebar-nav flex-1 overflow-y-auto py-4 px-3 space-y-1", "aria-label": "Navigasi utama" },
-                Native.createElement("button", { type: "button", onMouseEnter: (event) => showSidebarTooltip(isSidebarCollapsed ? 'Perluas Menu' : 'Ringkas Menu', event), onMouseLeave: hideSidebarTooltip, onFocus: (event) => showSidebarTooltip(isSidebarCollapsed ? 'Perluas Menu' : 'Ringkas Menu', event), onBlur: hideSidebarTooltip, onClick: (event) => {
+                Native.createElement("button", { ref: sidebarCollapseButtonRef, type: "button", onMouseEnter: (event) => showSidebarTooltip(sidebarCollapsedRef.current ? 'Perluas Menu' : 'Ringkas Menu', event), onMouseLeave: hideSidebarTooltip, onFocus: (event) => showSidebarTooltip(sidebarCollapsedRef.current ? 'Perluas Menu' : 'Ringkas Menu', event), onBlur: hideSidebarTooltip, onClick: (event) => {
                         event.stopPropagation();
-                        hideSidebarTooltip();
-                        setIsSidebarCollapsed(!isSidebarCollapsed);
-                    }, className: "sidebar-collapse-button hidden md:flex", "aria-label": isSidebarCollapsed ? 'Perluas Menu' : 'Ringkas Menu', "aria-expanded": !isSidebarCollapsed },
-                    Native.createElement("span", { className: "sidebar-nav-icon sidebar-collapse-symbol" }, isSidebarCollapsed ? Native.createElement(ChevronRight, { className: "h-5 w-5" }) : Native.createElement(ChevronLeft, { className: "h-5 w-5" })),
-                    Native.createElement("span", { className: "sidebar-nav-label text-sm text-left" }, isSidebarCollapsed ? 'Perluas Menu' : 'Ringkas Menu')),
+                        setSidebarCollapsed(!sidebarCollapsedRef.current);
+                    }, className: "sidebar-collapse-button hidden md:flex", "aria-label": sidebarCollapsedRef.current ? 'Perluas Menu' : 'Ringkas Menu', "aria-expanded": !sidebarCollapsedRef.current },
+                    Native.createElement("span", { className: "sidebar-nav-icon sidebar-collapse-symbol" },
+                        Native.createElement(ChevronRight, { className: "sidebar-expand-icon h-5 w-5" }),
+                        Native.createElement(ChevronLeft, { className: "sidebar-collapse-icon h-5 w-5" })),
+                    Native.createElement("span", { className: "sidebar-nav-label text-sm text-left" },
+                        Native.createElement("span", { className: "sidebar-expand-label" }, "Perluas Menu"),
+                        Native.createElement("span", { className: "sidebar-collapse-label" }, "Ringkas Menu"))),
                 Native.createElement("p", { className: "sidebar-section-label" }, "Menu Utama"),
                 Native.createElement(SidebarItem, { id: "dashboard", label: "Dashboard", icon: LayoutDashboard }),
                 Native.createElement(SidebarItem, { id: "data_balita", label: "Data Balita", icon: Users }),

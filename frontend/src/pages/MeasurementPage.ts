@@ -2,7 +2,7 @@
 import { addDoc, collection, deleteDoc, doc, onSnapshot, query, serverTimestamp, syncPendingMutations, updateDoc, where } from '../api/client';
 import Native, { useEffect, useMemo, useState } from '../runtime/dom';
 import { actionTooltipProps } from '../ui/actionTooltip';
-import { CheckCircle2, ChevronLeft, History, Loader2, Plus, Scale, Trash2 } from '../ui/icons';
+import { CheckCircle2, ChevronLeft, History, Loader2, Pencil, Plus, Scale, Trash2 } from '../ui/icons';
 import { showError, showSuccess } from '../ui/notifications';
 import { appId, Button, calculateGiziStatus, Card, db, formatDate, formatIndoDate, getAgeInMonths, getKBM, InputGroup, KenaikanBadge, Select, StatusBadge } from './DashboardApp';
 const inputClass = 'w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm rounded-xl focus:ring-emerald-500 focus:border-emerald-500 block p-2.5 transition-colors';
@@ -42,6 +42,7 @@ export default function MeasurementPage({ child, onBack }) {
     const [loading, setLoading] = useState(false);
     const [loadingHistory, setLoadingHistory] = useState(true);
     const [deletingMeasurementId, setDeletingMeasurementId] = useState(null);
+    const [editingMeasurementId, setEditingMeasurementId] = useState(null);
     const parseLocaleDecimal = (value) => {
         const normalized = normalizeDecimalInput(String(value ?? '')).trim();
         if (!normalized)
@@ -83,45 +84,9 @@ export default function MeasurementPage({ child, onBack }) {
             setLoadingHistory(false);
         });
     }, [child.id]);
-    useEffect(() => {
-        if (!formData.bb || !formData.tglUkur)
-            return;
-        const currentWeight = parseLocaleDecimal(formData.bb);
-        if (currentWeight === null)
-            return;
-        const currentDate = new Date(formData.tglUkur);
-        const previousMeasurement = history.find((item) => new Date(item.tglUkur).getTime() < currentDate.getTime());
-        if (!previousMeasurement) {
-            setFormData((previous) => ({ ...previous, statusNaik: 'B' }));
-            return;
-        }
-        const previousDate = new Date(previousMeasurement.tglUkur);
-        const diffTime = Math.abs(currentDate.getTime() - previousDate.getTime());
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        if (diffDays > 45) {
-            setFormData((previous) => ({ ...previous, statusNaik: 'O' }));
-            return;
-        }
-        const previousWeight = parseLocaleDecimal(previousMeasurement.bb);
-        if (previousWeight === null)
-            return;
-        const gain = (currentWeight - previousWeight) * 1000;
-        const measureAgeInMonths = getAgeInMonths(child.tglLahir, currentDate);
-        const minGain = getKBM(measureAgeInMonths);
-        const newStatus = gain >= minGain ? 'N' : 'T';
-        setFormData((previous) => ({ ...previous, statusNaik: newStatus }));
-    }, [formData.bb, formData.tglUkur, history, child.tglLahir]);
     const measureDate = useMemo(() => new Date(formData.tglUkur), [formData.tglUkur]);
     const ageAtMeasure = useMemo(() => getAgeInMonths(child.tglLahir, measureDate), [child.tglLahir, measureDate]);
     const lengthHeightLabel = ageAtMeasure <= 24 ? 'Panjang Badan (cm)' : 'Tinggi Badan (cm)';
-    const lengthHeightStatusLabel = ageAtMeasure <= 24 ? 'Status PB/U' : 'Status TB/U';
-    const weightLengthHeightStatusLabel = ageAtMeasure <= 24 ? 'Status BB/PB' : 'Status BB/TB';
-    const statusSummary = useMemo(() => ({
-        bbu: calculateGiziStatus(formData.bb, 'BBU', ageAtMeasure, child.jk),
-        tbu: calculateGiziStatus(formData.tb, 'TBU', ageAtMeasure, child.jk, null, formData.caraUkur),
-        bbtb: calculateGiziStatus(formData.bb, 'BBTB', ageAtMeasure, child.jk, formData.tb, formData.caraUkur),
-        imtu: calculateGiziStatus(formData.bb, 'IMTU', ageAtMeasure, child.jk, formData.tb, formData.caraUkur)
-    }), [ageAtMeasure, child.jk, formData.bb, formData.caraUkur, formData.tb]);
     const monthlyHistory = useMemo(() => {
         const monthlyMap = new Map();
         history.forEach((item) => {
@@ -138,12 +103,11 @@ export default function MeasurementPage({ child, onBack }) {
     useEffect(() => {
         if (activeMenu !== 'add')
             return;
-        setFormData((previous) => ({
-            ...previous,
-            caraUkur: ageAtMeasure > 24 ? 'Berdiri' : 'Terlentang'
-        }));
+        const caraUkur = ageAtMeasure > 24 ? 'Berdiri' : 'Terlentang';
+        setFormData((previous) => previous.caraUkur === caraUkur ? previous : { ...previous, caraUkur });
     }, [ageAtMeasure, activeMenu]);
     const handleStartAdd = () => {
+        setEditingMeasurementId(null);
         setActiveMenu('add');
         setFormData((previous) => ({
             ...previous,
@@ -160,6 +124,45 @@ export default function MeasurementPage({ child, onBack }) {
             statusNaik: 'B'
         }));
     };
+    const handleStartEdit = (measurement) => {
+        if (!measurement?.id || loading || deletingMeasurementId)
+            return;
+        setEditingMeasurementId(measurement.id);
+        setFormData({
+            tglUkur: String(measurement.tglUkur || formatDate(new Date())).slice(0, 10),
+            bb: String(measurement.bb ?? ''),
+            tb: String(measurement.tb ?? ''),
+            lila: String(measurement.lila ?? ''),
+            lk: String(measurement.lk ?? ''),
+            edema: measurement.edema || 'Tidak',
+            kelasIbu: measurement.kelasIbu || 'Tidak',
+            mbg: measurement.mbg || 'Tidak',
+            vitA: measurement.vitA || 'Tidak',
+            asi: measurement.asi || 'Tidak',
+            caraUkur: measurement.caraUkur || '',
+            statusNaik: measurement.statusNaik || 'B'
+        });
+        setActiveMenu('add');
+    };
+    const handleShowHistory = () => {
+        setEditingMeasurementId(null);
+        setActiveMenu('history');
+    };
+    const calculateWeightGainStatus = (measurement, previousMeasurement) => {
+        if (!previousMeasurement)
+            return 'B';
+        const currentDate = new Date(measurement.tglUkur);
+        const previousDate = new Date(previousMeasurement.tglUkur);
+        const diffDays = Math.ceil(Math.abs(currentDate.getTime() - previousDate.getTime()) / (1000 * 60 * 60 * 24));
+        if (diffDays > 45)
+            return 'O';
+        const currentWeight = parseLocaleDecimal(measurement.bb);
+        const previousWeight = parseLocaleDecimal(previousMeasurement.bb);
+        if (currentWeight === null || previousWeight === null)
+            return measurement.statusNaik || 'B';
+        const gain = (currentWeight - previousWeight) * 1000;
+        return gain >= getKBM(getAgeInMonths(child.tglLahir, currentDate)) ? 'N' : 'T';
+    };
     const handleSubmit = async (event) => {
         event.preventDefault();
         if (!child.id)
@@ -170,6 +173,7 @@ export default function MeasurementPage({ child, onBack }) {
             const liveValue = typeof input?.value === 'string' ? input.value : '';
             return liveValue || String(fallback ?? '');
         };
+        const measurementDate = readLiveField('tglUkur', formData.tglUkur).slice(0, 10);
         const weight = parseDecimalForRange(readLiveField('bb', formData.bb), 0.1, 60, 2);
         const height = parseDecimalForRange(readLiveField('tb', formData.tb), 10, 220, 1);
         const lila = parseDecimalForRange(readLiveField('lila', formData.lila), 0.1, 50, 1);
@@ -190,35 +194,73 @@ export default function MeasurementPage({ child, onBack }) {
             showError('Lingkar kepala harus diisi desimal yang valid, misalnya 45,5 cm.');
             return;
         }
+        const currentDate = new Date(`${measurementDate}T00:00:00`);
+        if (!measurementDate || Number.isNaN(currentDate.getTime())) {
+            showError('Tanggal pengukuran belum valid.');
+            return;
+        }
+        const previousMeasurement = history
+            .filter((item) => item.id !== editingMeasurementId)
+            .find((item) => new Date(item.tglUkur).getTime() < currentDate.getTime());
+        const statusNaik = calculateWeightGainStatus({ bb: weight, tglUkur: measurementDate }, previousMeasurement);
         const normalizedPayload = {
             ...formData,
+            tglUkur: measurementDate,
             bb: weight,
             tb: height,
             lila,
-            lk
+            lk,
+            statusNaik
         };
         setLoading(true);
         try {
-            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'measurements'), {
+            const measurementData = {
                 childId: child.id,
                 childName: child.nama,
                 posyandu: child.posyandu,
                 desa: child.desa,
                 ...normalizedPayload,
-                ageInMonths: ageAtMeasure,
-                createdAt: serverTimestamp()
-            });
-            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', child.id), {
-                currentBB: weight,
-                currentTB: height,
-                currentLILA: lila,
-                currentLK: lk,
-                lastMeasurementDate: formData.tglUkur,
+                ageInMonths: getAgeInMonths(child.tglLahir, currentDate),
+                updatedAt: serverTimestamp()
+            };
+            const measurementMutation = editingMeasurementId
+                ? await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'measurements', editingMeasurementId), measurementData)
+                : await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'measurements'), {
+                    ...measurementData,
+                    createdAt: serverTimestamp()
+                });
+            const measurementId = editingMeasurementId || measurementMutation.id;
+            const projectedHistory = [
+                ...history.filter((item) => item.id !== measurementId),
+                { ...(history.find((item) => item.id === measurementId) || {}), id: measurementId, ...measurementData }
+            ].sort((a, b) => new Date(b.tglUkur).getTime() - new Date(a.tglUkur).getTime());
+            const chronologicalHistory = [...projectedHistory].reverse();
+            const statusMutationIds = [];
+            for (let index = 0; index < chronologicalHistory.length; index += 1) {
+                const item = chronologicalHistory[index];
+                const recalculatedStatus = calculateWeightGainStatus(item, chronologicalHistory[index - 1]);
+                if (item.id !== measurementId && item.statusNaik !== recalculatedStatus) {
+                    const statusMutation = await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'measurements', item.id), {
+                        statusNaik: recalculatedStatus,
+                        updatedAt: serverTimestamp()
+                    });
+                    statusMutationIds.push(statusMutation.mutationId);
+                }
+                item.statusNaik = recalculatedStatus;
+            }
+            const latestMeasurement = projectedHistory[0];
+            const childMutation = await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', child.id), {
+                currentBB: latestMeasurement?.bb ?? child.bbLahir ?? null,
+                currentTB: latestMeasurement?.tb ?? child.pbLahir ?? null,
+                currentLILA: latestMeasurement?.lila ?? 0,
+                currentLK: latestMeasurement?.lk ?? child.lkLahir ?? null,
+                lastMeasurementDate: latestMeasurement?.tglUkur ?? null,
                 updatedAt: serverTimestamp()
             });
-            await syncPendingMutations();
-            showSuccess('Data penimbangan berhasil disimpan.');
-            setActiveMenu('history');
+            await syncPendingMutations([measurementMutation.mutationId, ...statusMutationIds, childMutation.mutationId]);
+            setHistory(projectedHistory);
+            showSuccess(editingMeasurementId ? 'Data penimbangan berhasil diperbarui.' : 'Data penimbangan berhasil disimpan.');
+            handleShowHistory();
         }
         catch (error) {
             console.error('Gagal simpan: ' + error.message);
@@ -309,7 +351,7 @@ export default function MeasurementPage({ child, onBack }) {
                             " / ",
                             child.posyandu)))),
             Native.createElement("div", { className: "measurement-segmented apple-segmented-control", role: "tablist", "aria-label": "Menu penimbangan" },
-                Native.createElement("button", { type: "button", role: "tab", "aria-selected": activeMenu === 'history', className: activeMenu === 'history' ? 'is-active' : '', onClick: () => setActiveMenu('history') },
+                Native.createElement("button", { type: "button", role: "tab", "aria-selected": activeMenu === 'history', className: activeMenu === 'history' ? 'is-active' : '', onClick: handleShowHistory },
                     Native.createElement(History, { className: "h-4 w-4" }),
                     Native.createElement("span", null, "Riwayat")),
                 Native.createElement("button", { type: "button", role: "tab", "aria-selected": activeMenu === 'add', className: activeMenu === 'add' ? 'is-active' : '', onClick: handleStartAdd },
@@ -367,44 +409,32 @@ export default function MeasurementPage({ child, onBack }) {
                             Native.createElement("td", { className: "py-2 px-2 text-center" },
                                 Native.createElement(KenaikanBadge, { status: item.statusNaik })),
                             Native.createElement("td", { className: "py-2 pl-2 text-center" },
-                                Native.createElement("button", { ...actionTooltipProps("Hapus riwayat penimbangan"), type: "button", className: "table-action-button table-action-red disabled:cursor-not-allowed disabled:opacity-50", "aria-label": `Hapus penimbangan tanggal ${formatIndoDate(item.tglUkur)}`, disabled: Boolean(deletingMeasurementId), onClick: () => handleDeleteMeasurement(item) }, deletingMeasurementId === item.id ? Native.createElement(Loader2, { className: "h-4 w-4 animate-spin" }) : Native.createElement(Trash2, { className: "h-4 w-4" })))))
+                                Native.createElement("div", { className: "flex items-center justify-center gap-2" },
+                                    Native.createElement("button", { ...actionTooltipProps("Edit riwayat penimbangan"), type: "button", className: "table-action-button table-action-blue disabled:cursor-not-allowed disabled:opacity-50", "aria-label": `Edit penimbangan tanggal ${formatIndoDate(item.tglUkur)}`, disabled: loading || Boolean(deletingMeasurementId), onClick: () => handleStartEdit(item) },
+                                        Native.createElement(Pencil, { className: "h-4 w-4" })),
+                                    Native.createElement("button", { ...actionTooltipProps("Hapus riwayat penimbangan"), type: "button", className: "table-action-button table-action-red disabled:cursor-not-allowed disabled:opacity-50", "aria-label": `Hapus penimbangan tanggal ${formatIndoDate(item.tglUkur)}`, disabled: loading || Boolean(deletingMeasurementId), onClick: () => handleDeleteMeasurement(item) }, deletingMeasurementId === item.id ? Native.createElement(Loader2, { className: "h-4 w-4 animate-spin" }) : Native.createElement(Trash2, { className: "h-4 w-4" }))))))
                     }))))))) : (Native.createElement(Card, { className: "ios-measurement-form p-4 sm:p-6" },
             Native.createElement("form", { onSubmit: handleSubmit, className: "measurement-form-stack space-y-6" },
                 Native.createElement("div", { className: "measurement-form-panel measurement-time-panel grid grid-cols-1 md:grid-cols-2 gap-4" },
                     Native.createElement(InputGroup, { label: "Tanggal Pengukuran" },
-                        Native.createElement("input", { required: true, type: "date", className: inputClass, value: formData.tglUkur, onChange: (event) => setFormData({ ...formData, tglUkur: event.target.value }) })),
+                        Native.createElement("input", { name: "tglUkur", required: true, type: "date", className: inputClass, value: formData.tglUkur, onChange: (event) => setFormData((previous) => ({ ...previous, tglUkur: event.target.value })) })),
                     Native.createElement(InputGroup, { label: "Cara Ukur" },
                         Native.createElement("input", { type: "text", readOnly: true, className: `${inputClass} bg-slate-100 text-slate-500`, value: formData.caraUkur }))),
                 Native.createElement("div", { className: "measurement-form-panel measurement-anthropometry-panel grid grid-cols-1 sm:grid-cols-2 gap-4" },
                     Native.createElement(InputGroup, { label: "Berat Badan (kg)" },
-                        Native.createElement("input", { name: "bb", required: true, type: "text", inputMode: "text", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bb, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat badan dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => {
+                        Native.createElement("input", { name: "bb", required: true, type: "text", inputMode: "decimal", placeholder: "Contoh: 3.20", title: "Masukkan kilogram, misalnya 3.2. Jangan masukkan 3200 gram.", className: inputClass, value: formData.bb, onInvalid: (event) => event.currentTarget.setCustomValidity('Masukkan berat badan dalam kilogram, misalnya 3.2. Jangan masukkan 3200 gram.'), onInput: (event) => {
                                 event.currentTarget.setCustomValidity('');
                                 handleDecimalFieldChange('bb')(event);
-                            }, onChange: handleDecimalFieldChange('bb'), onBlur: handleDecimalFieldBlur('bb') })),
+                            }, onBlur: handleDecimalFieldBlur('bb') })),
                     Native.createElement(InputGroup, { label: lengthHeightLabel },
-                        Native.createElement("input", { name: "tb", required: true, type: "text", inputMode: "text", className: inputClass, value: formData.tb, onInput: handleDecimalFieldChange('tb'), onChange: handleDecimalFieldChange('tb'), onBlur: handleDecimalFieldBlur('tb') }))),
-                Native.createElement("div", { className: "measurement-status-panel" },
-                    Native.createElement("div", { className: "measurement-status-grid grid grid-cols-2 lg:grid-cols-4 gap-x-4 gap-y-3 text-xs" },
-                        Native.createElement("div", null,
-                            Native.createElement("p", { className: "text-slate-500 mb-1" }, "Status BB/U"),
-                            Native.createElement(StatusBadge, { status: statusSummary.bbu })),
-                        Native.createElement("div", null,
-                            Native.createElement("p", { className: "text-slate-500 mb-1" }, lengthHeightStatusLabel),
-                            Native.createElement(StatusBadge, { status: statusSummary.tbu })),
-                        Native.createElement("div", null,
-                            Native.createElement("p", { className: "text-slate-500 mb-1" }, weightLengthHeightStatusLabel),
-                            Native.createElement(StatusBadge, { status: statusSummary.bbtb })),
-                        Native.createElement("div", null,
-                            Native.createElement("p", { className: "text-slate-500 mb-1" }, "Status IMT/U"),
-                            Native.createElement(StatusBadge, { status: statusSummary.imtu })))),
+                        Native.createElement("input", { name: "tb", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.tb, onInput: handleDecimalFieldChange('tb'), onBlur: handleDecimalFieldBlur('tb') }))),
                 Native.createElement("div", { className: "measurement-form-panel measurement-additional-panel grid grid-cols-1 sm:grid-cols-2 gap-4" },
                     Native.createElement(InputGroup, { label: "LiLa (cm)" },
-                        Native.createElement("input", { name: "lila", type: "text", inputMode: "text", className: inputClass, value: formData.lila, onInput: handleDecimalFieldChange('lila'), onChange: handleDecimalFieldChange('lila'), onBlur: handleDecimalFieldBlur('lila') })),
+                        Native.createElement("input", { name: "lila", type: "text", inputMode: "decimal", className: inputClass, value: formData.lila, onInput: handleDecimalFieldChange('lila'), onBlur: handleDecimalFieldBlur('lila') })),
                     Native.createElement(InputGroup, { label: "Lingkar Kepala (cm)" },
-                        Native.createElement("input", { name: "lk", type: "text", inputMode: "text", className: inputClass, value: formData.lk, onInput: handleDecimalFieldChange('lk'), onChange: handleDecimalFieldChange('lk'), onBlur: handleDecimalFieldBlur('lk') }))),
-                Native.createElement("input", { type: "hidden", value: formData.statusNaik }),
+                        Native.createElement("input", { name: "lk", type: "text", inputMode: "decimal", className: inputClass, value: formData.lk, onInput: handleDecimalFieldChange('lk'), onBlur: handleDecimalFieldBlur('lk') }))),
                 Native.createElement(InputGroup, { label: "Pitting Edema Bilateral" },
-                    Native.createElement(Select, { value: formData.edema, onChange: (event) => setFormData({ ...formData, edema: event.target.value }), options: [
+                    Native.createElement(Select, { value: formData.edema, onChange: (event) => setFormData((previous) => ({ ...previous, edema: event.target.value })), options: [
                             { value: 'Tidak', label: 'Tidak' },
                             { value: 'Ada (Derajat +1)', label: 'Ada (Derajat +1)' },
                             { value: 'Ada (Derajat +2)', label: 'Ada (Derajat +2)' },
@@ -412,33 +442,33 @@ export default function MeasurementPage({ child, onBack }) {
                         ] })),
                 Native.createElement("div", { className: "measurement-service-panel grid grid-cols-1 sm:grid-cols-2 gap-4" },
                     Native.createElement(InputGroup, { label: "Kelas Ibu Balita?" },
-                        Native.createElement(Select, { value: formData.kelasIbu, onChange: (event) => setFormData({ ...formData, kelasIbu: event.target.value }), options: [
+                        Native.createElement(Select, { value: formData.kelasIbu, onChange: (event) => setFormData((previous) => ({ ...previous, kelasIbu: event.target.value })), options: [
                                 { value: 'Tidak', label: 'Tidak' },
                                 { value: 'Ya', label: 'Ya' }
                             ] })),
                     Native.createElement(InputGroup, { label: "Terima MBG?" },
-                        Native.createElement(Select, { value: formData.mbg, onChange: (event) => setFormData({ ...formData, mbg: event.target.value }), options: [
+                        Native.createElement(Select, { value: formData.mbg, onChange: (event) => setFormData((previous) => ({ ...previous, mbg: event.target.value })), options: [
                                 { value: 'Tidak', label: 'Tidak' },
                                 { value: 'Ya', label: 'Ya' }
                             ] }))),
                 Native.createElement("div", { className: "space-y-4" },
                     showVitA && (Native.createElement("div", { className: "measurement-service-option measurement-service-vitamin" },
                         Native.createElement(InputGroup, { label: "Dapat Vitamin A (Feb/Agu)?" },
-                            Native.createElement(Select, { className: "bg-white", value: formData.vitA, onChange: (event) => setFormData({ ...formData, vitA: event.target.value }), options: [
+                            Native.createElement(Select, { className: "bg-white", value: formData.vitA, onChange: (event) => setFormData((previous) => ({ ...previous, vitA: event.target.value })), options: [
                                     { value: 'Tidak', label: 'Tidak' },
                                     { value: 'Ya', label: 'Ya' }
                                 ] })))),
                     showAsi && (Native.createElement("div", { className: "measurement-service-option measurement-service-asi" },
                         Native.createElement(InputGroup, { label: "ASI Eksklusif (0-6 bln)?" },
-                            Native.createElement(Select, { className: "bg-white", value: formData.asi, onChange: (event) => setFormData({ ...formData, asi: event.target.value }), options: [
+                            Native.createElement(Select, { className: "bg-white", value: formData.asi, onChange: (event) => setFormData((previous) => ({ ...previous, asi: event.target.value })), options: [
                                     { value: 'Tidak', label: 'Tidak' },
                                     { value: 'Ya', label: 'Ya' }
                                 ] }))))),
                 Native.createElement("div", { className: "measurement-form-actions pt-2 flex gap-3" },
-                    Native.createElement(Button, { variant: "secondary", type: "button", onClick: () => setActiveMenu('history'), className: "ios-back-button flex-1", title: "Kembali ke riwayat penimbangan" },
+                    Native.createElement(Button, { variant: "secondary", type: "button", onClick: handleShowHistory, className: "ios-back-button flex-1", title: "Kembali ke riwayat penimbangan" },
                         Native.createElement(ChevronLeft, { className: "h-4 w-4" }),
                         "Kembali ke Riwayat"),
                     Native.createElement(Button, { variant: "primary", type: "submit", disabled: loading, className: "flex-1" },
                         Native.createElement(CheckCircle2, { className: "h-4 w-4" }),
-                        loading ? 'Menyimpan...' : 'Simpan Pengukuran')))))));
+                        loading ? 'Menyimpan...' : editingMeasurementId ? 'Simpan Perubahan' : 'Simpan Pengukuran')))))));
 }

@@ -1,0 +1,7 @@
+**
+!services/nutrition-grpc/Cargo.toml
+!services/nutrition-grpc/Cargo.lock
+!services/nutrition-grpc/build.rs
+!services/nutrition-grpc/data/**
+!services/nutrition-grpc/proto/**
+!services/nutrition-grpc/src/**
