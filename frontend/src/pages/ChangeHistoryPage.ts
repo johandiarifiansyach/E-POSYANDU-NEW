@@ -1,6 +1,7 @@
 // @ts-nocheck
 import Native from '../runtime/dom';
-import { History } from '../ui/icons';
+import IosPagination from '../components/IosPagination';
+import { History, Loader2, RotateCcw } from '../ui/icons';
 import { Card, formatIndoDateTime } from './DashboardApp';
 
 const FIELD_LABELS = {
@@ -44,7 +45,16 @@ const changeValue = (field, value) => {
     return String(value);
 };
 
-export default function ChangeHistoryPage({ changeLogs }) {
+export default function ChangeHistoryPage({
+    changeLogs,
+    loading = false,
+    error = null,
+    currentPage = 1,
+    total = 0,
+    pageSize = 10,
+    onPageChange,
+    onRetry
+}) {
     const timestampValue = (value) => {
         if (!value)
             return 0;
@@ -59,11 +69,21 @@ export default function ChangeHistoryPage({ changeLogs }) {
         const timeDifference = timestampValue(right.timestamp) - timestampValue(left.timestamp);
         return timeDifference || String(right.id || '').localeCompare(String(left.id || ''));
     });
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const startRow = total === 0 ? 0 : ((currentPage - 1) * pageSize) + 1;
+    const endRow = Math.min(total, startRow + sortedChangeLogs.length - 1);
     return (Native.createElement("div", { className: "apple-page space-y-6" },
         Native.createElement("div", null,
             Native.createElement("h2", { className: "text-2xl font-bold text-slate-800" }, "Riwayat Perubahan Identitas"),
             Native.createElement("p", { className: "text-slate-500 text-sm" }, "Mencatat semua perubahan data identitas balita yang dilakukan oleh petugas.")),
-        Native.createElement("div", { className: "space-y-4" }, sortedChangeLogs.length === 0 ? (Native.createElement("div", { className: "app-card p-8 text-center text-slate-400 rounded-2xl border border-dashed border-slate-300" }, "Belum ada riwayat perubahan data.")) : (sortedChangeLogs.map((log) => {
+        Native.createElement("div", { className: "space-y-4" }, loading ? (Native.createElement("div", { className: "app-card p-8 flex items-center justify-center gap-3 text-slate-500 rounded-2xl" },
+            Native.createElement(Loader2, { className: "w-5 h-5 animate-spin", "aria-hidden": "true" }),
+            Native.createElement("span", null, "Memuat riwayat perubahan..."))) : error ? (Native.createElement("div", { className: "app-card p-8 text-center rounded-2xl border border-rose-200" },
+            Native.createElement("p", { className: "text-rose-600 font-semibold" }, "Riwayat perubahan tidak dapat dimuat."),
+            Native.createElement("p", { className: "text-slate-500 text-sm mt-1" }, error),
+            Native.createElement("button", { type: "button", onClick: onRetry, className: "ios-action-button ios-action-button-blue mt-4 inline-flex items-center gap-2" },
+                Native.createElement(RotateCcw, { className: "w-4 h-4", "aria-hidden": "true" }),
+                Native.createElement("span", null, "Coba Lagi")))) : sortedChangeLogs.length === 0 ? (Native.createElement("div", { className: "app-card p-8 text-center text-slate-400 rounded-2xl border border-dashed border-slate-300" }, "Belum ada riwayat perubahan data.")) : (sortedChangeLogs.map((log) => {
             const changes = Array.isArray(log.changes) ? log.changes : [];
             return Native.createElement(Card, { key: log.id, className: "apple-list-card p-4" },
             Native.createElement("div", { className: "flex justify-between items-start mb-2" },
@@ -80,5 +100,7 @@ export default function ChangeHistoryPage({ changeLogs }) {
                     Native.createElement("span", { className: "text-rose-500 line-through bg-rose-50 px-1 rounded break-words" }, changeValue(change.field, change.oldValue)),
                     Native.createElement("span", { className: "text-slate-400" }, "->"),
                     Native.createElement("span", { className: "text-emerald-600 font-bold bg-emerald-50 px-1 rounded break-words" }, changeValue(change.field, change.newValue))))))));
-        })))));
+        }))), !loading && !error && total > 0 && Native.createElement("div", { className: "ios-table-footer app-card flex flex-col items-center justify-between gap-4 p-4 sm:flex-row" },
+            Native.createElement("span", { className: "text-xs font-medium text-slate-500" }, "Menampilkan ", startRow, " - ", endRow, " dari ", total, " riwayat"),
+            Native.createElement(IosPagination, { currentPage: currentPage, totalPages: totalPages, disablePrevious: currentPage <= 1, disableNext: currentPage >= totalPages, onPrevious: () => onPageChange?.(Math.max(1, currentPage - 1)), onNext: () => onPageChange?.(Math.min(totalPages, currentPage + 1)) }))));
 }

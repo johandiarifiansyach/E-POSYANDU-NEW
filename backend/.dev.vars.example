@@ -2,15 +2,22 @@
 SUPABASE_URL=https://project-ref.supabase.co
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxx
 SUPABASE_SECRET_KEY=sb_secret_xxx
+# Referensi project production dipakai guard lokal untuk mencegah penulisan
+# tidak sengaja ke data aktif. Jangan samakan SUPABASE_URL lokal dengan ini.
+PRODUCTION_SUPABASE_PROJECT_REF=hujopuazuxxxpnxhermo
 TURNSTILE_SECRET_KEY=0x0000000000000000000000000000000AA
 TURNSTILE_HOSTNAMES=localhost,e-posyandu.pages.dev
-CORS_ORIGINS=http://localhost:5173,http://localhost:5174,https://e-posyandu.pages.dev
+CORS_ORIGINS=http://localhost:5175,http://127.0.0.1:5175,https://e-posyandu.pages.dev
 # Hanya gunakan pada `wrangler dev` lokal saat layanan Turnstile tidak dapat
 # dijangkau. Jangan pernah membuat variabel ini di dashboard Cloudflare.
 LOCAL_TURNSTILE_BYPASS=true
 # Opsional. Wajib sama dengan layanan gRPC saat endpoint internal kalkulasi
 # atau job Queue dipakai.
 RUST_WORKER_SHARED_SECRET=replace-with-a-long-random-secret
+RUST_WORKER_HEALTH_URL=https://your-nutrition-worker.example/health
+# Opsional. Alarm eksternal hanya dikirim saat worker gagal tiga kali berturut-
+# turut dan saat kembali normal. Status tetap terlihat di dashboard Admin Gizi.
+MONITORING_ALERT_WEBHOOK_URL=https://your-alert-webhook.example/worker-health
 # Opsional. Upstash Redis dipakai untuk pembatasan percobaan login lintas
 # instance Worker. Bila belum diisi, Worker memakai pembatas lokal sebagai
 # cadangan sehingga login tetap dapat digunakan.

@@ -118,7 +118,8 @@ async function configureAuthenticatedPage(
 
   await page.route('http://127.0.0.1:9/api/v1/**', async (route) => {
     const request = route.request();
-    const path = new URL(request.url()).pathname;
+    const requestUrl = new URL(request.url());
+    const path = requestUrl.pathname;
     const headers = {
       'Access-Control-Allow-Headers': 'Authorization, Content-Type, Idempotency-Key, X-Request-ID',
       'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
@@ -200,8 +201,12 @@ async function configureAuthenticatedPage(
       return;
     }
     if (path.endsWith('/collections/change_logs')) {
+      const pageNumber = Math.max(1, Number(requestUrl.searchParams.get('page') || 1));
+      const pageSize = Math.max(1, Number(requestUrl.searchParams.get('size') || 10));
+      const pageStart = (pageNumber - 1) * pageSize;
       await route.fulfill({ status: 200, headers, json: {
-        items: changeLogs,
+        items: changeLogs.slice(pageStart, pageStart + pageSize),
+        total: changeLogs.length,
         cursor: new Date().toISOString()
       } });
       return;
@@ -414,6 +419,27 @@ test('riwayat perubahan selalu menampilkan perubahan terbaru paling atas', async
   await expect(page.getByText('Kepemilikan NIK')).toBeVisible();
   await expect(page.getByText('Ya', { exact: true })).toBeVisible();
   await expect(page.getByText('Tidak', { exact: true })).toBeVisible();
+});
+
+test('riwayat perubahan hanya membaca 10 data per halaman', async ({ page }) => {
+  const entries = Array.from({ length: 11 }, (_, index) => ({
+    id: `change-page-${String(index + 1).padStart(2, '0')}`,
+    data: {
+      childId: child.id,
+      childName: `Riwayat ${index + 1}`,
+      changedBy: 'Ahli Gizi',
+      changes: [{ field: 'nama', oldValue: `Lama ${index + 1}`, newValue: `Baru ${index + 1}` }],
+      timestamp: new Date(Date.UTC(2026, 7, 9, 12, 0, 11 - index)).toISOString()
+    }
+  }));
+  await configureAuthenticatedPage(page, false, false, entries);
+  await page.goto('/#change_history');
+
+  await expect(page.locator('.apple-list-card')).toHaveCount(10);
+  await expect(page.getByText('Menampilkan 1 - 10 dari 11 riwayat')).toBeVisible();
+  await page.getByRole('button', { name: 'Lanjut ke halaman berikutnya' }).click();
+  await expect(page.locator('.apple-list-card')).toHaveCount(1);
+  await expect(page.getByText('Menampilkan 11 - 11 dari 11 riwayat')).toBeVisible();
 });
 
 test('sidebar desktop dapat diciutkan menjadi ikon dan dibuka kembali', async ({ page }) => {

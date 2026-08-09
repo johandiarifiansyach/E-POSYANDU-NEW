@@ -196,6 +196,39 @@ export type DashboardStatsResponse = {
   perWasting: string;
 };
 
+export type MonitoringStatus = {
+  environment: string;
+  worker: {
+    status: 'healthy' | 'degraded' | 'down' | 'unknown' | 'unconfigured';
+    checkedAt: string | null;
+    latencyMs: number | null;
+    statusCode: number | null;
+    consecutiveFailures: number;
+    lastSuccessAt: string | null;
+    lastFailureAt: string | null;
+  };
+  database: {
+    isolation: 'production' | 'isolated' | 'shared_production' | 'unknown';
+    writesProtected: boolean;
+  };
+  storage: {
+    r2Configured: boolean;
+    status: {
+      status: 'healthy' | 'cleaned' | 'warning';
+      checkedAt: string;
+      totalBytes: number;
+      temporaryBytes: number;
+      objectCount: number;
+      deletedObjects: number;
+      deletedBytes: number;
+      softLimitBytes: number;
+      cleanupTargetBytes: number;
+    } | null;
+  };
+  queue: { configured: boolean };
+  alerts: { externalConfigured: boolean };
+};
+
 export type SigiziMeasurementExportRequest = {
   monthStart: string;
   monthEnd: string;
@@ -642,6 +675,25 @@ export type FeatureFlags = {
 
 export async function getFeatureFlags(): Promise<FeatureFlags> {
   return apiRequest<FeatureFlags>('/features');
+}
+
+export async function getMonitoringStatus(): Promise<MonitoringStatus> {
+  return apiRequest<MonitoringStatus>('/monitoring/status');
+}
+
+export async function getChangeHistory(
+  page = 1,
+  size = 10
+): Promise<{ items: ApiDocument[]; total: number }> {
+  const currentPage = Math.max(1, Math.trunc(page));
+  const pageSize = Math.min(50, Math.max(1, Math.trunc(size)));
+  const response = await apiRequest<SyncChangeSet & { total?: number }>(
+    `/collections/change_logs?order=timestamp%7Cdesc&page=${currentPage}&size=${pageSize}`
+  );
+  return {
+    items: response.items,
+    total: Number.isFinite(response.total) ? Number(response.total) : response.items.length
+  };
 }
 
 export async function createBackgroundJob(

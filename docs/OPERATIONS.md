@@ -4,9 +4,22 @@
 
 | Environment | Frontend | Worker | Tujuan |
 | --- | --- | --- | --- |
-| Development | Vite `127.0.0.1:5175` | `wrangler --env development` | Pengembangan lokal |
-| Staging | `e-posyandu-staging.pages.dev` | `e-posyandu-api-staging` | Uji migrasi dan rilis |
-| Production | `e-posyandu.pages.dev` | `e-posyandu-api` | Penggunaan kader |
+| Development | Vite `127.0.0.1:5175` | `wrangler --env development` | Project Supabase khusus development |
+| Staging | `e-posyandu-staging.pages.dev` | `e-posyandu-api-staging` | Project Supabase khusus staging |
+| Production | `e-posyandu.pages.dev` | `e-posyandu-api` | Project Supabase production untuk kader |
+
+Ketiga environment wajib memakai project Supabase yang berbeda. Worker development dan staging memblokir `POST`, `PATCH`, dan `DELETE` bila `SUPABASE_URL` masih menunjuk project production. Login, laporan error aman, dan GraphQL baca tetap dapat digunakan untuk diagnosis.
+
+Setelah tiga project dibuat, periksa pemisahannya sebelum mengisi secret Cloudflare:
+
+```bash
+DEVELOPMENT_SUPABASE_URL='https://project-dev.supabase.co' \
+STAGING_SUPABASE_URL='https://project-staging.supabase.co' \
+PRODUCTION_SUPABASE_URL='https://project-production.supabase.co' \
+npm run env:check
+```
+
+Jalankan migration yang sama pada setiap project. Data production tidak disalin ke development; gunakan data uji tanpa identitas nyata.
 
 Variabel, binding KV, dan secret Cloudflare tidak diwariskan antar-environment. Masukkan secret staging secara terpisah:
 
@@ -66,10 +79,13 @@ Pantau setiap hari pada masa awal rilis:
 | Request, subrequest, CPU, bandwidth | Cloudflare Workers > Metrics | Cari endpoint dengan lonjakan subrequest atau waktu CPU |
 | Egress database | Supabase > Usage | Bandingkan pemakaian harian; periksa ekspor besar dan full sync |
 | Login dibatasi | Log status 429 dan Upstash | Pastikan bukan salah konfigurasi Redis atau serangan berulang |
+| Nutrition worker | Dashboard Admin Gizi dan key KV `monitoring:nutrition-worker:v1` | Alarm setelah 3 kegagalan beruntun; periksa Render dan Queue |
 
 Jangan menulis NIK, KK, nama balita, token, password, atau isi formulir ke log runtime.
 
 Error JavaScript setelah pengguna login dikirim ke `POST /api/v1/client-errors`. Payload hanya berisi jenis error, route tanpa query, sumber, dan frame stack; pesan error serta data formulir tidak dikirim.
+
+Cron memeriksa `RUST_WORKER_HEALTH_URL` setiap 10 menit. Status disimpan di KV dan dibaca dashboard hanya oleh Admin Gizi. Untuk alarm di luar aplikasi, isi secret HTTPS `MONITORING_ALERT_WEBHOOK_URL`, atau isi `RESEND_API_KEY`, `MONITORING_ALERT_EMAIL_TO`, dan `ERROR_REPORT_EMAIL_FROM`. Alarm dikirim saat kegagalan ketiga dan sekali lagi saat layanan pulih, tanpa membawa data balita.
 
 ## Backup dan uji restore
 
@@ -93,4 +109,16 @@ Lakukan uji restore sedikitnya setiap tiga bulan dan sebelum migration destrukti
 
 PostgreSQL tetap menjadi sumber data tunggal. IndexedDB menyimpan cache dan antrean offline per perangkat. Cloudflare Cache API dan KV hanya menyimpan ringkasan/versi cache. Upstash Redis hanya menyimpan hash pembatas login.
 
-Cloudflare R2 belum diaktifkan. R2 baru digunakan saat aplikasi mempunyai fitur unggah foto atau dokumen privat, lengkap dengan validasi jenis/ukuran berkas dan URL akses sementara.
+Cloudflare R2 dipakai untuk hasil ekspor besar dan lampiran privat. Jalur upload worker dibatasi 50 MB, berkas hanya dapat diunduh oleh pemilik job atau Admin Gizi, dan PostgreSQL hanya menyimpan metadata objek.
+
+Bucket memakai kelas Standard. Objek sementara `jobs/` kedaluwarsa setelah 7 hari. Cron Worker memeriksa kapasitas setiap 10 menit; ketika total mencapai 9 GiB, file job tertua dihapus sampai kapasitas turun ke 8 GiB. Batas pengaman ini sengaja lebih rendah dari jatah gratis 10 GB. Lampiran permanen tidak dihapus otomatis.
+
+Aktivasi akun R2 tetap harus dilakukan satu kali melalui Cloudflare Dashboard. Setelah aktif, jalankan:
+
+```bash
+npm run r2:prepare
+```
+
+Kemudian deploy Worker dan pastikan endpoint monitoring menampilkan `r2Configured: true`. Admin Gizi menerima peringatan bila kapasitas tidak dapat diturunkan karena file yang tersisa bukan file sementara.
+
+MQTT sengaja tidak dipasang sebelum ada timbangan digital atau sensor IoT. Keputusan dan syarat keamanannya tercatat di `docs/decisions/001-mqtt-deferred.md`.

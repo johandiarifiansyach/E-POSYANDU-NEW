@@ -149,6 +149,32 @@
         }
       }
     },
+    "/api/v1/monitoring/status": {
+      "get": {
+        "summary": "Mengambil status worker dan kesiapan infrastruktur untuk Admin Gizi",
+        "operationId": "monitoringStatus",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status infrastruktur",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MonitoringStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
     "/api/v1/dashboard/stats": {
       "get": {
         "summary": "Mengambil ringkasan dashboard sesuai wilayah pengguna",
@@ -505,6 +531,92 @@
           },
           "version": {
             "type": "string"
+          }
+        }
+      },
+      "MonitoringStatus": {
+        "type": "object",
+        "required": [
+          "environment",
+          "worker",
+          "database",
+          "storage",
+          "queue",
+          "alerts"
+        ],
+        "properties": {
+          "environment": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": ["healthy", "degraded", "down", "unknown", "unconfigured"]
+              },
+              "checkedAt": {
+                "type": ["string", "null"],
+                "format": "date-time"
+              },
+              "latencyMs": {
+                "type": ["integer", "null"]
+              },
+              "consecutiveFailures": {
+                "type": "integer"
+              }
+            }
+          },
+          "database": {
+            "type": "object"
+          },
+          "storage": {
+            "type": "object",
+            "properties": {
+              "r2Configured": {
+                "type": "boolean"
+              },
+              "status": {
+                "type": ["object", "null"],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": ["healthy", "cleaned", "warning"]
+                  },
+                  "checkedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "totalBytes": {
+                    "type": "integer"
+                  },
+                  "temporaryBytes": {
+                    "type": "integer"
+                  },
+                  "objectCount": {
+                    "type": "integer"
+                  },
+                  "deletedObjects": {
+                    "type": "integer"
+                  },
+                  "deletedBytes": {
+                    "type": "integer"
+                  },
+                  "softLimitBytes": {
+                    "type": "integer"
+                  },
+                  "cleanupTargetBytes": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          },
+          "queue": {
+            "type": "object"
+          },
+          "alerts": {
+            "type": "object"
           }
         }
       },

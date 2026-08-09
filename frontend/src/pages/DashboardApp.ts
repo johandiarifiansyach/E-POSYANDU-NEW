@@ -1,7 +1,7 @@
 // @ts-nocheck
 import Native, { useState, useEffect, useLayoutEffect, useMemo, useRef } from '../runtime/dom';
 import { APP_VERSION } from '../config/app';
-import { getFirestore, collection, addDoc, query, where, onSnapshot, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, getDocsForExport, getCachedChildrenPage, getChildDetail, getChildrenPage, getDashboardStats, getSigiziMeasurementExport, initializeApp, subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations, orderBy } from '../api/client';
+import { getFirestore, collection, addDoc, query, where, onSnapshot, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, getDocsForExport, getCachedChildrenPage, getChangeHistory, getChildDetail, getChildrenPage, getDashboardStats, getMonitoringStatus, getSigiziMeasurementExport, initializeApp, subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations, orderBy } from '../api/client';
 import { WHO_0_TO_5 } from '../data/anthropometry';
 import { getPreferredColorScheme, saveColorScheme, subscribeColorScheme } from '../theme/colorScheme';
 import { actionTooltipProps } from '../ui/actionTooltip';
@@ -1697,6 +1697,11 @@ export const Dashboard = ({ user, onLogout }) => {
     const [pmtPrograms, setPmtPrograms] = useState([]);
     const [mpasiLogs, setMpasiLogs] = useState({});
     const [changeLogs, setChangeLogs] = useState([]);
+    const [changeHistoryLoading, setChangeHistoryLoading] = useState(false);
+    const [changeHistoryError, setChangeHistoryError] = useState(null);
+    const [changeHistoryRevision, setChangeHistoryRevision] = useState(0);
+    const [changeHistoryPage, setChangeHistoryPage] = useState(1);
+    const [changeHistoryTotal, setChangeHistoryTotal] = useState(0);
     const [editingChild, setEditingChild] = useState(null);
     const [childToDelete, setChildToDelete] = useState(null);
     const [childToMpasi, setChildToMpasi] = useState(null);
@@ -1706,6 +1711,7 @@ export const Dashboard = ({ user, onLogout }) => {
     const [errorMsg, setErrorMsg] = useState(null);
     const [dashboardStats, setDashboardStats] = useState(EMPTY_DASHBOARD_STATS);
     const [dashboardStatsLoading, setDashboardStatsLoading] = useState(false);
+    const [monitoringStatus, setMonitoringStatus] = useState(null);
     const [searchTerm, setSearchTerm] = useState('');
     const [searchDraft, setSearchDraft] = useState('');
     const [sortOrder, setSortOrder] = useState('recent');
@@ -1848,17 +1854,32 @@ export const Dashboard = ({ user, onLogout }) => {
     }, [activeTab, searchTerm, sortOrder, viewDesa, viewPosyandu, filterMonth, filterYear]);
     // Fetch Change Logs
     useEffect(() => {
-        if (activeTab === 'change_history') {
-            setLoading(true);
-            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'change_logs'), orderBy('timestamp', 'desc'));
-            const unsubscribe = onSnapshot(q, (snapshot) => {
-                const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setChangeLogs(logs);
-                setLoading(false);
+        if (activeTab !== 'change_history')
+            return;
+        let current = true;
+        setChangeHistoryLoading(true);
+        setChangeHistoryError(null);
+        void getChangeHistory(changeHistoryPage, 10)
+            .then(({ items, total }) => {
+                if (!current)
+                    return;
+                setChangeLogs(items.map((document) => ({ id: document.id, ...document.data })));
+                setChangeHistoryTotal(total);
+            })
+            .catch((error) => {
+                if (!current)
+                    return;
+                console.error('Gagal memuat riwayat perubahan:', error);
+                setChangeHistoryError(error instanceof Error ? error.message : 'Riwayat perubahan tidak dapat dimuat.');
+            })
+            .finally(() => {
+                if (current)
+                    setChangeHistoryLoading(false);
             });
-            return () => unsubscribe();
-        }
-    }, [activeTab]);
+        return () => {
+            current = false;
+        };
+    }, [activeTab, changeHistoryPage, changeHistoryRevision]);
     // Fetch Monthly Measurements
     useEffect(() => {
         if (activeTab === 'dashboard' || activeTab === 'asi_eksklusif' || isServerPagedChildTab) {
@@ -2022,6 +2043,33 @@ export const Dashboard = ({ user, onLogout }) => {
             current = false;
         };
     }, [activeTab, dataRevision, filterMonth, filterYear, viewDesa, viewPosyandu]);
+    useEffect(() => {
+        if (activeTab !== 'dashboard' || user.role !== ROLES.GIZI) {
+            setMonitoringStatus(null);
+            return;
+        }
+        let current = true;
+        const refreshMonitoring = () => {
+            void getMonitoringStatus()
+                .then((status) => {
+                if (current)
+                    setMonitoringStatus(status);
+            })
+                .catch(() => {
+                if (current) {
+                    setMonitoringStatus({
+                        worker: { status: 'unknown', checkedAt: null, consecutiveFailures: 0 }
+                    });
+                }
+            });
+        };
+        refreshMonitoring();
+        const interval = window.setInterval(refreshMonitoring, 10 * 60 * 1000);
+        return () => {
+            current = false;
+            window.clearInterval(interval);
+        };
+    }, [activeTab, user.role]);
     // Fetch PMT Programs (only active ones)
     useEffect(() => {
         if (activeTab === 'pmt_program') {
@@ -2842,7 +2890,7 @@ export const Dashboard = ({ user, onLogout }) => {
                     Native.createElement("p", { className: "text-sm font-medium" }, errorMsg))),
                 activeTab !== 'add_child' && activeTab !== 'measurement' && activeTab !== 'change_history' && (Native.createElement("div", { className: "mb-6" },
                     Native.createElement(LocationFilterPanel, { draftDesa: draftDesa, draftPosyandu: draftPosyandu, filterMonth: filterMonth, filterYear: filterYear, onApply: handleApplyLocationFilter, onReset: handleResetLocationFilter, role: user.role, setDraftDesa: setDraftDesa, setDraftPosyandu: setDraftPosyandu, setFilterMonth: setFilterMonth, setFilterYear: setFilterYear, user: user }))),
-                Native.createElement(Native.Suspense, { fallback: Native.createElement(DashboardPageSkeleton, null) }, activeTab === 'add_child' ? (Native.createElement(AddChildPage, { allChildren: children, onBack: handleBackFromAddChild, onSuccess: handleBackFromAddChild, user: user })) : activeTab === 'measurement' ? (measurementChild ? (Native.createElement(MeasurementPage, { child: measurementChild, onBack: handleBackFromMeasurement })) : (Native.createElement(Card, { className: "p-8 text-center text-slate-500" }, loading ? 'Memuat data balita...' : 'Data balita tidak ditemukan atau tidak dapat diakses.'))) : activeTab === 'dashboard' ? (Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'asi_eksklusif' ? (Native.createElement(ExclusiveBreastfeedingPage, { filterMonth: filterMonth, filterYear: filterYear, refreshKey: dataRevision, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'pmt_program' ? (Native.createElement(PmtProgramPage, { childrenData: children, pmtPrograms: pmtPrograms, onExportPmt: handleExportPmt, onDeleteProgram: handleDeletePmt, onOpenMonitoring: handleOpenPmtMonitoring })) : activeTab === 'change_history' ? (Native.createElement(ChangeHistoryPage, { changeLogs: changeLogs })) : (Native.createElement(ChildrenTablePage, { activeTab: activeTab, currentFilterDate: currentFilterDate, currentPage: currentPage, displayData: tableDisplayData, fileInputRef: fileInputRef, filterMonth: filterMonth, filterYear: filterYear, handleExportMpasi: handleExportMpasi, handleExportPengukuranSigizi: handleExportPengukuranSigizi, handleExportSigizi: handleExportSigizi, handleExportTable: handleExportTable, handleImportIdentitas: handleImportIdentitas, handlePermanentDelete: handlePermanentDelete, handleRestore: handleRestore, itemsPerPage: itemsPerPage, loading: tableLoading, monthlyMeasurements: tableMeasurements, mpasiLogs: tableMpasiLogs, paginatedData: tablePaginatedData, searchTerm: searchTerm, searchDraft: searchDraft, setChildToDelete: setChildToDelete, setChildToMpasi: setChildToMpasi, setCurrentPage: setCurrentPage, onEditChild: handleOpenEditChild, setPmtModalData: setPmtModalData, setSearchDraft: setSearchDraft, onClearSearch: handleClearSearch, onSubmitSearch: handleSearchSubmit, onOpenMeasurement: handleOpenMeasurementPage, onOpenAddChild: handleOpenAddChildPage, setSortOrder: setSortOrder, sortOrder: sortOrder, totalDataCount: tableTotalCount, user: user })))),
+                Native.createElement(Native.Suspense, { fallback: Native.createElement(DashboardPageSkeleton, null) }, activeTab === 'add_child' ? (Native.createElement(AddChildPage, { allChildren: children, onBack: handleBackFromAddChild, onSuccess: handleBackFromAddChild, user: user })) : activeTab === 'measurement' ? (measurementChild ? (Native.createElement(MeasurementPage, { child: measurementChild, onBack: handleBackFromMeasurement })) : (Native.createElement(Card, { className: "p-8 text-center text-slate-500" }, loading ? 'Memuat data balita...' : 'Data balita tidak ditemukan atau tidak dapat diakses.'))) : activeTab === 'dashboard' ? (Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'asi_eksklusif' ? (Native.createElement(ExclusiveBreastfeedingPage, { filterMonth: filterMonth, filterYear: filterYear, refreshKey: dataRevision, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'pmt_program' ? (Native.createElement(PmtProgramPage, { childrenData: children, pmtPrograms: pmtPrograms, onExportPmt: handleExportPmt, onDeleteProgram: handleDeletePmt, onOpenMonitoring: handleOpenPmtMonitoring })) : activeTab === 'change_history' ? (Native.createElement(ChangeHistoryPage, { changeLogs: changeLogs, loading: changeHistoryLoading, error: changeHistoryError, currentPage: changeHistoryPage, total: changeHistoryTotal, pageSize: 10, onPageChange: setChangeHistoryPage, onRetry: () => setChangeHistoryRevision((revision) => revision + 1) })) : (Native.createElement(ChildrenTablePage, { activeTab: activeTab, currentFilterDate: currentFilterDate, currentPage: currentPage, displayData: tableDisplayData, fileInputRef: fileInputRef, filterMonth: filterMonth, filterYear: filterYear, handleExportMpasi: handleExportMpasi, handleExportPengukuranSigizi: handleExportPengukuranSigizi, handleExportTable: handleExportTable, handleImportIdentitas: handleImportIdentitas, handlePermanentDelete: handlePermanentDelete, handleRestore: handleRestore, itemsPerPage: itemsPerPage, loading: tableLoading, monthlyMeasurements: tableMeasurements, mpasiLogs: tableMpasiLogs, paginatedData: tablePaginatedData, searchTerm: searchTerm, searchDraft: searchDraft, setChildToDelete: setChildToDelete, setChildToMpasi: setChildToMpasi, setCurrentPage: setCurrentPage, onEditChild: handleOpenEditChild, setPmtModalData: setPmtModalData, setSearchDraft: setSearchDraft, onClearSearch: handleClearSearch, onSubmitSearch: handleSearchSubmit, onOpenMeasurement: handleOpenMeasurementPage, onOpenAddChild: handleOpenAddChildPage, setSortOrder: setSortOrder, sortOrder: sortOrder, totalDataCount: tableTotalCount, user: user })))),
             Native.createElement("footer", { className: "app-footer" },
                 Native.createElement("p", null, "\u00A9 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach"),
                 Native.createElement("button", { type: "button", className: "app-version-button", onClick: openReleaseNotes, "aria-haspopup": "dialog", title: "Lihat apa yang baru" }, `E-Posyandu v${APP_VERSION}`))),

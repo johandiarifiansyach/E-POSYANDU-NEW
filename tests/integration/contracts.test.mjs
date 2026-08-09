@@ -69,6 +69,7 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
     '/api/v1/graphql',
     '/api/v1/sync',
     '/api/v1/features',
+    '/api/v1/monitoring/status',
     '/api/v1/client-errors',
     '/api/v1/jobs',
     '/api/v1/jobs/{jobId}',
@@ -84,6 +85,34 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
     document.components.schemas.LoginResponse.properties.profile.$ref,
     '#/components/schemas/AccessProfile'
   );
+});
+
+test('environment database dipisahkan dan penulisan non-production dilindungi', async () => {
+  const worker = await readFile(resolve(root, 'backend/src/lib.rs'), 'utf8');
+  const wrangler = await readFile(resolve(root, 'backend/wrangler.toml'), 'utf8');
+  const checker = await readFile(
+    resolve(root, 'scripts/environment/check-database-isolation.sh'),
+    'utf8'
+  );
+
+  assert.match(worker, /fn enforce_environment_write_guard/);
+  assert.match(worker, /shared_production/);
+  assert.match(wrangler, /PRODUCTION_SUPABASE_PROJECT_REF/);
+  assert.match(checker, /development, staging, dan production masih memakai project Supabase yang sama/);
+});
+
+test('monitoring worker tersimpan di KV dan MQTT ditunda sampai ada IoT', async () => {
+  const worker = await readFile(resolve(root, 'backend/src/lib.rs'), 'utf8');
+  const decision = await readFile(resolve(root, 'docs/decisions/001-mqtt-deferred.md'), 'utf8');
+  const r2 = await readFile(resolve(root, 'scripts/storage/prepare-r2.sh'), 'utf8');
+
+  assert.match(worker, /NUTRITION_WORKER_FAILURE_THRESHOLD/);
+  assert.match(worker, /monitoring:nutrition-worker:v1/);
+  assert.match(worker, /send_monitoring_alert/);
+  assert.match(worker, /R2_SOFT_LIMIT_BYTES/);
+  assert.match(worker, /monitor_and_cleanup_r2/);
+  assert.match(decision, /MQTT baru dievaluasi ketika tersedia perangkat IoT nyata/);
+  assert.match(r2, /e-posyandu-files/);
 });
 
 test('GraphQL hanya untuk baca dan gRPC memakai kontrak internal terpisah', async () => {
@@ -122,6 +151,22 @@ test('pekerjaan berat memakai migration privat, Queue, dan kontrak frontend', as
   assert.match(client, /export async function createBackgroundJob/);
   assert.match(client, /export async function waitForBackgroundJob/);
   assert.match(client, /export async function downloadBackgroundJobFile/);
+});
+
+test('riwayat perubahan dimuat langsung, dibatasi, dan rincian diproses bertahap', async () => {
+  const worker = await readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8');
+  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
+  const dashboard = await readFile(resolve(root, 'frontend/src/pages/DashboardApp.ts'), 'utf8');
+
+  assert.match(worker, /for id_chunk in ids\.chunks\(75\)/);
+  assert.match(
+    worker,
+    /resource == Resource::ChangeLogs\s*&& !export_request\s*&& first_query\(&query, "page"\)\.is_some\(\)/
+  );
+  assert.match(client, /export async function getChangeHistory/);
+  assert.match(client, /collections\/change_logs\?order=timestamp%7Cdesc&page=/);
+  assert.match(dashboard, /getChangeHistory\(changeHistoryPage, 10\)/);
+  assert.match(dashboard, /setChangeHistoryError/);
 });
 
 test('manifest dan service worker membentuk shell PWA yang dapat dipasang', async () => {

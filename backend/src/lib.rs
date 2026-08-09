@@ -21,6 +21,12 @@ const LOGIN_PAIR_MAX_ATTEMPTS: u8 = 5;
 const SCOPE_CACHE_MAX_ENTRIES: usize = 256;
 const INTERNAL_REQUEST_MAX_AGE_SECONDS: f64 = 60.0;
 const NUTRITION_BATCH_MAX_ITEMS: usize = 10_000;
+const NUTRITION_WORKER_HEALTH_KEY: &str = "monitoring:nutrition-worker:v1";
+const NUTRITION_WORKER_FAILURE_THRESHOLD: u32 = 3;
+const R2_STORAGE_STATE_KEY: &str = "monitoring:r2-storage:v1";
+const R2_CLEANUP_PREFIX: &str = "jobs/";
+const R2_SOFT_LIMIT_BYTES: u64 = 9 * 1024 * 1024 * 1024;
+const R2_CLEANUP_TARGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -41,6 +47,38 @@ struct CachedScope {
 struct LoginAttempt {
     count: u8,
     reset_at: f64,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NutritionWorkerHealth {
+    status: String,
+    checked_at: String,
+    latency_ms: u64,
+    status_code: Option<u16>,
+    consecutive_failures: u32,
+    last_success_at: Option<String>,
+    last_failure_at: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct R2StorageState {
+    status: String,
+    checked_at: String,
+    total_bytes: u64,
+    temporary_bytes: u64,
+    object_count: u64,
+    deleted_objects: u64,
+    deleted_bytes: u64,
+    soft_limit_bytes: u64,
+    cleanup_target_bytes: u64,
+}
+
+struct R2CleanupCandidate {
+    key: String,
+    size: u64,
+    uploaded_at_ms: u64,
 }
 
 thread_local! {
@@ -163,6 +201,13 @@ fn now_ms() -> f64 {
     worker::js_sys::Date::now()
 }
 
+fn now_iso() -> String {
+    worker::js_sys::Date::new_0()
+        .to_iso_string()
+        .as_string()
+        .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".into())
+}
+
 fn secret(env: &Env, name: &str) -> ApiResult<String> {
     let aliases: &[&str] = match name {
         // Konfigurasi backend lama memakai nama service-role key ini. Alias
@@ -190,6 +235,64 @@ fn optional_secret(env: &Env, name: &str) -> Option<String> {
         .or_else(|| env.var(name).ok())
         .map(|value| value.to_string())
         .filter(|value| !value.trim().is_empty())
+}
+
+fn environment_name(env: &Env) -> String {
+    env.var("ENVIRONMENT")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "unknown".into())
+}
+
+fn supabase_project_ref(value: &str) -> Option<String> {
+    let url = url::Url::parse(value).ok()?;
+    let host = url.host_str()?;
+    host.strip_suffix(".supabase.co")
+        .filter(|project_ref| !project_ref.is_empty() && !project_ref.contains('.'))
+        .map(ToOwned::to_owned)
+}
+
+fn database_isolation_status(env: &Env) -> &'static str {
+    if environment_name(env) == "production" {
+        return "production";
+    }
+    let Some(database_url) = optional_secret(env, "SUPABASE_URL") else {
+        return "unknown";
+    };
+    let Some(project_ref) = supabase_project_ref(&database_url) else {
+        return "unknown";
+    };
+    let Some(production_ref) = optional_secret(env, "PRODUCTION_SUPABASE_PROJECT_REF") else {
+        return "unknown";
+    };
+    if project_ref == production_ref.trim() {
+        "shared_production"
+    } else {
+        "isolated"
+    }
+}
+
+fn is_allowed_nonproduction_post(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/v1/auth/login" | "/api/v1/graphql" | "/api/v1/client-errors"
+    )
+}
+
+fn enforce_environment_write_guard(request: &Request, env: &Env) -> ApiResult<()> {
+    if environment_name(env) == "production" {
+        return Ok(());
+    }
+    let is_mutation = matches!(
+        request.method(),
+        Method::Post | Method::Patch | Method::Delete
+    ) && !is_allowed_nonproduction_post(&request.path());
+    if !is_mutation || database_isolation_status(env) == "isolated" {
+        return Ok(());
+    }
+    Err(ApiFailure::new(
+        503,
+        "Database development/staging belum terpisah dari production. Perubahan data diblokir untuk melindungi data aktif.",
+    ))
 }
 
 fn configured_origins(env: &Env) -> Vec<String> {
@@ -336,6 +439,294 @@ fn health_response(origin: Option<&str>, request_id: &str) -> Result<Response> {
 fn openapi_document() -> ApiResult<serde_json::Value> {
     serde_json::from_str(include_str!("../openapi.json"))
         .map_err(|_| ApiFailure::new(500, "Dokumentasi API tidak valid."))
+}
+
+async fn read_nutrition_worker_health(env: &Env) -> Option<NutritionWorkerHealth> {
+    let cache = env.kv("E_POSYANDU_CACHE").ok()?;
+    let stored = cache.get(NUTRITION_WORKER_HEALTH_KEY).text().await.ok()??;
+    serde_json::from_str(&stored).ok()
+}
+
+async fn write_nutrition_worker_health(env: &Env, state: &NutritionWorkerHealth) {
+    let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
+        worker::console_warn!("KV monitoring nutrition worker belum tersedia.");
+        return;
+    };
+    let Ok(payload) = serde_json::to_string(state) else {
+        worker::console_warn!("Status nutrition worker tidak dapat diserialisasi.");
+        return;
+    };
+    let Ok(write) = cache.put(NUTRITION_WORKER_HEALTH_KEY, payload) else {
+        worker::console_warn!("Status nutrition worker tidak dapat disiapkan untuk KV.");
+        return;
+    };
+    if write.execute().await.is_err() {
+        worker::console_warn!("Status nutrition worker tidak dapat disimpan ke KV.");
+    }
+}
+
+async fn read_r2_storage_state(env: &Env) -> Option<R2StorageState> {
+    let cache = env.kv("E_POSYANDU_CACHE").ok()?;
+    let stored = cache.get(R2_STORAGE_STATE_KEY).text().await.ok()??;
+    serde_json::from_str(&stored).ok()
+}
+
+async fn write_r2_storage_state(env: &Env, state: &R2StorageState) {
+    let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
+        worker::console_warn!("KV monitoring R2 belum tersedia.");
+        return;
+    };
+    let Ok(payload) = serde_json::to_string(state) else {
+        worker::console_warn!("Status penyimpanan R2 tidak dapat diserialisasi.");
+        return;
+    };
+    let Ok(write) = cache.put(R2_STORAGE_STATE_KEY, payload) else {
+        worker::console_warn!("Status penyimpanan R2 tidak dapat disiapkan untuk KV.");
+        return;
+    };
+    if write.execute().await.is_err() {
+        worker::console_warn!("Status penyimpanan R2 tidak dapat disimpan ke KV.");
+    }
+}
+
+async fn monitor_and_cleanup_r2(env: &Env) {
+    let Ok(bucket) = env.bucket("E_POSYANDU_FILES") else {
+        return;
+    };
+    let mut cursor = None;
+    let mut total_bytes = 0_u64;
+    let mut temporary_bytes = 0_u64;
+    let mut object_count = 0_u64;
+    let mut candidates = Vec::new();
+
+    loop {
+        let mut request = bucket.list().limit(1000);
+        if let Some(value) = cursor.take() {
+            request = request.cursor(value);
+        }
+        let listed = match request.execute().await {
+            Ok(listed) => listed,
+            Err(_) => {
+                worker::console_warn!("Daftar objek R2 tidak dapat dibaca.");
+                return;
+            }
+        };
+        for object in listed.objects() {
+            let key = object.key();
+            let size = object.size();
+            total_bytes = total_bytes.saturating_add(size);
+            object_count = object_count.saturating_add(1);
+            if key.starts_with(R2_CLEANUP_PREFIX) {
+                temporary_bytes = temporary_bytes.saturating_add(size);
+                candidates.push(R2CleanupCandidate {
+                    key,
+                    size,
+                    uploaded_at_ms: object.uploaded().as_millis(),
+                });
+            }
+        }
+        if !listed.truncated() {
+            break;
+        }
+        cursor = listed.cursor();
+        if cursor.is_none() {
+            worker::console_warn!("Cursor daftar objek R2 tidak tersedia.");
+            break;
+        }
+    }
+
+    let mut deleted_objects = 0_u64;
+    let mut deleted_bytes = 0_u64;
+    if total_bytes >= R2_SOFT_LIMIT_BYTES {
+        candidates.sort_by_key(|candidate| candidate.uploaded_at_ms);
+        for candidate in candidates {
+            if total_bytes <= R2_CLEANUP_TARGET_BYTES {
+                break;
+            }
+            if bucket.delete(&candidate.key).await.is_ok() {
+                total_bytes = total_bytes.saturating_sub(candidate.size);
+                temporary_bytes = temporary_bytes.saturating_sub(candidate.size);
+                deleted_objects = deleted_objects.saturating_add(1);
+                deleted_bytes = deleted_bytes.saturating_add(candidate.size);
+            } else {
+                worker::console_warn!("Objek R2 sementara gagal dihapus: {}", candidate.key);
+            }
+        }
+    }
+
+    let status = if total_bytes >= R2_SOFT_LIMIT_BYTES {
+        "warning"
+    } else if deleted_objects > 0 {
+        "cleaned"
+    } else {
+        "healthy"
+    };
+    let state = R2StorageState {
+        status: status.into(),
+        checked_at: now_iso(),
+        total_bytes,
+        temporary_bytes,
+        object_count: object_count.saturating_sub(deleted_objects),
+        deleted_objects,
+        deleted_bytes,
+        soft_limit_bytes: R2_SOFT_LIMIT_BYTES,
+        cleanup_target_bytes: R2_CLEANUP_TARGET_BYTES,
+    };
+    write_r2_storage_state(env, &state).await;
+    worker::console_log!(
+        "{}",
+        json!({
+            "level": if status == "warning" { "warn" } else { "info" },
+            "event": "r2_storage_cleanup",
+            "environment": environment_name(env),
+            "status": status,
+            "total_bytes": state.total_bytes,
+            "temporary_bytes": state.temporary_bytes,
+            "object_count": state.object_count,
+            "deleted_objects": state.deleted_objects,
+            "deleted_bytes": state.deleted_bytes,
+        })
+    );
+}
+
+fn monitoring_alert_configured(env: &Env) -> bool {
+    optional_secret(env, "MONITORING_ALERT_WEBHOOK_URL").is_some()
+        || (optional_secret(env, "RESEND_API_KEY").is_some()
+            && optional_secret(env, "MONITORING_ALERT_EMAIL_TO")
+                .or_else(|| optional_secret(env, "ERROR_REPORT_EMAIL_TO"))
+                .is_some()
+            && optional_secret(env, "ERROR_REPORT_EMAIL_FROM").is_some())
+}
+
+async fn send_monitoring_alert(env: &Env, state: &NutritionWorkerHealth, recovered: bool) {
+    let environment = environment_name(env);
+    let event = if recovered {
+        "nutrition_worker_recovered"
+    } else {
+        "nutrition_worker_down"
+    };
+    let alert = json!({
+        "event": event,
+        "service": "nutrition-grpc-worker",
+        "environment": environment,
+        "status": state.status,
+        "checkedAt": state.checked_at,
+        "consecutiveFailures": state.consecutive_failures,
+    });
+
+    if let Some(webhook_url) = optional_secret(env, "MONITORING_ALERT_WEBHOOK_URL") {
+        if let Ok(parsed) = url::Url::parse(&webhook_url)
+            && parsed.scheme() == "https"
+        {
+            let headers = Headers::new();
+            let _ = headers.set("Content-Type", "application/json");
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post);
+            init.with_headers(headers);
+            init.with_body(Some(JsValue::from_str(&alert.to_string())));
+            if let Ok(request) = Request::new_with_init(parsed.as_str(), &init) {
+                match Fetch::Request(request).send().await {
+                    Ok(response) if response.status_code() < 400 => {}
+                    Ok(response) => worker::console_warn!(
+                        "Webhook monitoring gagal dengan status {}.",
+                        response.status_code()
+                    ),
+                    Err(_) => worker::console_warn!("Webhook monitoring tidak dapat dijangkau."),
+                }
+            }
+        }
+    }
+
+    let Some(api_key) = optional_secret(env, "RESEND_API_KEY") else {
+        return;
+    };
+    let Some(email_to) = optional_secret(env, "MONITORING_ALERT_EMAIL_TO")
+        .or_else(|| optional_secret(env, "ERROR_REPORT_EMAIL_TO"))
+    else {
+        return;
+    };
+    let Some(email_from) = optional_secret(env, "ERROR_REPORT_EMAIL_FROM") else {
+        return;
+    };
+    let subject = if recovered {
+        format!("[E-Posyandu][{environment}] Nutrition worker kembali normal")
+    } else {
+        format!("[E-Posyandu][{environment}] Nutrition worker tidak tersedia")
+    };
+    let body = json!({
+        "from": email_from,
+        "to": [email_to],
+        "subject": subject,
+        "text": format!(
+            "Layanan nutrition-grpc-worker berstatus {}.\nWaktu pemeriksaan: {}\nKegagalan berturut-turut: {}\n",
+            state.status, state.checked_at, state.consecutive_failures
+        ),
+    });
+    let headers = Headers::new();
+    let _ = headers.set("Authorization", &format!("Bearer {api_key}"));
+    let _ = headers.set("Content-Type", "application/json");
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post);
+    init.with_headers(headers);
+    init.with_body(Some(JsValue::from_str(&body.to_string())));
+    let Ok(request) = Request::new_with_init("https://api.resend.com/emails", &init) else {
+        return;
+    };
+    match Fetch::Request(request).send().await {
+        Ok(response) if response.status_code() < 400 => {}
+        Ok(response) => worker::console_warn!(
+            "Email monitoring gagal dengan status {}.",
+            response.status_code()
+        ),
+        Err(_) => worker::console_warn!("Email monitoring tidak dapat dikirim."),
+    }
+}
+
+async fn monitoring_status(request: Request, env: &Env) -> ApiResult<serde_json::Value> {
+    let scope = require_scope(&request, env).await?;
+    if scope.role != "Ahli Gizi" {
+        return Err(ApiFailure::new(
+            403,
+            "Status infrastruktur hanya tersedia untuk Admin Gizi.",
+        ));
+    }
+    let worker = read_nutrition_worker_health(env)
+        .await
+        .map(|state| serde_json::to_value(state).unwrap_or_else(|_| json!({ "status": "unknown" })))
+        .unwrap_or_else(|| {
+            json!({
+                "status": "unknown",
+                "checkedAt": null,
+                "latencyMs": null,
+                "statusCode": null,
+                "consecutiveFailures": 0,
+                "lastSuccessAt": null,
+                "lastFailureAt": null,
+            })
+        });
+    let isolation = database_isolation_status(env);
+    let r2_configured = env.bucket("E_POSYANDU_FILES").is_ok();
+    let r2_state = read_r2_storage_state(env)
+        .await
+        .and_then(|state| serde_json::to_value(state).ok());
+    Ok(json!({
+        "environment": environment_name(env),
+        "worker": worker,
+        "database": {
+            "isolation": isolation,
+            "writesProtected": environment_name(env) != "production" && isolation != "isolated",
+        },
+        "storage": {
+            "r2Configured": r2_configured,
+            "status": r2_state,
+        },
+        "queue": {
+            "configured": env.queue("E_POSYANDU_JOBS").is_ok(),
+        },
+        "alerts": {
+            "externalConfigured": monitoring_alert_configured(env),
+        },
+    }))
 }
 
 fn lms_z_score(value: f64, [l, median, spread]: [f64; 3]) -> f64 {
@@ -1217,6 +1608,7 @@ async fn dispatch(request: Request, env: &Env, context: &Context) -> ApiResult<s
         (Method::Get, "/api/v1/openapi.json") => openapi_document(),
         (Method::Post, "/api/v1/graphql") => graphql::execute(request, env).await,
         (Method::Get, "/api/v1/graphql/schema") => Ok(graphql::schema_document()),
+        (Method::Get, "/api/v1/monitoring/status") => monitoring_status(request, env).await,
         (Method::Post, "/internal/v1/nutrition/batch") => nutrition_batch(request, env).await,
         _ if request.path().starts_with("/internal/v1/jobs/") => {
             internal_background_job(request, env).await
@@ -1273,6 +1665,30 @@ mod tests {
         let document = openapi_document().expect("OpenAPI document must load");
         assert_eq!(document.get("openapi"), Some(&json!("3.1.0")));
         assert!(document.pointer("/paths/~1api~1v1~1health").is_some());
+        assert!(
+            document
+                .pointer("/paths/~1api~1v1~1monitoring~1status")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn supabase_project_reference_is_extracted_safely() {
+        assert_eq!(
+            supabase_project_ref("https://exampleproject.supabase.co"),
+            Some("exampleproject".into())
+        );
+        assert_eq!(supabase_project_ref("https://example.com"), None);
+        assert_eq!(supabase_project_ref("not-a-url"), None);
+    }
+
+    #[test]
+    fn nonproduction_write_allowlist_contains_only_safe_posts() {
+        assert!(is_allowed_nonproduction_post("/api/v1/auth/login"));
+        assert!(is_allowed_nonproduction_post("/api/v1/graphql"));
+        assert!(is_allowed_nonproduction_post("/api/v1/client-errors"));
+        assert!(!is_allowed_nonproduction_post("/api/v1/sync"));
+        assert!(!is_allowed_nonproduction_post("/api/v1/jobs"));
     }
 }
 
@@ -1313,6 +1729,12 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
     {
         let response = health_response(origin.as_deref(), &request_id)?;
         log_request(&env, &request_id, &method, &path, 200, started_at);
+        return Ok(response);
+    }
+    if let Err(error) = enforce_environment_write_guard(&request, &env) {
+        let status = error.status;
+        let response = failure_response(error, origin.as_deref(), &request_id)?;
+        log_request(&env, &request_id, &method, &path, status, started_at);
         return Ok(response);
     }
     if request.method() == Method::Get
@@ -1370,7 +1792,24 @@ pub async fn keep_nutrition_worker_awake(
     env: Env,
     _context: worker::ScheduleContext,
 ) {
+    monitor_and_cleanup_r2(&env).await;
+    let checked_at = now_iso();
+    let previous = read_nutrition_worker_health(&env).await;
     let Some(health_url) = optional_secret(&env, "RUST_WORKER_HEALTH_URL") else {
+        let state = NutritionWorkerHealth {
+            status: "unconfigured".into(),
+            checked_at,
+            latency_ms: 0,
+            status_code: None,
+            consecutive_failures: 0,
+            last_success_at: previous
+                .as_ref()
+                .and_then(|state| state.last_success_at.clone()),
+            last_failure_at: previous
+                .as_ref()
+                .and_then(|state| state.last_failure_at.clone()),
+        };
+        write_nutrition_worker_health(&env, &state).await;
         return;
     };
     let Ok(health_url) = url::Url::parse(&health_url) else {
@@ -1378,12 +1817,74 @@ pub async fn keep_nutrition_worker_awake(
         return;
     };
 
-    match Fetch::Url(health_url).send().await {
-        Ok(response) if response.status_code() < 400 => {}
-        Ok(response) => worker::console_warn!(
-            "Health check nutrition worker gagal dengan status {}.",
-            response.status_code()
-        ),
-        Err(error) => worker::console_warn!("Health check nutrition worker gagal: {error}"),
+    let started_at = now_ms();
+    let (healthy, status_code) = match Fetch::Url(health_url).send().await {
+        Ok(response) => {
+            let status = response.status_code();
+            (status < 400, Some(status))
+        }
+        Err(_) => (false, None),
+    };
+    let latency_ms = (now_ms() - started_at).max(0.0).round() as u64;
+    let previous_failures = previous
+        .as_ref()
+        .map(|state| state.consecutive_failures)
+        .unwrap_or(0);
+    let consecutive_failures = if healthy {
+        0
+    } else {
+        previous_failures.saturating_add(1)
+    };
+    let status = if healthy {
+        "healthy"
+    } else if consecutive_failures >= NUTRITION_WORKER_FAILURE_THRESHOLD {
+        "down"
+    } else {
+        "degraded"
+    };
+    let state = NutritionWorkerHealth {
+        status: status.into(),
+        checked_at: checked_at.clone(),
+        latency_ms,
+        status_code,
+        consecutive_failures,
+        last_success_at: if healthy {
+            Some(checked_at.clone())
+        } else {
+            previous
+                .as_ref()
+                .and_then(|state| state.last_success_at.clone())
+        },
+        last_failure_at: if healthy {
+            previous
+                .as_ref()
+                .and_then(|state| state.last_failure_at.clone())
+        } else {
+            Some(checked_at)
+        },
+    };
+    let previous_status = previous
+        .as_ref()
+        .map(|state| state.status.as_str())
+        .unwrap_or("unknown");
+    write_nutrition_worker_health(&env, &state).await;
+
+    worker::console_log!(
+        "{}",
+        json!({
+            "level": if healthy { "info" } else { "warn" },
+            "event": "nutrition_worker_health",
+            "environment": environment_name(&env),
+            "status": state.status,
+            "status_code": state.status_code,
+            "latency_ms": state.latency_ms,
+            "consecutive_failures": state.consecutive_failures,
+        })
+    );
+
+    if state.status == "down" && previous_status != "down" {
+        send_monitoring_alert(&env, &state, false).await;
+    } else if state.status == "healthy" && previous_status == "down" {
+        send_monitoring_alert(&env, &state, true).await;
     }
 }

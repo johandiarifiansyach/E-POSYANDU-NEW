@@ -1479,33 +1479,39 @@ async fn enrichment(
         .iter()
         .map(|row| string_value(row.get("id")))
         .collect::<Vec<_>>();
-    let params = match resource {
-        Resource::PmtPrograms => vec![
-            ("select".into(), "program_id,week_number,monitoring_date,weight_kg,height_cm,measurement_method,consumed_days,health_monitoring,follow_up".into()),
-            ("program_id".into(), format!("in.({})", ids.join(","))), ("order".into(), "week_number.asc".into()),
-        ],
-        Resource::ChangeLogs => vec![
-            ("select".into(), "change_log_id,field_name,old_value,new_value".into()),
-            ("change_log_id".into(), format!("in.({})", ids.join(","))), ("order".into(), "id.asc".into()),
-        ],
-        _ => vec![],
-    };
     let table = if resource == Resource::PmtPrograms {
         "pmt_monitorings"
     } else {
         "change_log_entries"
     };
-    let (payload, _) = rest_json(
-        env,
-        rest_path(table, &params),
-        Method::Get,
-        None,
-        None,
-        false,
-    )
-    .await?;
+    let mut enrichment_rows = Vec::new();
+    // Keep PostgREST URLs comfortably below proxy limits when a collection has
+    // many related records. This is especially important for change history.
+    for id_chunk in ids.chunks(75) {
+        let params = match resource {
+            Resource::PmtPrograms => vec![
+                ("select".into(), "program_id,week_number,monitoring_date,weight_kg,height_cm,measurement_method,consumed_days,health_monitoring,follow_up".into()),
+                ("program_id".into(), format!("in.({})", id_chunk.join(","))), ("order".into(), "week_number.asc".into()),
+            ],
+            Resource::ChangeLogs => vec![
+                ("select".into(), "change_log_id,field_name,old_value,new_value".into()),
+                ("change_log_id".into(), format!("in.({})", id_chunk.join(","))), ("order".into(), "id.asc".into()),
+            ],
+            _ => vec![],
+        };
+        let (payload, _) = rest_json(
+            env,
+            rest_path(table, &params),
+            Method::Get,
+            None,
+            None,
+            false,
+        )
+        .await?;
+        enrichment_rows.extend(rows(payload)?);
+    }
     let mut output = BTreeMap::<String, Value>::new();
-    for row in rows(payload)? {
+    for row in enrichment_rows {
         let row = row_object(&row)?;
         if resource == Resource::PmtPrograms {
             let program_id = string_value(row.get("program_id"));
@@ -1628,6 +1634,18 @@ async fn collection_list(request: Request, env: &Env, resource: Resource) -> Api
     let query = query_pairs(&request)?;
     let mut parameters = collection_filters(resource, &query, &scope)?;
     let export_request = first_query(&query, "export").is_some_and(|value| value == "1");
+    let history_page = if resource == Resource::ChangeLogs
+        && !export_request
+        && first_query(&query, "page").is_some()
+    {
+        let page = parse_positive(first_query(&query, "page"), 1, 1_000_000)?;
+        let size = parse_positive(first_query(&query, "size"), 10, 50)?;
+        parameters.push(("limit".into(), size.to_string()));
+        parameters.push(("offset".into(), ((page - 1) * size).to_string()));
+        Some((page, size))
+    } else {
+        None
+    };
     let export_size = if export_request {
         let page = parse_positive(first_query(&query, "page"), 1, 1_000_000)?;
         let size = parse_positive(first_query(&query, "size"), 500, 500)?;
@@ -1637,13 +1655,13 @@ async fn collection_list(request: Request, env: &Env, resource: Resource) -> Api
     } else {
         0
     };
-    let (payload, _) = rest_json(
+    let (payload, content_range) = rest_json(
         env,
         rest_path(resource.name(), &parameters),
         Method::Get,
         None,
         None,
-        false,
+        history_page.is_some(),
     )
     .await?;
     let result_rows = rows(payload)?;
@@ -1715,6 +1733,9 @@ async fn collection_list(request: Request, env: &Env, resource: Resource) -> Api
         "deletedIds": deleted_ids,
         "cursor": now_iso(),
         "hasMore": export_request && result_rows.len() == export_size,
+        "page": history_page.map(|(page, _)| page),
+        "size": history_page.map(|(_, size)| size),
+        "total": history_page.map(|_| count_from_range(content_range)),
     }))
 }
 

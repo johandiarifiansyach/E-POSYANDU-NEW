@@ -14,6 +14,8 @@
     "db:migrate": "./scripts/database/migrate.sh",
     "db:backup": "./scripts/database/backup.sh",
     "db:restore-drill": "./scripts/database/restore-drill.sh",
+    "env:check": "./scripts/environment/check-database-isolation.sh",
+    "r2:prepare": "./scripts/storage/prepare-r2.sh",
     "worker:check": "cargo check --manifest-path backend/Cargo.toml",
     "worker:test": "cargo test --manifest-path backend/Cargo.toml",
     "worker:dev": "npx --yes wrangler --cwd backend dev --env development --ip 127.0.0.1 --port 8787",

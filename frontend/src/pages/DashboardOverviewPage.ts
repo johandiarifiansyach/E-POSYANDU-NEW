@@ -1,8 +1,24 @@
 // @ts-nocheck
 import Native from '../runtime/dom';
-import { Activity, Baby, CircleOff, Minus, Scale, TrendingUp, UserPlus, Users } from '../ui/icons';
+import { Activity, AlertTriangle, Baby, CircleOff, Minus, Scale, TrendingUp, UserPlus, Users } from '../ui/icons';
 import { Card, MONTHS } from './DashboardApp';
-export default function DashboardOverviewPage({ stats, loading = false, filterMonth, filterYear, viewDesa, viewPosyandu }) {
+export default function DashboardOverviewPage({ stats, loading = false, monitoringStatus, filterMonth, filterYear, viewDesa, viewPosyandu }) {
+    const workerStatus = monitoringStatus?.worker?.status;
+    const monitoringMessage = workerStatus === 'down'
+        ? `Worker laporan tidak tersedia setelah ${monitoringStatus.worker.consecutiveFailures || 3} pemeriksaan. Login dan input data tetap dapat digunakan.`
+        : workerStatus === 'degraded'
+            ? 'Worker laporan sedang lambat atau gagal diperiksa. Sistem akan memeriksa ulang otomatis.'
+            : workerStatus === 'unconfigured'
+                ? 'Alamat health check worker laporan belum dikonfigurasi.'
+                : workerStatus === 'unknown'
+                    ? 'Status worker laporan belum dapat diperiksa.'
+                    : '';
+    const storageStatus = monitoringStatus?.storage?.status;
+    const storageMessage = storageStatus?.status === 'warning'
+        ? 'Penyimpanan berkas mendekati batas 10 GB dan tidak dapat dibersihkan seluruhnya. Periksa lampiran permanen di R2.'
+        : storageStatus?.status === 'cleaned'
+            ? `${storageStatus.deletedObjects} file ekspor lama dibersihkan otomatis untuk menjaga kapasitas R2.`
+            : '';
     return (Native.createElement("div", { className: "apple-page space-y-6" },
         Native.createElement("div", { className: "apple-page-header flex justify-between items-end" },
             Native.createElement("div", null,
@@ -17,6 +33,16 @@ export default function DashboardOverviewPage({ stats, loading = false, filterMo
                     " ",
                     viewPosyandu && ` - ${viewPosyandu}`)),
             loading && Native.createElement(Activity, { className: "w-5 h-5 animate-spin text-emerald-600", "aria-label": "Memuat ringkasan" })),
+        monitoringMessage && Native.createElement("div", { role: "status", "aria-live": "polite", className: `ios-inline-notification ${workerStatus === 'down' ? 'ios-inline-notification-error' : 'ios-inline-notification-warning'} system-health-notice flex items-start gap-3` },
+            Native.createElement(AlertTriangle, { className: "w-5 h-5 flex-shrink-0" }),
+            Native.createElement("div", null,
+                Native.createElement("p", { className: "font-bold" }, "Status pemrosesan laporan"),
+                Native.createElement("p", { className: "mt-1" }, monitoringMessage))),
+        storageMessage && Native.createElement("div", { role: "status", "aria-live": "polite", className: `ios-inline-notification ${storageStatus.status === 'warning' ? 'ios-inline-notification-error' : 'ios-inline-notification-warning'} system-health-notice flex items-start gap-3` },
+            Native.createElement(AlertTriangle, { className: "w-5 h-5 flex-shrink-0" }),
+            Native.createElement("div", null,
+                Native.createElement("p", { className: "font-bold" }, "Kapasitas penyimpanan ekspor"),
+                Native.createElement("p", { className: "mt-1" }, storageMessage))),
         Native.createElement("div", { className: "apple-metrics-grid grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4" },
             Native.createElement(Card, { className: "apple-metric-card apple-metric-blue p-4" },
                 Native.createElement("div", { className: "flex items-center justify-between mb-2" },

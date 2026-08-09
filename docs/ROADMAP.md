@@ -9,7 +9,7 @@ Dokumen ini membedakan komponen yang sudah aktif, fondasi yang sudah tersedia, d
 | 3 | Audit Log | Aktif | Login, CRUD, ekspor XLS, dan perubahan role/wilayah dicatat. |
 | 4 | Request ID dan structured logging | Aktif | `X-Request-ID`, latency, route, status, dan environment. |
 | 5 | Testing | Aktif | Unit Rust, integration contract, serta E2E desktop/ponsel. Cakupan ditambah setiap perubahan fitur. |
-| 6 | Monitoring | Aktif | Error, latency, cache hit, dan panduan pemantauan egress tersedia. Alarm otomatis masih tahap berikutnya. |
+| 6 | Monitoring | Aktif | Error, latency, cache hit, health worker terjadwal, status KV, peringatan Admin Gizi, dan alarm eksternal opsional. |
 | 7 | Backup dan restore | Aktif | Script backup dan restore drill non-production tersedia. Penjadwalan mengikuti kebijakan penyimpanan data. |
 | 8 | CI/CD | Siap diaktifkan | Build, test, migration, dan deploy otomatis tersedia; membutuhkan GitHub secrets dan `AUTO_DEPLOY=true`. |
 | 9 | Feature flag | Aktif | Konfigurasi KV dapat diubah tanpa deploy untuk fitur yang sudah ditanam dalam kode. |
@@ -19,12 +19,12 @@ Dokumen ini membedakan komponen yang sudah aktif, fondasi yang sudah tersedia, d
 | 13 | PWA installable | Aktif | Manifest, standalone mode, icon, service worker, dan offline shell. |
 | 14 | Accessibility | Berjalan | Bahasa dokumen, label form, keyboard, skip link, fokus, dan live region tersedia; audit WCAG penuh tetap berkala. |
 | 15 | Error tracking | Aktif | Error frontend terautentikasi masuk structured log backend tanpa data formulir. |
-| 16 | Background job/queue | Ditunda | Diaktifkan saat ukuran ekspor, PDF, atau email sudah memerlukan proses asinkron. |
-| 17 | Cloudflare R2 | Ditunda | Binding disiapkan, tetapi baru diaktifkan ketika upload berkas privat tersedia. |
-| 18 | Notification system | Ditunda | Memerlukan aturan penerima, persetujuan, dan kebijakan data sebelum implementasi. |
+| 16 | Background job/queue | Aktif | Cloudflare Queue dan worker gRPC menangani validasi impor, laporan, ekspor, dan sinkronisasi berat. |
+| 17 | Cloudflare R2 | Siap diaktifkan | Jalur upload/download privat dan script bucket tersedia; aktivasi akun R2 masih diperlukan. |
+| 18 | Notification system | Aktif terbatas | Peringatan worker tersedia untuk Admin Gizi; webhook/email eksternal bersifat opsional. |
 | 19 | Webhook | Ditunda | Memerlukan sistem tujuan, signing secret, retry, dan allowlist. |
 | 20 | Multi-language | Ditunda | Bahasa Indonesia tetap bahasa tunggal sampai kebutuhan pengguna terkonfirmasi. |
 | 21 | Data export | Aktif | XLS/XLSX dan CSV aktif; permintaan data ekspornya diaudit serta tetap dibatasi cakupan wilayah akun. |
 | 22 | User feedback | Ditunda | Form bug/saran akan dibuat setelah tujuan penerima dan retensi laporan ditetapkan. |
 
-Prioritas berikutnya adalah menambah alarm monitoring, memperluas E2E ke CRUD dan sinkronisasi offline, serta menjalankan restore drill pertama di staging. Queue, R2, notifikasi, webhook, i18n, dan feedback tidak diaktifkan hanya untuk menambah komponen karena masing-masing membawa biaya serta tanggung jawab keamanan baru.
+Prioritas berikutnya adalah membuat project Supabase development dan staging yang terpisah, mengaktifkan akun R2 bila persyaratan billing disetujui, serta memperluas E2E ke CRUD dan sinkronisasi offline. MQTT tetap ditunda sampai tersedia perangkat IoT nyata.

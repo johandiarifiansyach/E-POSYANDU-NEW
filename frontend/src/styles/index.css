@@ -4976,6 +4976,16 @@ html[data-theme="dark"] .border-rose-200 {
   color: #c72d27;
 }
 
+.ios-inline-notification-warning {
+  border-color: rgba(255, 159, 10, 0.26);
+  background: rgba(255, 159, 10, 0.11);
+  color: #9a5a00;
+}
+
+.system-health-notice {
+  max-width: 760px;
+}
+
 html[data-theme="dark"] .ios-notification {
   border-color: rgba(255, 255, 255, 0.14);
   background: rgba(36, 36, 41, 0.8);
@@ -5007,6 +5017,12 @@ html[data-theme="dark"] .ios-inline-notification-error {
   border-color: rgba(255, 69, 58, 0.28);
   background: rgba(255, 69, 58, 0.14);
   color: #ff9f9a;
+}
+
+html[data-theme="dark"] .ios-inline-notification-warning {
+  border-color: rgba(255, 179, 64, 0.3);
+  background: rgba(255, 159, 10, 0.16);
+  color: #ffd08a;
 }
 
 @media (max-width: 520px) {
