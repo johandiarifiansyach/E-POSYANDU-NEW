@@ -93,6 +93,16 @@ Pantau setiap hari pada masa awal rilis:
 
 Jangan menulis NIK, KK, nama balita, token, password, atau isi formulir ke log runtime.
 
+Pemeriksaan terpadu tersedia pada `GET /api/v1/health/ready`. Endpoint ini memeriksa konfigurasi database, KV, Queue, R2, dan status nutrition worker tanpa membaca data balita. GitHub Actions menjalankannya setiap 30 menit bersama pemeriksaan frontend dan health Render melalui `system-monitor.yml`.
+
+Jalankan pemeriksaan yang sama dari komputer pengelola dengan:
+
+```bash
+npm run monitor:system
+```
+
+Laporan JSON dapat disimpan dengan `MONITOR_OUTPUT_PATH=/lokasi/laporan.json`. Hasil terjadwal disimpan sebagai artifact GitHub selama 14 hari agar tren kegagalan dapat ditelusuri.
+
 Error JavaScript setelah pengguna login dikirim ke `POST /api/v1/client-errors`. Payload hanya berisi jenis error, route tanpa query, sumber, dan frame stack; pesan error serta data formulir tidak dikirim.
 
 Cron memeriksa `RUST_WORKER_HEALTH_URL` setiap 10 menit. Status disimpan di KV dan dibaca dashboard hanya oleh Admin Gizi. Untuk alarm di luar aplikasi, isi secret HTTPS `MONITORING_ALERT_WEBHOOK_URL`, atau isi `RESEND_API_KEY`, `MONITORING_ALERT_EMAIL_TO`, dan `ERROR_REPORT_EMAIL_FROM`. Alarm dikirim saat kegagalan ketiga dan sekali lagi saat layanan pulih, tanpa membawa data balita.
@@ -121,6 +131,25 @@ Workflow `database-backup.yml` membuat backup mingguan dan hanya mengunggah dump
 - `BACKUP_ENCRYPTION_PASSWORD` minimal 24 karakter acak
 
 Uji restore bulanan bersifat opt-in karena akan membersihkan database target. Isi `RESTORE_DATABASE_URL` dan salinan `BACKUP_ENCRYPTION_PASSWORD` pada Environment `staging`, lalu set `ENABLE_MONTHLY_RESTORE_DRILL=true`. Uji restore juga dapat dipicu manual dengan opsi `run_restore_drill`. Database target wajib khusus pengujian dan tidak boleh berisi data aktif.
+
+Sebelum dienkripsi, workflow menjalankan `npm run db:backup:verify -- <file.dump>` untuk memastikan archive dapat dibaca serta memuat tabel `children`, `measurements`, dan `schema_migrations`. Setelah restore, drill kembali memeriksa tabel wajib, jumlah data, dan migration terbaru. Jangan menyalakan kedua variable jadwal sebelum seluruh secret tersedia; workflow sengaja gagal tertutup bila satu secret kosong.
+
+## Load test Queue dan gRPC
+
+Load test gRPC lokal memakai data sintetis tanpa identitas nyata:
+
+```bash
+LOAD_GRPC_REQUESTS=50 \
+LOAD_GRPC_CONCURRENCY=8 \
+LOAD_GRPC_ITEMS=250 \
+npm run grpc:load
+```
+
+Alur production lengkap REST -> Queue -> worker gRPC diuji secara manual melalui workflow `load-test.yml`. Buat GitHub Environment `load-test`, isi secret `LOAD_ACCESS_TOKEN` milik akun uji Admin Gizi, lalu pilih **Actions > Queue and gRPC Load Test > Run workflow**. Batas keras script adalah 50 job, paralel 10, dan 1.000 data sintetis per job agar pengujian tidak menghabiskan kuota gratis secara tidak sengaja.
+
+## Konflik sinkronisasi offline
+
+Setiap update dan hapus membawa `version` serta `updatedAt` yang terakhir dilihat perangkat. Server mengembalikan `409` dan dokumen terkini bila data sudah berubah. Perubahan pada kolom berbeda digabung otomatis dengan three-way merge. Bila perangkat dan server mengubah kolom yang sama, aplikasi menyimpan konflik di IndexedDB dan meminta pengguna memilih **Gunakan Data Saya** atau **Gunakan Data Server**. Antrean tetap idempotent dan hanya mengirim satu perubahan per dokumen dalam setiap batch, sehingga urutan perubahan tidak terbalik.
 
 ## Penyimpanan
 

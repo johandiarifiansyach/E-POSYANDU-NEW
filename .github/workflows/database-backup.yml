@@ -43,6 +43,7 @@ jobs:
           BACKUP_ENCRYPTION_PASSWORD: ${{ secrets.BACKUP_ENCRYPTION_PASSWORD }}
         run: |
           ./scripts/database/backup.sh "$RUNNER_TEMP/e-posyandu.dump"
+          ./scripts/database/verify-backup.sh "$RUNNER_TEMP/e-posyandu.dump"
           openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
             -in "$RUNNER_TEMP/e-posyandu.dump" \
             -out "$RUNNER_TEMP/e-posyandu.dump.enc" \

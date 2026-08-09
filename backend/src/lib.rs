@@ -729,6 +729,42 @@ async fn monitoring_status(request: Request, env: &Env) -> ApiResult<serde_json:
     }))
 }
 
+async fn readiness_status(env: &Env) -> ApiResult<serde_json::Value> {
+    let database_configured = optional_secret(env, "SUPABASE_URL").is_some()
+        && optional_secret(env, "SUPABASE_SECRET_KEY").is_some();
+    let cache_configured = env.kv("E_POSYANDU_CACHE").is_ok();
+    let queue_configured = env.queue("E_POSYANDU_JOBS").is_ok();
+    let storage_configured = env.bucket("E_POSYANDU_FILES").is_ok();
+    let worker = read_nutrition_worker_health(env).await;
+    let worker_status = worker
+        .as_ref()
+        .map(|state| state.status.as_str())
+        .unwrap_or("unknown");
+    let core_ready = database_configured && cache_configured;
+    let degraded = !queue_configured
+        || !storage_configured
+        || !matches!(worker_status, "healthy" | "unconfigured");
+    Ok(json!({
+        "ok": core_ready,
+        "status": if !core_ready { "not-ready" } else if degraded { "degraded" } else { "ready" },
+        "checkedAt": now_iso(),
+        "environment": environment_name(env),
+        "components": {
+            "api": { "status": "healthy" },
+            "database": { "configured": database_configured },
+            "cache": { "configured": cache_configured },
+            "queue": { "configured": queue_configured },
+            "storage": { "configured": storage_configured },
+            "nutritionWorker": {
+                "status": worker_status,
+                "checkedAt": worker.as_ref().map(|state| state.checked_at.clone()),
+                "latencyMs": worker.as_ref().map(|state| state.latency_ms),
+                "consecutiveFailures": worker.as_ref().map(|state| state.consecutive_failures).unwrap_or(0),
+            },
+        },
+    }))
+}
+
 fn lms_z_score(value: f64, [l, median, spread]: [f64; 3]) -> f64 {
     if l == 0.0 {
         (value / median).ln() / spread
@@ -1606,6 +1642,7 @@ async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
 async fn dispatch(request: Request, env: &Env, context: &Context) -> ApiResult<serde_json::Value> {
     match (request.method(), request.path().as_str()) {
         (Method::Get, "/api/v1/openapi.json") => openapi_document(),
+        (Method::Get, "/api/v1/health/ready") => readiness_status(env).await,
         (Method::Post, "/api/v1/graphql") => graphql::execute(request, env).await,
         (Method::Get, "/api/v1/graphql/schema") => Ok(graphql::schema_document()),
         (Method::Get, "/api/v1/monitoring/status") => monitoring_status(request, env).await,

@@ -1,7 +1,7 @@
 // @ts-nocheck
 import Native, { useState, useEffect, useLayoutEffect, useMemo, useRef } from '../runtime/dom';
 import { APP_VERSION } from '../config/app';
-import { getFirestore, collection, addDoc, query, where, onSnapshot, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, getDocsForExport, getCachedChildrenPage, getChangeHistory, getChildDetail, getChildrenPage, getDashboardStats, getMonitoringStatus, getSigiziMeasurementExport, initializeApp, subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations, orderBy } from '../api/client';
+import { getFirestore, collection, addDoc, query, where, onSnapshot, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, getDocsForExport, getCachedChildrenPage, getChangeHistory, getChildDetail, getChildrenPage, getDashboardStats, getMonitoringStatus, getSigiziMeasurementExport, initializeApp, listSyncConflicts, resolveSyncConflict, subscribeToSyncConflicts, subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations, orderBy } from '../api/client';
 import { WHO_0_TO_5 } from '../data/anthropometry';
 import { getPreferredColorScheme, saveColorScheme, subscribeColorScheme } from '../theme/colorScheme';
 import { actionTooltipProps } from '../ui/actionTooltip';
@@ -1775,6 +1775,7 @@ export const Dashboard = ({ user, onLogout }) => {
     const [pagedChildrenTotal, setPagedChildrenTotal] = useState(0);
     const [pagedChildrenLoading, setPagedChildrenLoading] = useState(false);
     const [dataRevision, setDataRevision] = useState(0);
+    const [syncConflicts, setSyncConflicts] = useState([]);
     const itemsPerPage = 10;
     const serverPagedChildTabs = [
         'data_balita',
@@ -1814,6 +1815,21 @@ export const Dashboard = ({ user, onLogout }) => {
                 window.clearTimeout(refreshTimer);
         };
     }, [activeTab, isServerPagedChildTab]);
+    useEffect(() => {
+        let current = true;
+        const refreshConflicts = () => {
+            void listSyncConflicts().then((items) => {
+                if (current)
+                    setSyncConflicts(items);
+            });
+        };
+        refreshConflicts();
+        const unsubscribe = subscribeToSyncConflicts(refreshConflicts);
+        return () => {
+            current = false;
+            unsubscribe();
+        };
+    }, []);
     // Fetch Children
     useEffect(() => {
         const hasSelectedMeasurement = activeTab === 'measurement' && selectedMeasurementChild?.id === measurementChildId;
@@ -2768,6 +2784,19 @@ export const Dashboard = ({ user, onLogout }) => {
         measurement: 'Penimbangan Balita'
     };
     const pageTitle = pageTitles[activeTab] || 'E-Posyandu';
+    const handleResolveSyncConflict = async (conflictId, resolution) => {
+        try {
+            await resolveSyncConflict(conflictId, resolution);
+            setSyncConflicts(await listSyncConflicts());
+            setDataRevision((revision) => revision + 1);
+            showSuccess(resolution === 'keep-local'
+                ? 'Perubahan dari perangkat akan dikirim ulang menggunakan data server terbaru.'
+                : 'Data server dipakai dan perubahan lokal yang bertabrakan dibatalkan.');
+        }
+        catch (error) {
+            setErrorMsg(`Konflik sinkronisasi belum dapat diselesaikan: ${error instanceof Error ? error.message : 'Permintaan tidak dapat diproses.'}`);
+        }
+    };
     const setSidebarCollapsed = (collapsed) => {
         sidebarCollapsedRef.current = collapsed;
         hideSidebarTooltip();
@@ -2888,6 +2917,16 @@ export const Dashboard = ({ user, onLogout }) => {
                 errorMsg && (Native.createElement("div", { role: "alert", className: "ios-inline-notification ios-inline-notification-error mb-6 flex items-center gap-3" },
                     Native.createElement(AlertTriangle, { className: "w-5 h-5 flex-shrink-0" }),
                     Native.createElement("p", { className: "text-sm font-medium" }, errorMsg))),
+                syncConflicts.length > 0 && (Native.createElement("section", { role: "alert", className: "ios-inline-notification ios-inline-notification-warning mb-6", "aria-live": "polite" },
+                    Native.createElement("div", { className: "flex items-start gap-3" },
+                        Native.createElement(AlertTriangle, { className: "mt-0.5 h-5 w-5 flex-shrink-0" }),
+                        Native.createElement("div", { className: "min-w-0 flex-1" },
+                            Native.createElement("p", { className: "text-sm font-bold" }, "Perubahan data perlu dikonfirmasi"),
+                            Native.createElement("p", { className: "mt-1 text-sm" }, syncConflicts[0].detail),
+                            syncConflicts.length > 1 && Native.createElement("p", { className: "mt-1 text-xs" }, `${syncConflicts.length} konflik menunggu penyelesaian.`),
+                            Native.createElement("div", { className: "mt-3 flex flex-wrap gap-2" },
+                                Native.createElement("button", { type: "button", className: "apple-button apple-button-primary bg-blue-600 px-4 py-2 text-sm font-semibold text-white", onClick: () => void handleResolveSyncConflict(syncConflicts[0].id, 'keep-local') }, "Gunakan Data Saya"),
+                                Native.createElement("button", { type: "button", className: "apple-button apple-button-secondary px-4 py-2 text-sm font-semibold", onClick: () => void handleResolveSyncConflict(syncConflicts[0].id, 'accept-server') }, "Gunakan Data Server")))))),
                 activeTab !== 'add_child' && activeTab !== 'measurement' && activeTab !== 'change_history' && (Native.createElement("div", { className: "mb-6" },
                     Native.createElement(LocationFilterPanel, { draftDesa: draftDesa, draftPosyandu: draftPosyandu, filterMonth: filterMonth, filterYear: filterYear, onApply: handleApplyLocationFilter, onReset: handleResetLocationFilter, role: user.role, setDraftDesa: setDraftDesa, setDraftPosyandu: setDraftPosyandu, setFilterMonth: setFilterMonth, setFilterYear: setFilterYear, user: user }))),
                 Native.createElement(Native.Suspense, { fallback: Native.createElement(DashboardPageSkeleton, null) }, activeTab === 'add_child' ? (Native.createElement(AddChildPage, { allChildren: children, onBack: handleBackFromAddChild, onSuccess: handleBackFromAddChild, user: user })) : activeTab === 'measurement' ? (measurementChild ? (Native.createElement(MeasurementPage, { child: measurementChild, onBack: handleBackFromMeasurement })) : (Native.createElement(Card, { className: "p-8 text-center text-slate-500" }, loading ? 'Memuat data balita...' : 'Data balita tidak ditemukan atau tidak dapat diakses.'))) : activeTab === 'dashboard' ? (Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'asi_eksklusif' ? (Native.createElement(ExclusiveBreastfeedingPage, { filterMonth: filterMonth, filterYear: filterYear, refreshKey: dataRevision, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'pmt_program' ? (Native.createElement(PmtProgramPage, { childrenData: children, pmtPrograms: pmtPrograms, onExportPmt: handleExportPmt, onDeleteProgram: handleDeletePmt, onOpenMonitoring: handleOpenPmtMonitoring })) : activeTab === 'change_history' ? (Native.createElement(ChangeHistoryPage, { changeLogs: changeLogs, loading: changeHistoryLoading, error: changeHistoryError, currentPage: changeHistoryPage, total: changeHistoryTotal, pageSize: 10, onPageChange: setChangeHistoryPage, onRetry: () => setChangeHistoryRevision((revision) => revision + 1) })) : (Native.createElement(ChildrenTablePage, { activeTab: activeTab, currentFilterDate: currentFilterDate, currentPage: currentPage, displayData: tableDisplayData, fileInputRef: fileInputRef, filterMonth: filterMonth, filterYear: filterYear, handleExportMpasi: handleExportMpasi, handleExportPengukuranSigizi: handleExportPengukuranSigizi, handleExportTable: handleExportTable, handleImportIdentitas: handleImportIdentitas, handlePermanentDelete: handlePermanentDelete, handleRestore: handleRestore, itemsPerPage: itemsPerPage, loading: tableLoading, monthlyMeasurements: tableMeasurements, mpasiLogs: tableMpasiLogs, paginatedData: tablePaginatedData, searchTerm: searchTerm, searchDraft: searchDraft, setChildToDelete: setChildToDelete, setChildToMpasi: setChildToMpasi, setCurrentPage: setCurrentPage, onEditChild: handleOpenEditChild, setPmtModalData: setPmtModalData, setSearchDraft: setSearchDraft, onClearSearch: handleClearSearch, onSubmitSearch: handleSearchSubmit, onOpenMeasurement: handleOpenMeasurementPage, onOpenAddChild: handleOpenAddChildPage, setSortOrder: setSortOrder, sortOrder: sortOrder, totalDataCount: tableTotalCount, user: user })))),

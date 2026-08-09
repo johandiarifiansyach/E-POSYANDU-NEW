@@ -29,6 +29,24 @@
         }
       }
     },
+    "/api/v1/health/ready": {
+      "get": {
+        "summary": "Memeriksa kesiapan komponen operasional tanpa membaca data balita",
+        "operationId": "readinessCheck",
+        "responses": {
+          "200": {
+            "description": "Ringkasan kesiapan API, database, cache, Queue, R2, dan worker gRPC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/openapi.json": {
       "get": {
         "summary": "Mengambil kontrak OpenAPI",
@@ -532,6 +550,20 @@
           "version": {
             "type": "string"
           }
+        }
+      },
+      "Readiness": {
+        "type": "object",
+        "required": ["ok", "status", "checkedAt", "environment", "components"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "status": {
+            "type": "string",
+            "enum": ["ready", "degraded", "not-ready"]
+          },
+          "checkedAt": { "type": "string", "format": "date-time" },
+          "environment": { "type": "string" },
+          "components": { "type": "object" }
         }
       },
       "MonitoringStatus": {

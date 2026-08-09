@@ -2637,7 +2637,7 @@ async fn collection_update(
 }
 
 async fn collection_delete(
-    request: Request,
+    mut request: Request,
     env: &Env,
     resource: Resource,
     id: &str,
@@ -2650,6 +2650,43 @@ async fn collection_delete(
     };
     let existing_extras = enrichment(resource, std::slice::from_ref(&existing), env).await?;
     let existing_document = api_document(resource, &existing, existing_extras.get(id).cloned())?;
+    let precondition = request
+        .text()
+        .await
+        .ok()
+        .filter(|body| !body.trim().is_empty())
+        .and_then(|body| serde_json::from_str::<Value>(&body).ok())
+        .unwrap_or_else(|| json!({}));
+    let current_data = existing_document
+        .get("data")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(expected_version) = precondition.get("expectedVersion").and_then(Value::as_u64) {
+        let current_version = current_data
+            .get("version")
+            .and_then(Value::as_u64)
+            .unwrap_or(1);
+        if current_version != expected_version {
+            return Err(api_error(
+                409,
+                "Data telah diperbarui oleh pengguna lain. Periksa data terbaru sebelum menghapus.",
+            ));
+        }
+    }
+    if let Some(expected_updated_at) = precondition
+        .get("expectedUpdatedAt")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        let current_updated_at = string_value(current_data.get("updatedAt"));
+        if current_updated_at != expected_updated_at {
+            return Err(api_error(
+                409,
+                "Data telah diperbarui oleh pengguna lain. Periksa data terbaru sebelum menghapus.",
+            ));
+        }
+    }
     let row = row_object(&existing)?;
     let (village, posyandu) = match resource {
         Resource::Children => (
@@ -2735,7 +2772,7 @@ fn sync_request(
 }
 
 async fn sync_batch(mut request: Request, env: &Env) -> ApiResult<Value> {
-    let _scope = require_scope(&request, env).await?;
+    let scope = require_scope(&request, env).await?;
     let authorization = request
         .headers()
         .get("Authorization")
@@ -2799,7 +2836,10 @@ async fn sync_batch(mut request: Request, env: &Env) -> ApiResult<Value> {
             "delete" => (
                 Method::Delete,
                 format!("{collection_path}/{encoded_id}"),
-                None,
+                Some(json!({
+                    "expectedVersion": mutation.get("expectedVersion").cloned().unwrap_or(Value::Null),
+                    "expectedUpdatedAt": mutation.get("expectedUpdatedAt").cloned().unwrap_or(Value::Null)
+                })),
             ),
             _ => return Err(api_error(422, "Operasi sinkronisasi tidak didukung.")),
         };
@@ -2819,17 +2859,40 @@ async fn sync_batch(mut request: Request, env: &Env) -> ApiResult<Value> {
                 "operation": operation,
                 "document": document,
             })),
-            Err(error) => mutation_results.push(json!({
-                "id": mutation_id,
-                "resource": resource.name(),
-                "documentId": document_id,
-                "operation": operation,
-                "error": {
-                    "status": error.status,
-                    "code": error.code,
-                    "detail": error.detail,
-                },
-            })),
+            Err(error) => {
+                let server_document = if error.status == 409 {
+                    match fetch_raw_document(resource, &document_id, &scope, env).await? {
+                        Some(row) => {
+                            let extras =
+                                enrichment(resource, std::slice::from_ref(&row), env).await?;
+                            Some(api_document(
+                                resource,
+                                &row,
+                                extras.get(&document_id).cloned(),
+                            )?)
+                        }
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                mutation_results.push(json!({
+                    "id": mutation_id,
+                    "resource": resource.name(),
+                    "documentId": document_id,
+                    "operation": operation,
+                    "error": {
+                        "status": error.status,
+                        "code": error.code,
+                        "detail": error.detail,
+                    },
+                    "conflict": if error.status == 409 {
+                        json!({ "serverDocument": server_document })
+                    } else {
+                        Value::Null
+                    },
+                }));
+            }
         }
     }
 

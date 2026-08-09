@@ -98,9 +98,14 @@ async function configureAuthenticatedPage(
   page: Page,
   syncFails = false,
   includeChildrenCollection = false,
-  changeLogs = [] as typeof changeHistoryEntries
+  changeLogs = [] as typeof changeHistoryEntries,
+  returnSyncConflict = false
 ) {
   const syncedMutations: Array<Record<string, any>> = [];
+  let activeChild: { id: string; data: Record<string, any> } = {
+    id: child.id,
+    data: { ...child.data }
+  };
   await page.addInitScript(() => {
     window.sessionStorage.setItem('e-posyandu:auth-session', JSON.stringify({
       uid: 'user-regression',
@@ -143,7 +148,7 @@ async function configureAuthenticatedPage(
     }
     if (path.endsWith('/children/page')) {
       await route.fulfill({ status: 200, headers, json: {
-        items: [child],
+        items: [activeChild],
         measurements: [measurement],
         mpasiLogs: [],
         total: 1
@@ -160,7 +165,7 @@ async function configureAuthenticatedPage(
       }
       if (payload.query?.includes('childrenPage')) {
         await route.fulfill({ status: 200, headers, json: { data: { childrenPage: {
-          items: [child],
+          items: [activeChild],
           measurements: [measurement],
           mpasiLogs: [],
           total: 1
@@ -176,12 +181,12 @@ async function configureAuthenticatedPage(
       return;
     }
     if (path.endsWith(`/collections/children/${child.id}`)) {
-      await route.fulfill({ status: 200, headers, json: child });
+      await route.fulfill({ status: 200, headers, json: activeChild });
       return;
     }
     if (path.endsWith('/collections/children')) {
       await route.fulfill({ status: 200, headers, json: {
-        items: includeChildrenCollection ? [child] : [],
+        items: includeChildrenCollection ? [activeChild] : [],
         cursor: new Date().toISOString()
       } });
       return;
@@ -227,12 +232,38 @@ async function configureAuthenticatedPage(
         syncedMutations.push(...mutations);
         const cursor = new Date().toISOString();
         const changes = {
-          children: { items: includeChildrenCollection ? [child] : [], cursor },
+          children: { items: includeChildrenCollection ? [activeChild] : [], cursor },
           measurements: { items: [measurement], cursor },
           pmt_programs: { items: [pmtProgram], cursor },
           change_logs: { items: changeLogs, cursor }
         };
         const results = mutations.map((mutation) => {
+          if (returnSyncConflict && mutation.resource === 'children' && mutation.documentId === child.id) {
+            activeChild = {
+              id: child.id,
+              data: {
+                ...child.data,
+                nama: 'Balita Versi Server',
+                deletedAt: null,
+                version: 2,
+                updatedAt: cursor
+              }
+            };
+            return {
+              id: mutation.id,
+              resource: mutation.resource,
+              documentId: mutation.documentId,
+              operation: mutation.operation,
+              error: {
+                status: 409,
+                code: 'conflict',
+                detail: 'Data balita telah diperbarui oleh pengguna lain.'
+              },
+              conflict: {
+                serverDocument: activeChild
+              }
+            };
+          }
           if (mutation.resource === 'children' && mutation.data?.bbLahir === 42) {
             return {
               id: mutation.id,
@@ -286,6 +317,21 @@ test('balita yang dihapus tidak muncul kembali ketika pengiriman masih tertunda'
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Data Balita Lengkap', exact: true })).toBeVisible();
   await expect(page.getByText(child.data.nama, { exact: true })).toHaveCount(0);
+});
+
+test('konflik sinkronisasi dapat diselesaikan tanpa menimpa data server', async ({ page }) => {
+  await configureAuthenticatedPage(page, false, false, [], true);
+  await page.goto('/#data_balita');
+
+  await page.getByRole('button', { name: 'Hapus Balita', exact: true }).click();
+  await page.getByRole('button', { name: 'Konfirmasi Hapus' }).click();
+  const conflictPanel = page.getByRole('alert').filter({ hasText: 'Perubahan data perlu dikonfirmasi' });
+  await expect(conflictPanel).toBeVisible();
+  await expect(conflictPanel).toContainText('Data balita telah diperbarui oleh pengguna lain.');
+
+  await conflictPanel.getByRole('button', { name: 'Gunakan Data Server' }).click();
+  await expect(conflictPanel).toHaveCount(0);
+  await expect(page.getByText('Balita Versi Server', { exact: true })).toBeVisible();
 });
 
 test('form edit identitas dapat digulir sampai tombol simpan', async ({ page }) => {

@@ -5,13 +5,18 @@ import {
   getCachedDocument,
   getCachedDocuments,
   getPendingMutations,
+  getSyncConflicts,
   makeCachedDocument,
   markMutationError,
   PendingMutation,
   putCachedDocument,
   queueMutation,
+  recordSyncConflict,
   removeCachedDocument,
-  subscribeToOfflineStore
+  removeSyncConflict,
+  SyncConflict,
+  subscribeToOfflineStore,
+  updatePendingMutation
 } from '../services/offlineStore';
 
 export type AuthUser = {
@@ -108,6 +113,9 @@ type SyncMutationResult = {
     status: number;
     code: string;
     detail: string;
+  };
+  conflict?: {
+    serverDocument?: ApiDocument;
   };
 };
 
@@ -1480,7 +1488,11 @@ async function applyPendingMutation(mutation: PendingMutation): Promise<void> {
   }
   await apiRequest(`${collectionPath}/${encodeURIComponent(mutation.documentId)}`, {
     method: 'DELETE',
-    headers: mutationHeaders
+    headers: mutationHeaders,
+    body: JSON.stringify({
+      expectedVersion: mutation.payload?.expectedVersion,
+      expectedUpdatedAt: mutation.payload?.expectedUpdatedAt
+    })
   });
 }
 
@@ -1535,6 +1547,61 @@ const syncedMutationListeners = new Set<() => void>();
 export function subscribeToSyncedMutations(listener: () => void): () => void {
   syncedMutationListeners.add(listener);
   return () => syncedMutationListeners.delete(listener);
+}
+
+export async function listSyncConflicts(): Promise<SyncConflict[]> {
+  return getSyncConflicts();
+}
+
+export function subscribeToSyncConflicts(listener: () => void): () => void {
+  return subscribeToOfflineStore(listener);
+}
+
+export async function resolveSyncConflict(
+  conflictId: string,
+  resolution: 'keep-local' | 'accept-server'
+): Promise<void> {
+  const conflict = (await getSyncConflicts()).find((item) => item.id === conflictId);
+  const mutation = (await getPendingMutations()).find((item) => item.id === conflict?.mutationId);
+  if (!conflict || !mutation) {
+    await removeSyncConflict(conflictId);
+    return;
+  }
+
+  const serverDocument = conflict.serverDocument;
+  if (resolution === 'accept-server') {
+    await completeMutation(mutation);
+    if (serverDocument) {
+      const now = new Date().toISOString();
+      await putCachedDocument(makeCachedDocument(
+        conflict.tableName,
+        conflict.documentId,
+        serverDocument.data,
+        typeof serverDocument.data.createdAt === 'string' ? serverDocument.data.createdAt : now,
+        typeof serverDocument.data.updatedAt === 'string' ? serverDocument.data.updatedAt : now,
+        false
+      ));
+    } else {
+      await removeCachedDocument(conflict.tableName, conflict.documentId);
+    }
+    return;
+  }
+
+  if (!serverDocument) {
+    throw new Error('Data terbaru dari server belum tersedia untuk menyelesaikan konflik.');
+  }
+  await updatePendingMutation({
+    ...mutation,
+    lastError: undefined,
+    payload: {
+      ...(mutation.payload || {}),
+      baseData: baseDataForPatch(serverDocument.data, conflict.localData),
+      expectedVersion: serverDocument.data.version,
+      expectedUpdatedAt: serverDocument.data.updatedAt
+    }
+  });
+  await removeSyncConflict(conflictId);
+  requestSync();
 }
 
 function notifySyncedMutations() {
@@ -1597,8 +1664,115 @@ function syncMutationPayload(mutation: PendingMutation) {
     id: mutation.id,
     operation: mutation.type,
     resource: mutation.tableName,
-    documentId: mutation.documentId
+    documentId: mutation.documentId,
+    expectedVersion: mutation.payload?.expectedVersion,
+    expectedUpdatedAt: mutation.payload?.expectedUpdatedAt
   };
+}
+
+function valuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+function baseDataForPatch(serverData: DocumentData, localData: DocumentData): DocumentData {
+  return Object.fromEntries(Object.keys(localData).map((key) => [key, serverData[key]]));
+}
+
+async function rebaseNextMutation(
+  completed: PendingMutation,
+  serverDocument: ApiDocument
+): Promise<void> {
+  const next = (await getPendingMutations()).find(
+    (mutation) =>
+      mutation.id !== completed.id &&
+      mutation.tableName === completed.tableName &&
+      mutation.documentId === completed.documentId
+  );
+  if (!next) return;
+  const localData = next.payload?.data || {};
+  await updatePendingMutation({
+    ...next,
+    lastError: undefined,
+    payload: {
+      ...(next.payload || {}),
+      baseData: baseDataForPatch(serverDocument.data, localData),
+      expectedVersion: serverDocument.data.version,
+      expectedUpdatedAt: serverDocument.data.updatedAt
+    }
+  });
+}
+
+async function handleSyncConflict(
+  mutation: PendingMutation,
+  result: SyncMutationResult
+): Promise<'rebased' | 'stored'> {
+  const serverDocument = result.conflict?.serverDocument;
+  const localData = mutation.payload?.data || {};
+  const baseData = mutation.payload?.baseData || {};
+  if (mutation.type === 'update' && serverDocument) {
+    const conflictingFields = Object.keys(localData).filter((key) => {
+      const serverValue = serverDocument.data[key];
+      return !valuesEqual(serverValue, baseData[key]) && !valuesEqual(serverValue, localData[key]);
+    });
+    if (conflictingFields.length === 0) {
+      const merged = { ...serverDocument.data, ...localData };
+      await updatePendingMutation({
+        ...mutation,
+        lastError: undefined,
+        payload: {
+          ...(mutation.payload || {}),
+          baseData: baseDataForPatch(serverDocument.data, localData),
+          expectedVersion: serverDocument.data.version,
+          expectedUpdatedAt: serverDocument.data.updatedAt
+        }
+      });
+      const now = new Date().toISOString();
+      await putCachedDocument(makeCachedDocument(
+        mutation.tableName,
+        mutation.documentId,
+        merged,
+        typeof serverDocument.data.createdAt === 'string' ? serverDocument.data.createdAt : now,
+        now,
+        true
+      ));
+      await removeSyncConflict(mutation.id);
+      return 'rebased';
+    }
+  }
+
+  const detail = result.error?.detail || 'Perubahan lokal bertabrakan dengan data terbaru di server.';
+  const conflict: SyncConflict = {
+    id: mutation.id,
+    mutationId: mutation.id,
+    tableName: mutation.tableName,
+    documentId: mutation.documentId,
+    operation: mutation.type,
+    localData,
+    baseData,
+    serverDocument,
+    detail,
+    detectedAt: new Date().toISOString()
+  };
+  await recordSyncConflict(conflict);
+  return 'stored';
+}
+
+function nextSyncBatch(pending: PendingMutation[], maximum = 25): PendingMutation[] {
+  const documentKeys = new Set<string>();
+  const batch: PendingMutation[] = [];
+  for (const mutation of pending) {
+    const key = `${mutation.tableName}:${mutation.documentId}`;
+    if (documentKeys.has(key)) continue;
+    documentKeys.add(key);
+    batch.push(mutation);
+    if (batch.length >= maximum) break;
+  }
+  return batch;
 }
 
 async function syncFastApiBatch(batch: PendingMutation[]): Promise<SyncRunResult> {
@@ -1617,6 +1791,10 @@ async function syncFastApiBatch(batch: PendingMutation[]): Promise<SyncRunResult
     const result = results.get(mutation.id);
     if (result?.error) {
       const error = new Error(result.error.detail || 'Perubahan data belum dapat disinkronkan.');
+      if (result.error.status === 409) {
+        const conflictOutcome = await handleSyncConflict(mutation, result);
+        if (conflictOutcome === 'rebased') continue;
+      }
       errors.set(mutation.id, error);
       await markMutationError(mutation, error);
       continue;
@@ -1625,6 +1803,7 @@ async function syncFastApiBatch(batch: PendingMutation[]): Promise<SyncRunResult
     syncedCount += 1;
     if (mutation.type !== 'delete' && result?.document?.id) {
       const document = result.document;
+      await rebaseNextMutation(mutation, document);
       const now = new Date().toISOString();
       await cacheRemoteDocuments(mutation.tableName, [{
         id: document.id,
@@ -1648,7 +1827,7 @@ async function runPendingMutationSync(): Promise<SyncRunResult> {
         const pending = orderedPendingMutations(await getPendingMutations())
           .filter((mutation) => !attempted.has(mutation.id));
         if (pending.length === 0) break;
-        const batch = pending.slice(0, 25);
+        const batch = nextSyncBatch(pending);
         batch.forEach((mutation) => attempted.add(mutation.id));
         try {
           const outcome = await syncFastApiBatch(batch);
@@ -1756,13 +1935,16 @@ export async function updateDoc(ref: DocRef, patch: Record<string, any>): Promis
   const expectedVersion = existing && !existing.pending && Number.isSafeInteger(cachedVersion)
     ? cachedVersion
     : undefined;
+  const baseData = Object.fromEntries(
+    Object.keys(normalizedPatch).map((key) => [key, existing?.data?.[key]])
+  );
   const merged = { ...(existing?.data || {}), ...normalizedPatch };
   await putCachedDocument(makeCachedDocument(ref.tableName, ref.id, merged, existing?.createdAt || now, now));
   const mutation = await queueMutation({
     type: 'update',
     tableName: ref.tableName,
     documentId: ref.id,
-    payload: { data: normalizedPatch, expectedVersion, expectedUpdatedAt }
+    payload: { data: normalizedPatch, baseData, expectedVersion, expectedUpdatedAt }
   });
   requestSync();
   return { mutationId: mutation.id };
@@ -1771,8 +1953,18 @@ export async function updateDoc(ref: DocRef, patch: Record<string, any>): Promis
 export async function deleteDoc(ref: DocRef): Promise<void> {
   const now = new Date().toISOString();
   const existing = await getCachedDocument(ref.tableName, ref.id);
+  const cachedVersion = existing?.data?.version;
+  const expectedVersion = existing && !existing.pending && Number.isSafeInteger(cachedVersion)
+    ? cachedVersion
+    : undefined;
+  const expectedUpdatedAt = existing && !existing.pending ? existing.updatedAt : undefined;
   await putCachedDocument(makeCachedDocument(ref.tableName, ref.id, existing?.data || {}, existing?.createdAt || now, now, true, true));
-  await queueMutation({ type: 'delete', tableName: ref.tableName, documentId: ref.id });
+  await queueMutation({
+    type: 'delete',
+    tableName: ref.tableName,
+    documentId: ref.id,
+    payload: { data: {}, baseData: existing?.data || {}, expectedVersion, expectedUpdatedAt }
+  });
   requestSync();
 }
 

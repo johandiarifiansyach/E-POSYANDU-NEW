@@ -65,6 +65,7 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
   assert.equal(document.info.version, application.version);
   for (const path of [
     '/api/v1/health',
+    '/api/v1/health/ready',
     '/api/v1/auth/login',
     '/api/v1/graphql',
     '/api/v1/sync',
@@ -214,8 +215,54 @@ test('deployment diperiksa berkala dan backup hanya disimpan dalam bentuk terenk
   assert.match(smokeWorkflow, /17 \*\/6 \* \* \*/);
   assert.match(backupWorkflow, /aes-256-cbc/);
   assert.match(backupWorkflow, /BACKUP_ENCRYPTION_PASSWORD/);
+  assert.match(backupWorkflow, /verify-backup\.sh/);
   assert.match(backupWorkflow, /retention-days: 14/);
   assert.doesNotMatch(backupWorkflow, /upload-artifact[\s\S]+e-posyandu\.dump(?:\n|$)/);
   assert.match(ciWorkflow, /npm run check/);
   assert.match(ciWorkflow, /services\/nutrition-grpc/);
+});
+
+test('sinkronisasi offline mendeteksi konflik dan tidak menimpa perubahan diam-diam', async () => {
+  const store = await readFile(resolve(root, 'frontend/src/services/offlineStore.ts'), 'utf8');
+  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
+  const dashboard = await readFile(resolve(root, 'frontend/src/pages/DashboardApp.ts'), 'utf8');
+  const worker = await readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8');
+
+  assert.match(store, /const CONFLICT_STORE = 'conflicts'/);
+  assert.match(store, /export async function recordSyncConflict/);
+  assert.match(client, /function handleSyncConflict/);
+  assert.match(client, /function rebaseNextMutation/);
+  assert.match(client, /export async function resolveSyncConflict/);
+  assert.match(client, /expectedVersion/);
+  assert.match(dashboard, /Gunakan Data Saya/);
+  assert.match(dashboard, /Gunakan Data Server/);
+  assert.match(worker, /serverDocument/);
+  assert.match(worker, /expectedUpdatedAt/);
+});
+
+test('monitoring terpadu dan load test Queue gRPC memiliki batas aman', async () => {
+  const monitor = await readFile(resolve(root, 'scripts/operations/monitor-system.mjs'), 'utf8');
+  const monitorWorkflow = await readFile(resolve(root, '.github/workflows/system-monitor.yml'), 'utf8');
+  const queueLoad = await readFile(resolve(root, 'scripts/operations/load-queue.mjs'), 'utf8');
+  const grpcLoad = await readFile(resolve(root, 'services/nutrition-grpc/src/bin/load.rs'), 'utf8');
+  const loadWorkflow = await readFile(resolve(root, '.github/workflows/load-test.yml'), 'utf8');
+
+  assert.match(monitor, /health\/ready/);
+  assert.match(monitor, /nutrition-worker/);
+  assert.match(monitorWorkflow, /7,37 \* \* \* \*/);
+  assert.match(queueLoad, /LOAD_ACCESS_TOKEN/);
+  assert.match(queueLoad, /Math\.min\(50/);
+  assert.match(grpcLoad, /LOAD_GRPC_CONCURRENCY/);
+  assert.match(grpcLoad, /"p95": p95/);
+  assert.match(loadWorkflow, /environment: load-test/);
+});
+
+test('backup diverifikasi dan restore drill memeriksa isi database', async () => {
+  const verify = await readFile(resolve(root, 'scripts/database/verify-backup.sh'), 'utf8');
+  const restore = await readFile(resolve(root, 'scripts/database/restore-drill.sh'), 'utf8');
+
+  assert.match(verify, /pg_restore --list/);
+  assert.match(verify, /schema_migrations/);
+  assert.match(restore, /Tabel public\.children tidak ditemukan setelah restore/);
+  assert.match(restore, /latest_migration/);
 });

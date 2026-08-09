@@ -27,8 +27,24 @@ pg_restore "$RESTORE_DATABASE_URL" \
   "$backup_file"
 
 psql "$RESTORE_DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
-select to_regclass('public.children') is not null as children_ready;
-select to_regclass('public.measurements') is not null as measurements_ready;
+do $$
+begin
+  if to_regclass('public.children') is null then
+    raise exception 'Tabel public.children tidak ditemukan setelah restore';
+  end if;
+  if to_regclass('public.measurements') is null then
+    raise exception 'Tabel public.measurements tidak ditemukan setelah restore';
+  end if;
+  if to_regclass('public.schema_migrations') is null then
+    raise exception 'Tabel public.schema_migrations tidak ditemukan setelah restore';
+  end if;
+  if not exists (select 1 from public.schema_migrations) then
+    raise exception 'Riwayat migration kosong setelah restore';
+  end if;
+end
+$$;
+select count(*) as children_rows from public.children;
+select count(*) as measurement_rows from public.measurements;
 select max(version) as latest_migration from public.schema_migrations;
 SQL
 
