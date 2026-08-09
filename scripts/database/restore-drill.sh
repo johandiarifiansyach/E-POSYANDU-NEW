@@ -17,11 +17,27 @@ backup_file="${1:?Berikan path file .dump yang akan diuji.}"
 [[ -f "$backup_file" ]] || { echo "File backup tidak ditemukan." >&2; exit 1; }
 command -v pg_restore >/dev/null 2>&1 || { echo "pg_restore belum terpasang." >&2; exit 1; }
 command -v psql >/dev/null 2>&1 || { echo "psql belum terpasang." >&2; exit 1; }
+command -v awk >/dev/null 2>&1 || { echo "awk belum terpasang." >&2; exit 1; }
+
+restore_list="$(mktemp)"
+trap 'rm -f "$restore_list"' EXIT
+
+# Supabase manages global event triggers and auth data. Restore only application
+# objects, and leave app_users empty because its rows depend on auth.users.
+pg_restore --list --schema=public "$backup_file" \
+  | awk '
+      / SCHEMA - public / { print ";" $0; next }
+      / TABLE DATA public app_users / { print ";" $0; next }
+      { print }
+    ' > "$restore_list"
+
+psql "$RESTORE_DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+drop schema if exists public cascade;
+create schema public authorization postgres;
+SQL
 
 pg_restore --dbname="$RESTORE_DATABASE_URL" \
-  --schema=public \
-  --clean \
-  --if-exists \
+  --use-list="$restore_list" \
   --no-owner \
   --no-acl \
   --exit-on-error \

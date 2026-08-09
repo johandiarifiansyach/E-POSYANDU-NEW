@@ -130,7 +130,7 @@ Workflow `database-backup.yml` membuat backup mingguan dan hanya mengunggah dump
 - `DATABASE_URL`
 - `BACKUP_ENCRYPTION_PASSWORD` minimal 24 karakter acak
 
-Uji restore bulanan bersifat opt-in karena akan membersihkan schema aplikasi `public` pada database target. Schema internal Supabase tidak disentuh. Isi `RESTORE_DATABASE_URL` dan salinan `BACKUP_ENCRYPTION_PASSWORD` pada Environment `staging`, lalu set `ENABLE_MONTHLY_RESTORE_DRILL=true`. Uji restore juga dapat dipicu manual dengan opsi `run_restore_drill`. Database target wajib khusus pengujian dan tidak boleh berisi data aktif.
+Uji restore bulanan bersifat opt-in karena akan membuat ulang schema aplikasi `public` pada database target. Schema internal dan event trigger Supabase tidak disentuh. Data `public.app_users` tetap ada di archive terenkripsi, tetapi sengaja tidak dimuat pada drill karena bergantung pada pengguna `auth.users` milik project sumber. Isi `RESTORE_DATABASE_URL` dan salinan `BACKUP_ENCRYPTION_PASSWORD` pada Environment `staging`, lalu set `ENABLE_MONTHLY_RESTORE_DRILL=true`. Uji restore juga dapat dipicu manual dengan opsi `run_restore_drill`. Database target wajib khusus pengujian dan tidak boleh berisi data aktif.
 
 Sebelum dienkripsi, workflow menjalankan `npm run db:backup:verify -- <file.dump>` untuk memastikan archive dapat dibaca serta memuat tabel `children`, `measurements`, dan `schema_migrations`. Setelah restore, drill kembali memeriksa tabel wajib, jumlah data, dan migration terbaru. Jangan menyalakan kedua variable jadwal sebelum seluruh secret tersedia; workflow sengaja gagal tertutup bila satu secret kosong.
 
