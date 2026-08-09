@@ -216,6 +216,8 @@ test('deployment diperiksa berkala dan backup hanya disimpan dalam bentuk terenk
   assert.match(backupWorkflow, /aes-256-cbc/);
   assert.match(backupWorkflow, /BACKUP_ENCRYPTION_PASSWORD/);
   assert.match(backupWorkflow, /verify-backup\.sh/);
+  assert.match(backupWorkflow, /source-fingerprint/);
+  assert.match(backupWorkflow, /Target restore sama dengan database produksi/);
   assert.match(backupWorkflow, /retention-days: 14/);
   assert.doesNotMatch(backupWorkflow, /upload-artifact[\s\S]+e-posyandu\.dump(?:\n|$)/);
   assert.match(ciWorkflow, /npm run check/);
@@ -263,6 +265,7 @@ test('backup diverifikasi dan restore drill memeriksa isi database', async () =>
 
   assert.match(verify, /pg_restore --list/);
   assert.match(verify, /schema_migrations/);
+  assert.match(restore, /pg_restore --dbname="\$RESTORE_DATABASE_URL"/);
   assert.match(restore, /Tabel public\.children tidak ditemukan setelah restore/);
   assert.match(restore, /latest_migration/);
 });

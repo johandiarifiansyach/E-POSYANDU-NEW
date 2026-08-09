@@ -18,7 +18,7 @@ backup_file="${1:?Berikan path file .dump yang akan diuji.}"
 command -v pg_restore >/dev/null 2>&1 || { echo "pg_restore belum terpasang." >&2; exit 1; }
 command -v psql >/dev/null 2>&1 || { echo "psql belum terpasang." >&2; exit 1; }
 
-pg_restore "$RESTORE_DATABASE_URL" \
+pg_restore --dbname="$RESTORE_DATABASE_URL" \
   --clean \
   --if-exists \
   --no-owner \
