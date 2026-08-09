@@ -13,6 +13,18 @@ export const RELEASE_HISTORY: AppRelease[] = [
     version: APP_VERSION,
     releaseDate: '10 Agustus 2026',
     releaseDateIso: '2026-08-10',
+    title: 'Tabel Balita Lebih Cepat dan Stabil',
+    changes: [
+      'Tabel balita kini hanya membaca cache untuk 10 data yang sedang tampil, bukan seluruh data di perangkat.',
+      'Cache balita dan pengukuran diproses berdasarkan ID dalam satu transaksi IndexedDB agar tetap ringan di HP kader.',
+      'Permintaan API, GraphQL, login, dan pembaruan sesi memiliki batas waktu 20 detik sehingga loading tidak menggantung.',
+      'Cache aplikasi diperbarui agar perbaikan segera diterima oleh perangkat yang sebelumnya menyimpan versi lama.'
+    ]
+  },
+  {
+    version: '3.5.0',
+    releaseDate: '10 Agustus 2026',
+    releaseDateIso: '2026-08-10',
     title: 'Ketahanan Operasional dan Worker Terukur',
     changes: [
       'Queue dan worker gRPC menangani validasi impor, kalkulasi laporan, serta persiapan ekspor tanpa memperlambat login dan CRUD.',

@@ -167,6 +167,33 @@ export async function getCachedDocument(tableName: string, id: string): Promise<
   }
 }
 
+export async function getCachedDocumentsByIds(tableName: string, ids: string[]): Promise<CachedDocument[]> {
+  const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+  if (uniqueIds.length === 0) return [];
+  const keys = uniqueIds.map((id) => documentKey(tableName, id));
+
+  if (!canUseIndexedDb()) {
+    return keys.flatMap((key) => {
+      const document = memoryDocuments.get(key);
+      return document ? [document] : [];
+    });
+  }
+
+  try {
+    return await runStore(DOCUMENT_STORE, 'readonly', async (store) => {
+      const documents = await Promise.all(
+        keys.map((key) => requestResult(store.get(key)) as Promise<CachedDocument | undefined>)
+      );
+      return documents.filter((document): document is CachedDocument => Boolean(document));
+    });
+  } catch {
+    return keys.flatMap((key) => {
+      const document = memoryDocuments.get(key);
+      return document ? [document] : [];
+    });
+  }
+}
+
 export async function putCachedDocument(document: CachedDocument): Promise<void> {
   memoryDocuments.set(document.key, document);
 
@@ -229,7 +256,10 @@ export async function cacheRemoteDocuments(
   tableName: string,
   documents: Array<{ id: string; data: Record<string, any>; createdAt: string; updatedAt: string }>
 ): Promise<void> {
-  const currentDocuments = new Map((await getCachedDocuments(tableName)).map((document) => [document.key, document]));
+  const currentDocuments = new Map(
+    (await getCachedDocumentsByIds(tableName, documents.map((document) => document.id)))
+      .map((document) => [document.key, document])
+  );
   const toStore: CachedDocument[] = [];
 
   documents.forEach((document) => {

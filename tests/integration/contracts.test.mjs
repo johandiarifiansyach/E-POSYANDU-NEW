@@ -58,6 +58,23 @@ test('dashboard, masalah gizi, dan ASI memakai sumber serta cakupan data yang sa
   assert.match(client, /query ExclusiveBreastfeedingPage/);
 });
 
+test('halaman balita hanya membaca cache untuk ID yang sedang ditampilkan', async () => {
+  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
+  const offlineStore = await readFile(
+    resolve(root, 'frontend/src/services/offlineStore.ts'),
+    'utf8'
+  );
+  const cacheRemoteDocuments = offlineStore.slice(
+    offlineStore.indexOf('export async function cacheRemoteDocuments'),
+    offlineStore.indexOf('export async function queueMutation')
+  );
+
+  assert.match(client, /getCachedDocumentsByIds\('children', response\.items\.map/);
+  assert.match(cacheRemoteDocuments, /getCachedDocumentsByIds\(tableName, documents\.map/);
+  assert.doesNotMatch(cacheRemoteDocuments, /getCachedDocuments\(tableName\)/);
+  assert.match(client, /API_REQUEST_TIMEOUT_MS = 20_000/);
+});
+
 test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
   const document = await readJson('backend/openapi.json');
   const application = await readJson('package.json');

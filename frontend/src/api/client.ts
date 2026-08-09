@@ -4,6 +4,7 @@ import {
   completeMutation,
   getCachedDocument,
   getCachedDocuments,
+  getCachedDocumentsByIds,
   getPendingMutations,
   getSyncConflicts,
   makeCachedDocument,
@@ -310,6 +311,7 @@ const API_BASE_URL = (
 const LEGACY_SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
 const LEGACY_SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 const FULL_SYNC_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const API_REQUEST_TIMEOUT_MS = 20_000;
 const SYNC_STATE_PREFIX = 'e-posyandu:sync-state:';
 const AUTH_SESSION_KEY = 'e-posyandu:auth-session';
 
@@ -527,7 +529,7 @@ type SupabaseAuthResponse = {
 
 async function supabaseAuthRequest(path: string, body: Record<string, string>): Promise<SupabaseAuthResponse> {
   const { url, publishableKey } = authConfig();
-  const response = await fetch(`${url}/auth/v1${path}`, {
+  const response = await fetchWithTimeout(`${url}/auth/v1${path}`, {
     method: 'POST',
     headers: {
       apikey: publishableKey,
@@ -551,7 +553,7 @@ async function supabaseAuthRequest(path: string, body: Record<string, string>): 
 
 async function usernameLoginRequest(username: string, password: string, turnstileToken?: string): Promise<SupabaseAuthResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-  const response = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
+  const response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/auth/login`, {
     method: 'POST',
     headers: {
       Accept: 'application/json',
@@ -606,11 +608,39 @@ function createRequestId() {
   return `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = API_REQUEST_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort();
+  if (init.signal?.aborted) controller.abort();
+  else init.signal?.addEventListener('abort', abortFromCaller, { once: true });
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) {
+      throw new Error('Layanan terlalu lama merespons. Silakan coba lagi.');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+    init.signal?.removeEventListener('abort', abortFromCaller);
+  }
+}
+
 async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const accessToken = await getAccessToken(authState);
   let response: Response;
   try {
-    response = await fetch(apiUrl(path), {
+    response = await fetchWithTimeout(apiUrl(path), {
       ...init,
       headers: {
         Accept: 'application/json',
@@ -645,7 +675,7 @@ async function graphQlRequest<T>(query: string, variables: Record<string, unknow
   const accessToken = await getAccessToken(authState);
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/api/v1/graphql`, {
+    response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/graphql`, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -854,7 +884,7 @@ export async function getChildrenPage(request: ChildrenPageRequest): Promise<Chi
   ]);
 
   const pendingChildren = new Map(
-    (await getCachedDocuments('children'))
+    (await getCachedDocumentsByIds('children', response.items.map((item) => item.id)))
       .filter((document) => document.pending)
       .map((document) => [document.id, document])
   );
