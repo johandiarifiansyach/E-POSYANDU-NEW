@@ -11,6 +11,20 @@ export type AppRelease = {
 export const RELEASE_HISTORY: AppRelease[] = [
   {
     version: APP_VERSION,
+    releaseDate: '10 Agustus 2026',
+    releaseDateIso: '2026-08-10',
+    title: 'Ketahanan Operasional dan Worker Terukur',
+    changes: [
+      'Queue dan worker gRPC menangani validasi impor, kalkulasi laporan, serta persiapan ekspor tanpa memperlambat login dan CRUD.',
+      'Backup PostgreSQL terenkripsi dan uji restore ke lingkungan staging telah diaktifkan dan diverifikasi melalui GitHub Actions.',
+      'Monitoring terpadu memeriksa frontend, API, kesiapan layanan, Queue, R2, dan nutrition worker dengan laporan terstruktur.',
+      'Konflik sinkronisasi offline diperkuat dengan versioning, idempotensi, dan pilihan data saat perangkat serta server mengubah kolom yang sama.',
+      'Penyimpanan sementara R2 dibersihkan otomatis sebelum melewati batas gratis dan hasil pekerjaan berat memiliki retensi terkontrol.',
+      'Render hanya dipertahankan aktif pada hari kerja pukul 07.00-16.00 WIB agar kuota gratis lebih hemat.'
+    ]
+  },
+  {
+    version: '3.4.5',
     releaseDate: '5 Agustus 2026',
     releaseDateIso: '2026-08-05',
     title: 'Sinkronisasi Penimbangan Terisolasi',
@@ -23,7 +37,7 @@ export const RELEASE_HISTORY: AppRelease[] = [
     ]
   },
   {
-    version: '4.4.4',
+    version: '3.4.4',
     releaseDate: '5 Agustus 2026',
     releaseDateIso: '2026-08-05',
     title: 'Form Stabil dan Penimbangan Lebih Ringan',
@@ -36,7 +50,7 @@ export const RELEASE_HISTORY: AppRelease[] = [
     ]
   },
   {
-    version: '4.4.3',
+    version: '3.4.3',
     releaseDate: '4 Agustus 2026',
     releaseDateIso: '2026-08-04',
     title: 'Input Pengukuran Desimal Stabil di HP',

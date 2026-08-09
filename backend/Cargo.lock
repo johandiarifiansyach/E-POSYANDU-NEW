@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "e-posyandu-cloudflare-worker"
-version = "4.4.5"
+version = "3.5.0"
 dependencies = [
  "base64",
  "graphql-parser",

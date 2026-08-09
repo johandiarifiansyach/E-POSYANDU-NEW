@@ -252,11 +252,10 @@ test('monitoring terpadu dan load test Queue gRPC memiliki batas aman', async ()
 
   assert.match(monitor, /health\/ready/);
   assert.match(monitor, /nutrition-worker/);
-  assert.match(monitorWorkflow, /7,37 23 \* \* SUN-THU/);
-  assert.match(monitorWorkflow, /7,37 0-10 \* \* MON-FRI/);
-  assert.match(workerConfig, /50 22 \* \* SUN-THU/);
-  assert.match(workerConfig, /\*\/10 23 \* \* SUN-THU/);
-  assert.match(workerConfig, /\*\/10 0-10 \* \* MON-FRI/);
+  assert.match(monitorWorkflow, /7,37 0-8 \* \* MON-FRI/);
+  assert.match(monitorWorkflow, /0 9 \* \* MON-FRI/);
+  assert.match(workerConfig, /\*\/10 0-8 \* \* MON-FRI/);
+  assert.match(workerConfig, /0 9 \* \* MON-FRI/);
   assert.match(queueLoad, /LOAD_SUPABASE_URL/);
   assert.match(queueLoad, /LOAD_SUPABASE_PUBLISHABLE_KEY/);
   assert.match(queueLoad, /LOAD_TEST_EMAIL/);
