@@ -16,7 +16,7 @@ export const RELEASE_HISTORY: AppRelease[] = [
     title: 'Login Tetap Tersedia Saat API Terganggu',
     changes: [
       'Login username kini memiliki jalur pemulihan melalui Supabase Auth saat Cloudflare Worker tidak dapat dijangkau atau mencapai batas kapasitas.',
-      'Role dan wilayah akun gizi, desa, serta Posyandu Salak tetap diterapkan sesuai akun tanpa meminta profil kedua kali.',
+      'Role, status aktif, dan wilayah akun diverifikasi melalui RPC profil pribadi tanpa membuka tabel pengguna ke browser.',
       'Kesalahan kata sandi dan verifikasi keamanan tetap ditangani oleh alur normal sehingga jalur pemulihan tidak melemahkan pemeriksaan akun.',
       'Circuit breaker menahan permintaan API berulang selama gangguan dan halaman Data Balita menggunakan cache perangkat yang tersedia.',
       'Pesan mentah Load failed diganti dengan penanganan layanan yang lebih jelas dan cache PWA diperbarui.'

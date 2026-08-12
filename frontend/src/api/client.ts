@@ -582,6 +582,14 @@ type SupabaseAuthResponse = {
 
 type LoginAccount = Omit<AccessProfile, 'userId'> & { email: string };
 
+type SupabaseAccessProfile = {
+  user_id: string;
+  email: string | null;
+  role: string;
+  village: string | null;
+  posyandu: string | null;
+};
+
 const VILLAGE_LOGIN_ACCOUNTS: Record<string, { email: string; desa: string }> = {
   desagumukmas: { email: 'desagumukmas@posyandu.com', desa: 'Desa Gumukmas' },
   desakepanjen: { email: 'desakepanjen@posyandu.com', desa: 'Desa Kepanjen' },
@@ -666,6 +674,49 @@ async function supabaseAuthRequest(path: string, body: Record<string, string>): 
   return response.json() as Promise<SupabaseAuthResponse>;
 }
 
+async function supabaseAccessProfile(accessToken: string): Promise<AccessProfile> {
+  const { url, publishableKey } = authConfig();
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${url}/rest/v1/rpc/eposyandu_current_access_profile`, {
+      method: 'POST',
+      headers: {
+        apikey: publishableKey,
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: '{}'
+    });
+  } catch (error) {
+    if (isNetworkError(error)) {
+      throw new Error('Profil akses belum dapat diverifikasi. Periksa koneksi lalu coba lagi.');
+    }
+    throw error;
+  }
+  if (!response.ok) {
+    throw new Error(await responseErrorDetail(response, 'Profil akses akun belum dapat diverifikasi.'));
+  }
+  const profiles = await response.json() as SupabaseAccessProfile[];
+  const profile = profiles[0];
+  if (!profile) throw new Error('Akun ini belum diberi akses aplikasi atau sudah dinonaktifkan.');
+  if (!['Kader Posyandu', 'Bidan Desa', 'Ahli Gizi'].includes(profile.role)) {
+    throw new Error('Peran akun tidak valid.');
+  }
+  if (profile.role === 'Kader Posyandu' && (!profile.village || !profile.posyandu)) {
+    throw new Error('Wilayah kader belum lengkap.');
+  }
+  if (profile.role === 'Bidan Desa' && !profile.village) {
+    throw new Error('Wilayah bidan belum lengkap.');
+  }
+  return {
+    userId: profile.user_id,
+    email: profile.email,
+    role: profile.role,
+    desa: profile.village,
+    posyandu: profile.posyandu
+  };
+}
+
 async function usernameLoginRequest(username: string, password: string, turnstileToken?: string): Promise<SupabaseAuthResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
   ensureApiRequestAllowed();
@@ -708,16 +759,8 @@ async function directSupabaseUsernameLogin(username: string, password: string): 
     }
     throw error;
   }
-  return {
-    ...response,
-    profile: {
-      userId: response.user.id,
-      email: response.user.email || account.email,
-      role: account.role,
-      desa: account.desa,
-      posyandu: account.posyandu
-    }
-  };
+  const profile = await supabaseAccessProfile(response.access_token);
+  return { ...response, profile };
 }
 
 function sessionFromResponse(response: SupabaseAuthResponse): AuthUser {

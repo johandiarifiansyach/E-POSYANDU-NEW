@@ -148,6 +148,7 @@ test('login memakai profil dari respons yang sama tanpa meminta endpoint me', as
 
 test('login beralih ke Supabase Auth saat Worker mencapai batas kapasitas', async ({ page }) => {
   let directAuthRequests = 0;
+  let directProfileRequests = 0;
   let profileRequests = 0;
   await page.route('http://127.0.0.1:9/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -176,6 +177,21 @@ test('login beralih ke Supabase Auth saat Worker mencapai batas kapasitas', asyn
       }
     });
   });
+  await page.route('http://127.0.0.1:54321/rest/v1/rpc/eposyandu_current_access_profile', async (route) => {
+    directProfileRequests += 1;
+    expect(route.request().headers().authorization).toBe('Bearer access-token-fallback');
+    await route.fulfill({
+      status: 200,
+      headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' },
+      json: [{
+        user_id: 'user-gizi',
+        email: 'gizipuskesmasgumukmas@gmail.com',
+        role: 'Ahli Gizi',
+        village: null,
+        posyandu: null
+      }]
+    });
+  });
 
   await page.goto('/');
   await page.getByLabel('Username').fill('gizi');
@@ -189,5 +205,6 @@ test('login beralih ke Supabase Auth saat Worker mencapai batas kapasitas', asyn
     posyandu: null
   }));
   expect(directAuthRequests).toBe(1);
+  expect(directProfileRequests).toBe(1);
   expect(profileRequests).toBe(0);
 });
