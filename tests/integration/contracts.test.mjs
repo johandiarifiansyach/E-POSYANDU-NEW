@@ -14,7 +14,7 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '018_authenticated_measurement_write_fallback.sql');
+  assert.equal(files.at(-1), '019_restore_location_access_helper.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
@@ -72,6 +72,21 @@ test('fallback tulis penimbangan bersifat atomik dan hanya menerima kolom ringka
   assert.match(client, /supportsAuthenticatedMeasurementFallback/);
   assert.match(client, /eposyandu_self_sync_measurement_batch/);
   assert.match(client, /if \(!isNetworkError\(error\)\) throw error/);
+});
+
+test('helper akses wilayah dipulihkan untuk jalur penimbangan terautentikasi', async () => {
+  const migration = await readFile(
+    resolve(root, 'database/migrations/019_restore_location_access_helper.sql'),
+    'utf8'
+  );
+
+  assert.match(migration, /create or replace function public\.eposyandu_location_allowed/);
+  assert.match(migration, /users\.user_id = auth\.uid\(\)/);
+  assert.match(migration, /users\.role = 'Ahli Gizi'/);
+  assert.match(migration, /users\.role = 'Bidan Desa' and users\.village = p_village/);
+  assert.match(migration, /users\.role = 'Kader Posyandu'/);
+  assert.match(migration, /revoke all on function public\.eposyandu_location_allowed\(text, text\) from public, anon/);
+  assert.match(migration, /grant execute on function public\.eposyandu_location_allowed\(text, text\) to authenticated, service_role/);
 });
 
 test('dashboard dan daftar balita memakai tanggal acuan umur yang sama', async () => {
