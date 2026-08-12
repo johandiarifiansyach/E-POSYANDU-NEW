@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { addDoc, collection, deleteDoc, doc, onSnapshot, query, serverTimestamp, syncPendingMutations, updateDoc, where } from '../api/client';
+import { addDoc, collection, deleteDoc, doc, onSnapshot, query, serverTimestamp, syncMeasurementMutationsNow, syncPendingMutations, updateDoc, where } from '../api/client';
 import Native, { useEffect, useMemo, useState } from '../runtime/dom';
 import { actionTooltipProps } from '../ui/actionTooltip';
 import { CheckCircle2, ChevronLeft, History, Loader2, Pencil, Plus, Scale, Trash2 } from '../ui/icons';
@@ -224,11 +224,11 @@ export default function MeasurementPage({ child, onBack }) {
                 updatedAt: serverTimestamp()
             };
             const measurementMutation = editingMeasurementId
-                ? await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'measurements', editingMeasurementId), measurementData)
+                ? await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'measurements', editingMeasurementId), measurementData, { deferSync: true })
                 : await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'measurements'), {
                     ...measurementData,
                     createdAt: serverTimestamp()
-                });
+                }, { deferSync: true });
             const measurementId = editingMeasurementId || measurementMutation.id;
             const projectedHistory = [
                 ...history.filter((item) => item.id !== measurementId),
@@ -243,7 +243,7 @@ export default function MeasurementPage({ child, onBack }) {
                     const statusMutation = await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'measurements', item.id), {
                         statusNaik: recalculatedStatus,
                         updatedAt: serverTimestamp()
-                    });
+                    }, { deferSync: true });
                     statusMutationIds.push(statusMutation.mutationId);
                 }
                 item.statusNaik = recalculatedStatus;
@@ -256,8 +256,8 @@ export default function MeasurementPage({ child, onBack }) {
                 currentLK: latestMeasurement?.lk ?? child.lkLahir ?? null,
                 lastMeasurementDate: latestMeasurement?.tglUkur ?? null,
                 updatedAt: serverTimestamp()
-            });
-            await syncPendingMutations([measurementMutation.mutationId, ...statusMutationIds, childMutation.mutationId]);
+            }, { deferSync: true });
+            await syncMeasurementMutationsNow([measurementMutation.mutationId, ...statusMutationIds, childMutation.mutationId]);
             setHistory(projectedHistory);
             showSuccess(editingMeasurementId ? 'Data penimbangan berhasil diperbarui.' : 'Data penimbangan berhasil disimpan.');
             handleShowHistory();

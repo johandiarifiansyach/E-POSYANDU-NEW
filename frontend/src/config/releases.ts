@@ -13,6 +13,19 @@ export const RELEASE_HISTORY: AppRelease[] = [
     version: APP_VERSION,
     releaseDate: '12 Agustus 2026',
     releaseDateIso: '2026-08-12',
+    title: 'Simpan Penimbangan Tanpa Menunggu Antrean Lama',
+    changes: [
+      'Penimbangan yang baru disimpan kini diprioritaskan dan tidak lagi menunggu seluruh antrean perubahan lama di perangkat.',
+      'Data pengukuran dan ringkasan balita dikirim langsung melalui PostgreSQL terautentikasi tanpa menunggu Worker Cloudflare yang sedang mencapai limit.',
+      'Pemicu sinkronisasi otomatis ditahan sampai satu paket penimbangan selesai dirakit agar tidak terjadi proses ganda yang memperlambat ponsel.',
+      'Antrean perubahan lain tetap diproses aman di latar belakang setelah penimbangan aktif berhasil disimpan.',
+      'Pengujian desktop dan ponsel memastikan penyimpanan selesai cepat meskipun endpoint Worker sengaja diperlambat.'
+    ]
+  },
+  {
+    version: '3.5.4',
+    releaseDate: '12 Agustus 2026',
+    releaseDateIso: '2026-08-12',
     title: 'Penimbangan Tetap Tersimpan Saat API Terganggu',
     changes: [
       'Penimbangan baru, edit penimbangan, hapus riwayat, dan ringkasan pengukuran balita tetap dapat disinkronkan saat Cloudflare Worker mencapai batas kapasitas.',

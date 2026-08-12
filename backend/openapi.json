@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "E-Posyandu Puskesmas Gumukmas API",
-    "version": "3.5.4",
+    "version": "3.5.5",
     "description": "REST API untuk autentikasi, CRUD, sinkronisasi, dan ekspor, serta endpoint GraphQL baca E-Posyandu."
   },
   "servers": [

@@ -100,7 +100,8 @@ async function configureAuthenticatedPage(
   includeChildrenCollection = false,
   changeLogs = [] as typeof changeHistoryEntries,
   returnSyncConflict = false,
-  cloudflareCapacityFails = false
+  cloudflareCapacityFails = false,
+  syncDelayMs = 0
 ) {
   const syncedMutations: Array<Record<string, any>> = [];
   let activeChild: { id: string; data: Record<string, any> } = {
@@ -255,6 +256,7 @@ async function configureAuthenticatedPage(
       return;
     }
     if (path.endsWith('/sync')) {
+      if (syncDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, syncDelayMs));
       if (cloudflareCapacityFails) {
         await route.fulfill({
           status: 429,
@@ -556,7 +558,7 @@ test('sidebar desktop dapat diciutkan menjadi ikon dan dibuka kembali', async ({
   await expect(sidebarLabel).toBeVisible();
   await expect(sidebarBrand).toBeVisible();
   await expect(sidebarBrand).toContainText('E-Posyandu');
-  await expect(sidebarBrand).toContainText('v3.5.4');
+  await expect(sidebarBrand).toContainText('v3.5.5');
   await expect(page.getByRole('button', { name: 'Ringkas Menu', exact: true })).toBeVisible();
   await expect(page.locator('.app-sidebar')).toHaveCSS('width', '280px');
 
@@ -627,7 +629,7 @@ test('header bersih, periode berada di panel data, tema dan footer berfungsi', a
   }
 
   await expect(page.locator('.app-footer')).toContainText('© 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach');
-  const versionButton = page.locator('.app-footer').getByRole('button', { name: 'E-Posyandu v3.5.4' });
+  const versionButton = page.locator('.app-footer').getByRole('button', { name: 'E-Posyandu v3.5.5' });
   await expect(versionButton).toBeVisible();
   await versionButton.click();
   const releaseDialog = page.getByRole('dialog', { name: 'Apa yang Baru' });
@@ -841,7 +843,7 @@ test('form penimbangan memakai tata letak iOS yang responsif', async ({ page }) 
 });
 
 test('penimbangan tetap tersimpan saat batas harian Cloudflare tercapai', async ({ page }) => {
-  const { syncedMutations } = await configureAuthenticatedPage(page, false, false, [], false, true);
+  const { syncedMutations } = await configureAuthenticatedPage(page, false, false, [], false, true, 5_000);
   await page.goto('/#data_balita');
   await page.getByRole('button', { name: 'Pengukuran Balita', exact: true }).click();
   await page.getByRole('tab', { name: 'Tambah' }).click();
@@ -851,9 +853,11 @@ test('penimbangan tetap tersimpan saat batas harian Cloudflare tercapai', async 
   await measurementPage.locator('input[name="tb"]').fill('73.7');
   await measurementPage.locator('input[name="lila"]').fill('13.3');
   await measurementPage.locator('input[name="lk"]').fill('44.2');
+  const saveStartedAt = Date.now();
   await page.getByRole('button', { name: 'Simpan Pengukuran' }).click();
 
-  await expect(page.getByText('Data penimbangan berhasil disimpan.')).toBeVisible();
+  await expect(page.getByText('Data penimbangan berhasil disimpan.')).toBeVisible({ timeout: 3_000 });
+  expect(Date.now() - saveStartedAt).toBeLessThan(3_000);
   await expect(page.getByRole('tab', { name: 'Riwayat' })).toHaveClass(/is-active/);
   await expect.poll(() => syncedMutations.some((mutation) => (
     mutation.resource === 'measurements' && mutation.data?.bb === 5.35

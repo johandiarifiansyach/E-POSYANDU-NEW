@@ -1855,7 +1855,12 @@ type SyncRunResult = {
   syncedCount: number;
 };
 
+type MutationWriteOptions = {
+  deferSync?: boolean;
+};
+
 let syncPromise: Promise<SyncRunResult> | null = null;
+const deferredSyncMutationIds = new Set<string>();
 const syncedMutationListeners = new Set<() => void>();
 
 export function subscribeToSyncedMutations(listener: () => void): () => void {
@@ -2134,17 +2139,7 @@ async function authenticatedMeasurementFallback(batch: PendingMutation[]): Promi
   };
 }
 
-async function syncFastApiBatch(batch: PendingMutation[]): Promise<SyncRunResult> {
-  let response: SyncResponse;
-  try {
-    response = await apiRequest<SyncResponse>('/sync', {
-      method: 'POST',
-      body: JSON.stringify({ mutations: batch.map(syncMutationPayload), pull: [] })
-    });
-  } catch (error) {
-    if (!isNetworkError(error)) throw error;
-    response = await authenticatedMeasurementFallback(batch);
-  }
+async function applySyncResponse(batch: PendingMutation[], response: SyncResponse): Promise<SyncRunResult> {
   const results = new Map(response.results.map((result) => [result.id, result]));
   if (results.size !== batch.length || batch.some((mutation) => !results.has(mutation.id))) {
     throw new Error('Respons sinkronisasi tidak lengkap. Data tetap disimpan untuk dicoba kembali.');
@@ -2181,6 +2176,20 @@ async function syncFastApiBatch(batch: PendingMutation[]): Promise<SyncRunResult
   return { errors, syncedCount };
 }
 
+async function syncFastApiBatch(batch: PendingMutation[]): Promise<SyncRunResult> {
+  let response: SyncResponse;
+  try {
+    response = await apiRequest<SyncResponse>('/sync', {
+      method: 'POST',
+      body: JSON.stringify({ mutations: batch.map(syncMutationPayload), pull: [] })
+    });
+  } catch (error) {
+    if (!isNetworkError(error)) throw error;
+    response = await authenticatedMeasurementFallback(batch);
+  }
+  return applySyncResponse(batch, response);
+}
+
 async function runPendingMutationSync(): Promise<SyncRunResult> {
   const errors = new Map<string, Error>();
   let syncedCount = 0;
@@ -2190,7 +2199,7 @@ async function runPendingMutationSync(): Promise<SyncRunResult> {
     if (usesFastApi()) {
       while (true) {
         const pending = orderedPendingMutations(await getPendingMutations())
-          .filter((mutation) => !attempted.has(mutation.id));
+          .filter((mutation) => !attempted.has(mutation.id) && !deferredSyncMutationIds.has(mutation.id));
         if (pending.length === 0) break;
         const batch = nextSyncBatch(pending);
         batch.forEach((mutation) => attempted.add(mutation.id));
@@ -2210,7 +2219,9 @@ async function runPendingMutationSync(): Promise<SyncRunResult> {
 
     while (true) {
       const mutation = nextPendingMutation(
-        (await getPendingMutations()).filter((entry) => !attempted.has(entry.id))
+        (await getPendingMutations()).filter(
+          (entry) => !attempted.has(entry.id) && !deferredSyncMutationIds.has(entry.id)
+        )
       );
       if (!mutation) break;
       attempted.add(mutation.id);
@@ -2258,6 +2269,54 @@ export async function syncPendingMutations(focusMutationIds: string[] = []): Pro
   if (relevantErrors.length > 0) throw relevantErrors[0][1];
 }
 
+export async function syncMeasurementMutationsNow(focusMutationIds: string[]): Promise<void> {
+  const focusedIds = new Set(focusMutationIds.filter(Boolean));
+  if (focusedIds.size === 0) return;
+  const releaseFocusedMutations = () => focusedIds.forEach((id) => deferredSyncMutationIds.delete(id));
+  if (!isOnline()) {
+    releaseFocusedMutations();
+    return;
+  }
+
+  const errors = new Map<string, Error>();
+  let syncedCount = 0;
+  const attempted = new Set<string>();
+
+  try {
+    await runOnlineOperation(async () => {
+      while (true) {
+        const focused = orderedPendingMutations(await getPendingMutations())
+          .filter((mutation) => focusedIds.has(mutation.id) && !attempted.has(mutation.id));
+        if (focused.length === 0) break;
+
+        const batch = nextSyncBatch(focused);
+        batch.forEach((mutation) => attempted.add(mutation.id));
+        if (batch.some((mutation) => !supportsAuthenticatedMeasurementFallback(mutation))) {
+          throw new Error('Paket perubahan penimbangan berisi data yang tidak diizinkan.');
+        }
+
+        try {
+          const response = await authenticatedMeasurementFallback(batch);
+          const outcome = await applySyncResponse(batch, response);
+          syncedCount += outcome.syncedCount;
+          outcome.errors.forEach((error, id) => errors.set(id, error));
+        } catch (error) {
+          const normalizedError = error instanceof Error ? error : new Error(String(error));
+          await Promise.all(batch.map((mutation) => markMutationError(mutation, normalizedError)));
+          batch.forEach((mutation) => errors.set(mutation.id, normalizedError));
+          break;
+        }
+      }
+    });
+
+    if (syncedCount > 0) notifySyncedMutations();
+    if (errors.size > 0) throw errors.values().next().value;
+  } finally {
+    releaseFocusedMutations();
+    requestSync();
+  }
+}
+
 function requestSync() {
   if (isOnline()) void syncPendingMutations().catch(() => {
     // The queued mutation remains available and is retried by the next online action.
@@ -2277,13 +2336,18 @@ export async function syncActiveViewFromServer(): Promise<void> {
   });
 }
 
-export async function addDoc(ref: CollectionRef, payload: Record<string, any>): Promise<{ id: string; mutationId: string }> {
+export async function addDoc(
+  ref: CollectionRef,
+  payload: Record<string, any>,
+  options: MutationWriteOptions = {}
+): Promise<{ id: string; mutationId: string }> {
   const now = new Date().toISOString();
   const id = createId();
   const data = normalizeForWrite(payload);
   await putCachedDocument(makeCachedDocument(ref.tableName, id, data, now, now));
   const mutation = await queueMutation({ type: 'add', tableName: ref.tableName, documentId: id, payload: { data, createdAt: now } });
-  requestSync();
+  if (options.deferSync) deferredSyncMutationIds.add(mutation.id);
+  else requestSync();
   return { id, mutationId: mutation.id };
 }
 
@@ -2291,7 +2355,11 @@ export async function getDocs(ref: QueryRef): Promise<QuerySnapshot<DocumentData
   return readCachedQuery(ref);
 }
 
-export async function updateDoc(ref: DocRef, patch: Record<string, any>): Promise<{ mutationId: string }> {
+export async function updateDoc(
+  ref: DocRef,
+  patch: Record<string, any>,
+  options: MutationWriteOptions = {}
+): Promise<{ mutationId: string }> {
   const now = new Date().toISOString();
   const normalizedPatch = normalizeForWrite(patch);
   const existing = await getCachedDocument(ref.tableName, ref.id);
@@ -2311,7 +2379,8 @@ export async function updateDoc(ref: DocRef, patch: Record<string, any>): Promis
     documentId: ref.id,
     payload: { data: normalizedPatch, baseData, expectedVersion, expectedUpdatedAt }
   });
-  requestSync();
+  if (options.deferSync) deferredSyncMutationIds.add(mutation.id);
+  else requestSync();
   return { mutationId: mutation.id };
 }
 
