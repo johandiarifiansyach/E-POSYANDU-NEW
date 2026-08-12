@@ -11,6 +11,19 @@ export type AppRelease = {
 export const RELEASE_HISTORY: AppRelease[] = [
   {
     version: APP_VERSION,
+    releaseDate: '12 Agustus 2026',
+    releaseDateIso: '2026-08-12',
+    title: 'Login Tetap Tersedia Saat API Terganggu',
+    changes: [
+      'Login username kini memiliki jalur pemulihan melalui Supabase Auth saat Cloudflare Worker tidak dapat dijangkau atau mencapai batas kapasitas.',
+      'Role dan wilayah akun gizi, desa, serta Posyandu Salak tetap diterapkan sesuai akun tanpa meminta profil kedua kali.',
+      'Kesalahan kata sandi dan verifikasi keamanan tetap ditangani oleh alur normal sehingga jalur pemulihan tidak melemahkan pemeriksaan akun.',
+      'Circuit breaker menahan permintaan API berulang selama gangguan dan halaman Data Balita menggunakan cache perangkat yang tersedia.',
+      'Pesan mentah Load failed diganti dengan penanganan layanan yang lebih jelas dan cache PWA diperbarui.'
+    ]
+  },
+  {
+    version: '3.5.1',
     releaseDate: '10 Agustus 2026',
     releaseDateIso: '2026-08-10',
     title: 'Tabel Balita Lebih Cepat dan Stabil',

@@ -27,6 +27,8 @@ export default defineConfig({
     env: {
       ...process.env,
       VITE_API_URL: 'http://127.0.0.1:9',
+      VITE_SUPABASE_URL: 'http://127.0.0.1:54321',
+      VITE_SUPABASE_ANON_KEY: 'publishable-key-e2e',
       VITE_TURNSTILE_SITE_KEY: ''
     }
   }

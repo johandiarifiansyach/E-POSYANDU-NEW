@@ -312,8 +312,10 @@ const LEGACY_SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\
 const LEGACY_SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 const FULL_SYNC_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const API_REQUEST_TIMEOUT_MS = 20_000;
+const API_RETRY_DELAY_MS = 10 * 60 * 1000;
 const SYNC_STATE_PREFIX = 'e-posyandu:sync-state:';
 const AUTH_SESSION_KEY = 'e-posyandu:auth-session';
+const API_UNAVAILABLE_UNTIL_KEY = 'e-posyandu:api-unavailable-until';
 
 const authState: Auth = { currentUser: null };
 const authListeners = new Set<(user: AuthUser | null) => void>();
@@ -395,10 +397,61 @@ function isOnline() {
   return typeof navigator === 'undefined' || navigator.onLine;
 }
 
+class ApiUnavailableError extends Error {
+  constructor(message = 'Layanan API sementara tidak tersedia. Data tersimpan di perangkat tetap dapat digunakan.') {
+    super(message);
+    this.name = 'ApiUnavailableError';
+  }
+}
+
 function isNetworkError(error: unknown) {
   if (!isOnline()) return true;
+  if (error instanceof ApiUnavailableError) return true;
   const message = error instanceof Error ? error.message : String(error);
-  return /failed to fetch|network|offline|load failed|fetch failed|connection/i.test(message);
+  return /failed to fetch|network|offline|load failed|fetch failed|connection|tidak dapat terhubung|sementara tidak tersedia|terlalu lama merespons|error code:\s*1027/i.test(message);
+}
+
+function apiUnavailableUntil() {
+  if (typeof window === 'undefined') return 0;
+  const value = Number(window.sessionStorage.getItem(API_UNAVAILABLE_UNTIL_KEY));
+  return Number.isFinite(value) ? value : 0;
+}
+
+function markApiUnavailable(durationMs = API_RETRY_DELAY_MS) {
+  if (typeof window === 'undefined') return;
+  window.sessionStorage.setItem(API_UNAVAILABLE_UNTIL_KEY, String(Date.now() + durationMs));
+}
+
+function clearApiUnavailable() {
+  if (typeof window === 'undefined') return;
+  window.sessionStorage.removeItem(API_UNAVAILABLE_UNTIL_KEY);
+}
+
+function ensureApiRequestAllowed() {
+  if (apiUnavailableUntil() > Date.now()) throw new ApiUnavailableError();
+  clearApiUnavailable();
+}
+
+function isCloudflareCapacityResponse(status: number, body: string) {
+  return status === 429 && /error code:\s*1027|daily request limit|worker.*limit/i.test(body);
+}
+
+async function responseErrorDetail(response: Response, fallback: string): Promise<string> {
+  const body = await response.text();
+  if (isCloudflareCapacityResponse(response.status, body)) {
+    markApiUnavailable();
+    throw new ApiUnavailableError();
+  }
+  try {
+    const payload = JSON.parse(body);
+    if (typeof payload?.detail === 'string') return payload.detail;
+    if (typeof payload?.msg === 'string') return payload.msg;
+    if (typeof payload?.message === 'string') return payload.message;
+    if (typeof payload?.errors?.[0]?.message === 'string') return payload.errors[0].message;
+  } catch {
+    // Keep the safe fallback when the service cannot return JSON.
+  }
+  return fallback;
 }
 
 type QuerySyncState = {
@@ -527,16 +580,78 @@ type SupabaseAuthResponse = {
   profile?: AccessProfile;
 };
 
+type LoginAccount = Omit<AccessProfile, 'userId'> & { email: string };
+
+const VILLAGE_LOGIN_ACCOUNTS: Record<string, { email: string; desa: string }> = {
+  desagumukmas: { email: 'desagumukmas@posyandu.com', desa: 'Desa Gumukmas' },
+  desakepanjen: { email: 'desakepanjen@posyandu.com', desa: 'Desa Kepanjen' },
+  desamayangan: { email: 'desamayangan@posyandu.com', desa: 'Desa Mayangan' },
+  desamenampu: { email: 'desamenampu@posyandu.com', desa: 'Desa Menampu' },
+  desapurwoasri: { email: 'desapurwoasri@posyandu.com', desa: 'Desa Purwoasri' }
+};
+
+function loginAccountForUsername(value: string): LoginAccount | null {
+  const username = value.trim().toLocaleLowerCase('id');
+  if (username === 'gizi') {
+    return {
+      email: 'gizipuskesmasgumukmas@gmail.com',
+      role: 'Ahli Gizi',
+      desa: null,
+      posyandu: null
+    };
+  }
+
+  const villageAccount = VILLAGE_LOGIN_ACCOUNTS[username];
+  if (villageAccount) {
+    return {
+      email: villageAccount.email,
+      role: 'Bidan Desa',
+      desa: villageAccount.desa,
+      posyandu: null
+    };
+  }
+
+  const salakMatch = /^salak(\d{1,2})$/.exec(username);
+  if (!salakMatch) return null;
+  const number = Number(salakMatch[1]);
+  const desa = (number >= 1 && number <= 17) || number === 99
+    ? 'Desa Gumukmas'
+    : (number >= 18 && number <= 31) || number === 98
+      ? 'Desa Menampu'
+      : number >= 32 && number <= 42
+        ? 'Desa Mayangan'
+        : number >= 43 && number <= 52
+          ? 'Desa Kepanjen'
+          : number >= 53 && number <= 61
+            ? 'Desa Purwoasri'
+            : null;
+  if (!desa) return null;
+  return {
+    email: `salak${number}@posyandu.com`,
+    role: 'Kader Posyandu',
+    desa,
+    posyandu: `SALAK ${number}`
+  };
+}
+
 async function supabaseAuthRequest(path: string, body: Record<string, string>): Promise<SupabaseAuthResponse> {
   const { url, publishableKey } = authConfig();
-  const response = await fetchWithTimeout(`${url}/auth/v1${path}`, {
-    method: 'POST',
-    headers: {
-      apikey: publishableKey,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${url}/auth/v1${path}`, {
+      method: 'POST',
+      headers: {
+        apikey: publishableKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+  } catch (error) {
+    if (isNetworkError(error)) {
+      throw new Error('Layanan autentikasi belum dapat dijangkau. Periksa koneksi lalu coba lagi.');
+    }
+    throw error;
+  }
   if (!response.ok) {
     let detail = 'Email atau kata sandi tidak dapat diverifikasi.';
     try {
@@ -553,26 +668,56 @@ async function supabaseAuthRequest(path: string, body: Record<string, string>): 
 
 async function usernameLoginRequest(username: string, password: string, turnstileToken?: string): Promise<SupabaseAuthResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-  const response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/auth/login`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      'X-Request-ID': createRequestId()
-    },
-    body: JSON.stringify({ username, password, turnstileToken })
-  });
-  if (!response.ok) {
-    let detail = 'Username atau kata sandi tidak benar.';
-    try {
-      const payload = await response.json();
-      if (typeof payload?.detail === 'string') detail = payload.detail;
-    } catch {
-      // Keep the safe generic message when the API cannot return JSON.
-    }
-    throw new Error(detail);
+  ensureApiRequestAllowed();
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Request-ID': createRequestId()
+      },
+      body: JSON.stringify({ username, password, turnstileToken })
+    });
+  } catch (error) {
+    if (!isNetworkError(error)) throw error;
+    markApiUnavailable();
+    throw new ApiUnavailableError();
   }
+  if (!response.ok) {
+    throw new Error(await responseErrorDetail(response, 'Username atau kata sandi tidak benar.'));
+  }
+  clearApiUnavailable();
   return response.json() as Promise<SupabaseAuthResponse>;
+}
+
+async function directSupabaseUsernameLogin(username: string, password: string): Promise<SupabaseAuthResponse> {
+  const account = loginAccountForUsername(username);
+  if (!account) throw new Error('Username atau kata sandi tidak benar.');
+  let response: SupabaseAuthResponse;
+  try {
+    response = await supabaseAuthRequest('/token?grant_type=password', {
+      email: account.email,
+      password
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/invalid login credentials|email or password|invalid credentials/i.test(message)) {
+      throw new Error('Username atau kata sandi tidak benar.');
+    }
+    throw error;
+  }
+  return {
+    ...response,
+    profile: {
+      userId: response.user.id,
+      email: response.user.email || account.email,
+      role: account.role,
+      desa: account.desa,
+      posyandu: account.posyandu
+    }
+  };
 }
 
 function sessionFromResponse(response: SupabaseAuthResponse): AuthUser {
@@ -637,6 +782,7 @@ async function fetchWithTimeout(
 }
 
 async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  ensureApiRequestAllowed();
   const accessToken = await getAccessToken(authState);
   let response: Response;
   try {
@@ -652,26 +798,22 @@ async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
     });
   } catch (error) {
     if (isNetworkError(error)) {
-      throw new Error('Tidak dapat terhubung ke API. Periksa koneksi lalu coba lagi.');
+      markApiUnavailable();
+      throw new ApiUnavailableError();
     }
     throw error;
   }
 
   if (response.status === 204) return undefined as T;
   if (!response.ok) {
-    let detail = `Permintaan API gagal (${response.status}).`;
-    try {
-      const body = await response.json();
-      if (typeof body?.detail === 'string') detail = body.detail;
-    } catch {
-      // Keep the HTTP status message when the server cannot return JSON.
-    }
-    throw new Error(detail);
+    throw new Error(await responseErrorDetail(response, `Permintaan API gagal (${response.status}).`));
   }
+  clearApiUnavailable();
   return response.json() as Promise<T>;
 }
 
 async function graphQlRequest<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+  ensureApiRequestAllowed();
   const accessToken = await getAccessToken(authState);
   let response: Response;
   try {
@@ -687,9 +829,14 @@ async function graphQlRequest<T>(query: string, variables: Record<string, unknow
     });
   } catch (error) {
     if (isNetworkError(error)) {
-      throw new Error('Tidak dapat terhubung ke API. Periksa koneksi lalu coba lagi.');
+      markApiUnavailable();
+      throw new ApiUnavailableError();
     }
     throw error;
+  }
+  if (!response.ok) {
+    const detail = await responseErrorDetail(response, `Permintaan GraphQL gagal (${response.status}).`);
+    throw new Error(detail);
   }
   let payload: { data?: T; errors?: Array<{ message?: string }> };
   try {
@@ -700,6 +847,7 @@ async function graphQlRequest<T>(query: string, variables: Record<string, unknow
   if (!response.ok || payload.errors?.length || !payload.data) {
     throw new Error(payload.errors?.[0]?.message || `Permintaan GraphQL gagal (${response.status}).`);
   }
+  clearApiUnavailable();
   return payload.data;
 }
 
@@ -1386,7 +1534,13 @@ export async function signInWithPassword(
   password: string,
   turnstileToken?: string
 ): Promise<{ session: AuthUser; profile: AccessProfile | null }> {
-  const response = await usernameLoginRequest(username, password, turnstileToken);
+  let response: SupabaseAuthResponse;
+  try {
+    response = await usernameLoginRequest(username, password, turnstileToken);
+  } catch (error) {
+    if (!isNetworkError(error)) throw error;
+    response = await directSupabaseUsernameLogin(username, password);
+  }
   const nextSession = sessionFromResponse(response);
   if (auth.currentUser && auth.currentUser.uid !== nextSession.uid) {
     await clearOfflineStore();

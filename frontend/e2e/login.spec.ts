@@ -5,7 +5,7 @@ test('login dapat dipakai dengan keyboard, footer rilis, dan pengaturan password
 
   await expect(page.getByRole('heading', { name: 'E-Posyandu' })).toBeVisible();
   await expect(page.locator('.login-footer p').first()).toHaveText('© 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach');
-  const versionButton = page.getByRole('button', { name: 'E-Posyandu v3.5.1' });
+  const versionButton = page.getByRole('button', { name: 'E-Posyandu v3.5.2' });
   await expect(versionButton).toBeVisible();
   await expect(page.locator('.login-glass-card .login-footer')).toHaveCount(0);
   await expect(page.locator('.login-shell > .login-footer')).toBeVisible();
@@ -27,8 +27,8 @@ test('login dapat dipakai dengan keyboard, footer rilis, dan pengaturan password
   await versionButton.click();
   const releaseDialog = page.getByRole('dialog', { name: 'Apa yang Baru' });
   await expect(releaseDialog).toBeVisible();
-  await expect(releaseDialog.getByText('10 Agustus 2026', { exact: true }).first()).toBeVisible();
-  for (const version of ['v3.5.1', 'v3.5.0', 'v3.4.5', 'v3.4.4', 'v3.4.3', 'v3.4.1', 'v3.4.0', 'v3.3.0', 'v3.0.0', 'v2.4.0', 'v2.0.0', 'v1.0.0']) {
+  await expect(releaseDialog.getByText('12 Agustus 2026', { exact: true }).first()).toBeVisible();
+  for (const version of ['v3.5.2', 'v3.5.1', 'v3.5.0', 'v3.4.5', 'v3.4.4', 'v3.4.3', 'v3.4.1', 'v3.4.0', 'v3.3.0', 'v3.0.0', 'v2.4.0', 'v2.0.0', 'v1.0.0']) {
     await expect(releaseDialog.getByText(version, { exact: true })).toBeVisible();
   }
   await expect(releaseDialog.getByText('6 Januari 2026', { exact: true })).toBeVisible();
@@ -143,5 +143,51 @@ test('login memakai profil dari respons yang sama tanpa meminta endpoint me', as
   await page.getByRole('button', { name: 'Masuk' }).click();
 
   await expect(page.locator('[data-nav-id="dashboard"]')).toBeVisible();
+  expect(profileRequests).toBe(0);
+});
+
+test('login beralih ke Supabase Auth saat Worker mencapai batas kapasitas', async ({ page }) => {
+  let directAuthRequests = 0;
+  let profileRequests = 0;
+  await page.route('http://127.0.0.1:9/api/v1/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/me')) profileRequests += 1;
+    await route.fulfill({
+      status: 429,
+      headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'text/plain' },
+      body: 'error code: 1027'
+    });
+  });
+  await page.route('http://127.0.0.1:54321/auth/v1/token?grant_type=password', async (route) => {
+    directAuthRequests += 1;
+    const payload = route.request().postDataJSON();
+    expect(payload).toEqual({
+      email: 'gizipuskesmasgumukmas@gmail.com',
+      password: 'kata-sandi-uji'
+    });
+    await route.fulfill({
+      status: 200,
+      headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' },
+      json: {
+        access_token: 'access-token-fallback',
+        refresh_token: 'refresh-token-fallback',
+        expires_in: 3600,
+        user: { id: 'user-gizi', email: 'gizipuskesmasgumukmas@gmail.com' }
+      }
+    });
+  });
+
+  await page.goto('/');
+  await page.getByLabel('Username').fill('gizi');
+  await page.getByRole('textbox', { name: 'Kata Sandi', exact: true }).fill('kata-sandi-uji');
+  await page.getByRole('button', { name: 'Masuk' }).click();
+
+  await expect(page.locator('[data-nav-id="dashboard"]')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('e-posyandu:user'))).toBe(JSON.stringify({
+    role: 'Ahli Gizi',
+    desa: null,
+    posyandu: null
+  }));
+  expect(directAuthRequests).toBe(1);
   expect(profileRequests).toBe(0);
 });

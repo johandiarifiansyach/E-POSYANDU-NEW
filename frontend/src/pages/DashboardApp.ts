@@ -1978,7 +1978,7 @@ export const Dashboard = ({ user, onLogout }) => {
             if (!current)
                 return;
             const message = error instanceof Error ? error.message : 'Permintaan tidak dapat diproses.';
-            const networkUnavailable = !navigator.onLine || /failed to fetch|network|offline|load failed|fetch failed|connection/i.test(message);
+            const networkUnavailable = !navigator.onLine || /failed to fetch|network|offline|load failed|fetch failed|connection|sementara tidak tersedia/i.test(message);
             if (networkUnavailable && activeTab === 'data_balita') {
                 try {
                     applyPage(await getCachedChildrenPage(request));
