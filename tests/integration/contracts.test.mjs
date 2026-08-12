@@ -14,7 +14,7 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '016_auth_profile_fallback.sql');
+  assert.equal(files.at(-1), '017_authenticated_read_fallback.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
@@ -35,6 +35,24 @@ test('fallback autentikasi hanya dapat membaca profil akun sendiri yang masih ak
   assert.match(migration, /revoke all on function public\.eposyandu_current_access_profile\(\) from public, anon/);
   assert.match(migration, /grant execute on function public\.eposyandu_current_access_profile\(\) to authenticated, service_role/);
   assert.match(client, /rest\/v1\/rpc\/eposyandu_current_access_profile/);
+});
+
+test('fallback baca darurat tetap dibatasi role dan wilayah akun aktif', async () => {
+  const migration = await readFile(
+    resolve(root, 'database/migrations/017_authenticated_read_fallback.sql'),
+    'utf8'
+  );
+  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
+
+  assert.match(migration, /security definer/g);
+  assert.match(migration, /profile\.user_id = auth\.uid\(\) and profile\.active/g);
+  assert.match(migration, /public\.eposyandu_scope_match/);
+  assert.match(migration, /revoke all on function public\.eposyandu_self_children_page[\s\S]+from public, anon/);
+  assert.match(migration, /grant execute on function public\.eposyandu_self_children_page[\s\S]+to authenticated, service_role/);
+  assert.match(client, /eposyandu_self_children_page/);
+  assert.match(client, /eposyandu_self_problem_children_page/);
+  assert.match(client, /eposyandu_self_exclusive_breastfeeding_page/);
+  assert.match(client, /eposyandu_self_dashboard_stats/);
 });
 
 test('dashboard dan daftar balita memakai tanggal acuan umur yang sama', async () => {

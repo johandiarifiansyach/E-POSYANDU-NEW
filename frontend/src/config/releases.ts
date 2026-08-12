@@ -13,6 +13,19 @@ export const RELEASE_HISTORY: AppRelease[] = [
     version: APP_VERSION,
     releaseDate: '12 Agustus 2026',
     releaseDateIso: '2026-08-12',
+    title: 'Data Tetap Tersedia Saat API Terganggu',
+    changes: [
+      'Tabel Data Balita, balita bermasalah gizi, ASI eksklusif, detail balita, dan dashboard tetap dapat dibaca saat Cloudflare Worker mencapai batas kapasitas.',
+      'Jalur baca darurat menggunakan sesi Supabase yang aktif dan selalu membatasi data berdasarkan role, desa, serta posyandu akun.',
+      'Setiap halaman tetap mengambil maksimal 10 baris sehingga pemulihan layanan tidak menambah pembacaan data secara berlebihan.',
+      'Peringatan status worker tidak lagi tampil ketika status hanya belum sempat diperiksa; gangguan nyata tetap diberitahukan.',
+      'Cache PWA diperbarui agar perbaikan tabel segera diterima oleh perangkat kader, desa, dan Admin Gizi.'
+    ]
+  },
+  {
+    version: '3.5.2',
+    releaseDate: '12 Agustus 2026',
+    releaseDateIso: '2026-08-12',
     title: 'Login Tetap Tersedia Saat API Terganggu',
     changes: [
       'Login username kini memiliki jalur pemulihan melalui Supabase Auth saat Cloudflare Worker tidak dapat dijangkau atau mencapai batas kapasitas.',

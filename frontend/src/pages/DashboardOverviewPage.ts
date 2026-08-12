@@ -21,9 +21,7 @@ export default function DashboardOverviewPage({ stats, loading = false, monitori
             ? 'Worker laporan sedang lambat atau gagal diperiksa. Sistem akan memeriksa ulang otomatis.'
             : workerStatus === 'unconfigured'
                 ? 'Alamat health check worker laporan belum dikonfigurasi.'
-                : workerStatus === 'unknown'
-                    ? 'Status worker laporan belum dapat diperiksa.'
-                    : '';
+            : '';
     const storageStatus = monitoringStatus?.storage?.status;
     const storageMessage = storageStatus?.status === 'warning'
         ? 'Penyimpanan berkas mendekati batas 10 GB dan tidak dapat dibersihkan seluruhnya. Periksa lampiran permanen di R2.'

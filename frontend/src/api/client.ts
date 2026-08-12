@@ -717,6 +717,30 @@ async function supabaseAccessProfile(accessToken: string): Promise<AccessProfile
   };
 }
 
+async function supabaseReadRpc<T>(name: string, body: Record<string, unknown>): Promise<T> {
+  const { url, publishableKey } = authConfig();
+  const request = async (accessToken: string) => fetchWithTimeout(`${url}/rest/v1/rpc/${name}`, {
+    method: 'POST',
+    headers: {
+      apikey: publishableKey,
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  let response = await request(await getAccessToken(authState));
+  if (response.status === 401 && authState.currentUser?.refreshToken) {
+    response = await request((await refreshAccessToken(authState)).accessToken as string);
+  }
+  if (!response.ok) {
+    throw new Error(await responseErrorDetail(response, `Data darurat tidak dapat dibaca (${response.status}).`));
+  }
+  const payload = await response.json() as T | null;
+  if (payload === null) throw new Error('Akun ini tidak memiliki akses ke data yang diminta.');
+  return payload;
+}
+
 async function usernameLoginRequest(username: string, password: string, turnstileToken?: string): Promise<SupabaseAuthResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
   ensureApiRequestAllowed();
@@ -1019,7 +1043,9 @@ export async function reportClientError(
 
 export async function getChildrenPage(request: ChildrenPageRequest): Promise<ChildrenPageResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-  const result = await graphQlRequest<{ childrenPage: ChildrenPageResponse }>(`
+  let response: ChildrenPageResponse;
+  try {
+    const result = await graphQlRequest<{ childrenPage: ChildrenPageResponse }>(`
     query ChildrenPage(
       $asOf: String!
       $measurementStart: String!
@@ -1045,19 +1071,49 @@ export async function getChildrenPage(request: ChildrenPageRequest): Promise<Chi
         posyandu: $posyandu
       )
     }
-  `, {
-    asOf: request.asOf,
-    measurementEnd: request.measurementEnd,
-    measurementStart: request.measurementStart,
-    page: request.page,
-    size: request.size || 10,
-    sort: request.sort,
-    view: request.view || 'data',
-    search: request.search?.trim() || null,
-    village: request.village?.trim() || null,
-    posyandu: request.posyandu?.trim() || null
-  });
-  const response = result.childrenPage;
+    `, {
+      asOf: request.asOf,
+      measurementEnd: request.measurementEnd,
+      measurementStart: request.measurementStart,
+      page: request.page,
+      size: request.size || 10,
+      sort: request.sort,
+      view: request.view || 'data',
+      search: request.search?.trim() || null,
+      village: request.village?.trim() || null,
+      posyandu: request.posyandu?.trim() || null
+    });
+    response = result.childrenPage;
+  } catch (error) {
+    if (!isNetworkError(error)) throw error;
+    const view = request.view || 'data';
+    if (view.startsWith('problem_')) {
+      response = await supabaseReadRpc<ChildrenPageResponse>('eposyandu_self_problem_children_page', {
+        p_month_start: request.measurementStart,
+        p_month_end: request.measurementEnd,
+        p_problem: view,
+        p_page: request.page,
+        p_size: request.size || 10,
+        p_search: request.search?.trim() || null,
+        p_sort: request.sort,
+        p_village: request.village?.trim() || null,
+        p_posyandu: request.posyandu?.trim() || null
+      });
+    } else {
+      response = await supabaseReadRpc<ChildrenPageResponse>('eposyandu_self_children_page', {
+        p_as_of: request.asOf,
+        p_measurement_start: request.measurementStart,
+        p_measurement_end: request.measurementEnd,
+        p_page: request.page,
+        p_size: request.size || 10,
+        p_sort: request.sort,
+        p_view: view,
+        p_search: request.search?.trim() || null,
+        p_village: request.village?.trim() || null,
+        p_posyandu: request.posyandu?.trim() || null
+      });
+    }
+  }
   const now = new Date().toISOString();
   await Promise.all([
     cacheRemoteDocuments('children', response.items.map((item) => ({
@@ -1107,7 +1163,8 @@ export async function getExclusiveBreastfeedingPage(
   request: ExclusiveBreastfeedingPageRequest
 ): Promise<ExclusiveBreastfeedingPageResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-  const result = await graphQlRequest<{ exclusiveBreastfeedingPage: ExclusiveBreastfeedingPageResponse }>(`
+  try {
+    const result = await graphQlRequest<{ exclusiveBreastfeedingPage: ExclusiveBreastfeedingPageResponse }>(`
     query ExclusiveBreastfeedingPage(
       $measurementStart: String!
       $measurementEnd: String!
@@ -1127,27 +1184,46 @@ export async function getExclusiveBreastfeedingPage(
         posyandu: $posyandu
       )
     }
-  `, {
-    ageGroup: request.ageGroup,
-    measurementEnd: request.measurementEnd,
-    measurementStart: request.measurementStart,
-    page: request.page,
-    size: request.size || 10,
-    village: request.village?.trim() || null,
-    posyandu: request.posyandu?.trim() || null
-  });
-  return result.exclusiveBreastfeedingPage;
+    `, {
+      ageGroup: request.ageGroup,
+      measurementEnd: request.measurementEnd,
+      measurementStart: request.measurementStart,
+      page: request.page,
+      size: request.size || 10,
+      village: request.village?.trim() || null,
+      posyandu: request.posyandu?.trim() || null
+    });
+    return result.exclusiveBreastfeedingPage;
+  } catch (error) {
+    if (!isNetworkError(error)) throw error;
+    return supabaseReadRpc<ExclusiveBreastfeedingPageResponse>('eposyandu_self_exclusive_breastfeeding_page', {
+      p_measurement_start: request.measurementStart,
+      p_measurement_end: request.measurementEnd,
+      p_age_group: request.ageGroup,
+      p_page: request.page,
+      p_size: request.size || 10,
+      p_village: request.village?.trim() || null,
+      p_posyandu: request.posyandu?.trim() || null
+    });
+  }
 }
 
 export async function getChildDetail(id: string): Promise<ApiDocument> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-  const document = await apiRequest<ApiDocument>(`/collections/children/${encodeURIComponent(id)}`);
+  let document: ApiDocument;
+  try {
+    document = await apiRequest<ApiDocument>(`/collections/children/${encodeURIComponent(id)}`);
+  } catch (error) {
+    if (!isNetworkError(error)) throw error;
+    document = await supabaseReadRpc<ApiDocument>('eposyandu_self_child_detail', { p_child_id: id });
+  }
   return { ...document, data: hydrateForRead(document.data) };
 }
 
 export async function getDashboardStats(request: DashboardStatsRequest): Promise<DashboardStatsResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-  const data = await graphQlRequest<{ dashboardStats: DashboardStatsResponse }>(`
+  try {
+    const data = await graphQlRequest<{ dashboardStats: DashboardStatsResponse }>(`
     query DashboardStats(
       $monthStart: String!
       $monthEnd: String!
@@ -1165,12 +1241,23 @@ export async function getDashboardStats(request: DashboardStatsRequest): Promise
         posyandu: $posyandu
       )
     }
-  `, {
-    ...request,
-    village: request.village?.trim() || null,
-    posyandu: request.posyandu?.trim() || null
-  });
-  return data.dashboardStats;
+    `, {
+      ...request,
+      village: request.village?.trim() || null,
+      posyandu: request.posyandu?.trim() || null
+    });
+    return data.dashboardStats;
+  } catch (error) {
+    if (!isNetworkError(error)) throw error;
+    return supabaseReadRpc<DashboardStatsResponse>('eposyandu_self_dashboard_stats', {
+      p_month_start: request.monthStart,
+      p_month_end: request.monthEnd,
+      p_previous_month_start: request.previousMonthStart,
+      p_previous_month_end: request.previousMonthEnd,
+      p_village: request.village?.trim() || null,
+      p_posyandu: request.posyandu?.trim() || null
+    });
+  }
 }
 
 export async function getSigiziMeasurementExport(
