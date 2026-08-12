@@ -14,7 +14,7 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '017_authenticated_read_fallback.sql');
+  assert.equal(files.at(-1), '018_authenticated_measurement_write_fallback.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
@@ -53,6 +53,25 @@ test('fallback baca darurat tetap dibatasi role dan wilayah akun aktif', async (
   assert.match(client, /eposyandu_self_problem_children_page/);
   assert.match(client, /eposyandu_self_exclusive_breastfeeding_page/);
   assert.match(client, /eposyandu_self_dashboard_stats/);
+});
+
+test('fallback tulis penimbangan bersifat atomik dan hanya menerima kolom ringkasan aman', async () => {
+  const migration = await readFile(
+    resolve(root, 'database/migrations/018_authenticated_measurement_write_fallback.sql'),
+    'utf8'
+  );
+  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
+
+  assert.match(migration, /security definer/);
+  assert.match(migration, /users\.user_id = auth\.uid\(\)/);
+  assert.match(migration, /public\.eposyandu_location_allowed/);
+  assert.match(migration, /Hanya ringkasan pengukuran balita yang dapat diperbarui/);
+  assert.match(migration, /on conflict \(idempotency_key, action, resource, document_id\) do nothing/g);
+  assert.match(migration, /revoke all on function public\.eposyandu_self_sync_measurement_batch\(jsonb\) from public, anon/);
+  assert.match(migration, /grant execute on function public\.eposyandu_self_sync_measurement_batch\(jsonb\) to authenticated, service_role/);
+  assert.match(client, /supportsAuthenticatedMeasurementFallback/);
+  assert.match(client, /eposyandu_self_sync_measurement_batch/);
+  assert.match(client, /if \(!isNetworkError\(error\)\) throw error/);
 });
 
 test('dashboard dan daftar balita memakai tanggal acuan umur yang sama', async () => {

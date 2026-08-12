@@ -13,6 +13,20 @@ export const RELEASE_HISTORY: AppRelease[] = [
     version: APP_VERSION,
     releaseDate: '12 Agustus 2026',
     releaseDateIso: '2026-08-12',
+    title: 'Penimbangan Tetap Tersimpan Saat API Terganggu',
+    changes: [
+      'Penimbangan baru, edit penimbangan, hapus riwayat, dan ringkasan pengukuran balita tetap dapat disinkronkan saat Cloudflare Worker mencapai batas kapasitas.',
+      'Jalur tulis darurat menggunakan sesi Supabase aktif, transaksi PostgreSQL, idempotency key, audit log, serta pembatasan role, desa, dan posyandu.',
+      'Jalur darurat hanya menerima data penimbangan dan kolom ringkasannya sehingga tidak dapat digunakan untuk mengubah identitas balita.',
+      'Perubahan lain yang belum didukung tetap aman di antrean perangkat tanpa menghambat penimbangan yang sedang disimpan.',
+      'Tabel balita, masalah gizi, ASI eksklusif, detail, dan dashboard tetap memiliki jalur baca terautentikasi selama API terganggu.',
+      'Cache PWA diperbarui agar perbaikan simpan segera diterima oleh perangkat kader, desa, dan Admin Gizi.'
+    ]
+  },
+  {
+    version: '3.5.3',
+    releaseDate: '12 Agustus 2026',
+    releaseDateIso: '2026-08-12',
     title: 'Data Tetap Tersedia Saat API Terganggu',
     changes: [
       'Tabel Data Balita, balita bermasalah gizi, ASI eksklusif, detail balita, dan dashboard tetap dapat dibaca saat Cloudflare Worker mencapai batas kapasitas.',

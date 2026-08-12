@@ -99,7 +99,8 @@ async function configureAuthenticatedPage(
   syncFails = false,
   includeChildrenCollection = false,
   changeLogs = [] as typeof changeHistoryEntries,
-  returnSyncConflict = false
+  returnSyncConflict = false,
+  cloudflareCapacityFails = false
 ) {
   const syncedMutations: Array<Record<string, any>> = [];
   let activeChild: { id: string; data: Record<string, any> } = {
@@ -119,6 +120,36 @@ async function configureAuthenticatedPage(
       desa: 'Desa Gumukmas',
       posyandu: 'SALAK 1'
     }));
+  });
+
+  await page.route('http://127.0.0.1:54321/rest/v1/rpc/eposyandu_self_sync_measurement_batch', async (route) => {
+    const request = route.request();
+    const payload = request.postDataJSON() as { p_mutations?: Array<Record<string, any>> };
+    const mutations = payload.p_mutations || [];
+    syncedMutations.push(...mutations);
+    const cursor = new Date().toISOString();
+    const results = mutations.map((mutation) => {
+      const baseData = mutation.resource === 'children' && mutation.documentId === child.id
+        ? child.data
+        : mutation.resource === 'measurements'
+          ? measurement.data
+          : {};
+      return {
+        id: mutation.id,
+        resource: mutation.resource,
+        documentId: mutation.documentId,
+        operation: mutation.operation,
+        document: mutation.operation === 'delete' ? undefined : {
+          id: mutation.documentId,
+          data: { ...baseData, ...(mutation.data || {}), updatedAt: cursor, version: 2 }
+        }
+      };
+    });
+    await route.fulfill({
+      status: 200,
+      headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' },
+      json: { results, changes: {}, cursor }
+    });
   });
 
   await page.route('http://127.0.0.1:9/api/v1/**', async (route) => {
@@ -224,7 +255,13 @@ async function configureAuthenticatedPage(
       return;
     }
     if (path.endsWith('/sync')) {
-      if (syncFails) {
+      if (cloudflareCapacityFails) {
+        await route.fulfill({
+          status: 429,
+          headers: { ...headers, 'Content-Type': 'text/plain' },
+          body: 'error code: 1027 - daily request limit exceeded'
+        });
+      } else if (syncFails) {
         await route.fulfill({ status: 503, headers, json: { detail: 'API uji sedang tidak tersedia.' } });
       } else {
         const payload = request.postDataJSON() as { mutations?: Array<Record<string, any>> };
@@ -519,7 +556,7 @@ test('sidebar desktop dapat diciutkan menjadi ikon dan dibuka kembali', async ({
   await expect(sidebarLabel).toBeVisible();
   await expect(sidebarBrand).toBeVisible();
   await expect(sidebarBrand).toContainText('E-Posyandu');
-  await expect(sidebarBrand).toContainText('v3.5.3');
+  await expect(sidebarBrand).toContainText('v3.5.4');
   await expect(page.getByRole('button', { name: 'Ringkas Menu', exact: true })).toBeVisible();
   await expect(page.locator('.app-sidebar')).toHaveCSS('width', '280px');
 
@@ -590,7 +627,7 @@ test('header bersih, periode berada di panel data, tema dan footer berfungsi', a
   }
 
   await expect(page.locator('.app-footer')).toContainText('© 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach');
-  const versionButton = page.locator('.app-footer').getByRole('button', { name: 'E-Posyandu v3.5.3' });
+  const versionButton = page.locator('.app-footer').getByRole('button', { name: 'E-Posyandu v3.5.4' });
   await expect(versionButton).toBeVisible();
   await versionButton.click();
   const releaseDialog = page.getByRole('dialog', { name: 'Apa yang Baru' });
@@ -801,6 +838,31 @@ test('form penimbangan memakai tata letak iOS yang responsif', async ({ page }) 
     mutation.resource === 'children' && mutation.documentId === child.id && mutation.data?.currentBB === 5.25
   ))).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+test('penimbangan tetap tersimpan saat batas harian Cloudflare tercapai', async ({ page }) => {
+  const { syncedMutations } = await configureAuthenticatedPage(page, false, false, [], false, true);
+  await page.goto('/#data_balita');
+  await page.getByRole('button', { name: 'Pengukuran Balita', exact: true }).click();
+  await page.getByRole('tab', { name: 'Tambah' }).click();
+
+  const measurementPage = page.locator('[data-measurement-page]');
+  await measurementPage.locator('input[name="bb"]').fill('5.35');
+  await measurementPage.locator('input[name="tb"]').fill('73.7');
+  await measurementPage.locator('input[name="lila"]').fill('13.3');
+  await measurementPage.locator('input[name="lk"]').fill('44.2');
+  await page.getByRole('button', { name: 'Simpan Pengukuran' }).click();
+
+  await expect(page.getByText('Data penimbangan berhasil disimpan.')).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Riwayat' })).toHaveClass(/is-active/);
+  await expect.poll(() => syncedMutations.some((mutation) => (
+    mutation.resource === 'measurements' && mutation.data?.bb === 5.35
+  ))).toBe(true);
+  await expect.poll(() => syncedMutations.some((mutation) => (
+    mutation.resource === 'children'
+      && mutation.documentId === child.id
+      && mutation.data?.currentBB === 5.35
+  ))).toBe(true);
 });
 
 test('riwayat penimbangan dapat diedit tanpa membuat catatan baru', async ({ page }) => {

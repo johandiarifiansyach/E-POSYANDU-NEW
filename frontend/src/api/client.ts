@@ -2089,11 +2089,62 @@ function nextSyncBatch(pending: PendingMutation[], maximum = 25): PendingMutatio
   return batch;
 }
 
-async function syncFastApiBatch(batch: PendingMutation[]): Promise<SyncRunResult> {
-  const response = await apiRequest<SyncResponse>('/sync', {
-    method: 'POST',
-    body: JSON.stringify({ mutations: batch.map(syncMutationPayload), pull: [] })
+const MEASUREMENT_SUMMARY_FIELDS = new Set([
+  'currentBB',
+  'currentTB',
+  'currentLILA',
+  'currentLK',
+  'lastMeasurementDate',
+  'updatedAt'
+]);
+
+function supportsAuthenticatedMeasurementFallback(mutation: PendingMutation): boolean {
+  if (mutation.tableName === 'measurements') return true;
+  if (mutation.tableName !== 'children' || mutation.type !== 'update') return false;
+  const patch = mutation.payload?.data || {};
+  return Object.keys(patch).every((field) => MEASUREMENT_SUMMARY_FIELDS.has(field));
+}
+
+async function authenticatedMeasurementFallback(batch: PendingMutation[]): Promise<SyncResponse> {
+  const supported = batch.filter(supportsAuthenticatedMeasurementFallback);
+  if (supported.length === 0) throw new ApiUnavailableError();
+
+  const response = await supabaseReadRpc<SyncResponse>('eposyandu_self_sync_measurement_batch', {
+    p_mutations: supported.map(syncMutationPayload)
   });
+  const supportedIds = new Set(supported.map((mutation) => mutation.id));
+  const deferredResults: SyncMutationResult[] = batch
+    .filter((mutation) => !supportedIds.has(mutation.id))
+    .map((mutation) => ({
+      id: mutation.id,
+      resource: mutation.tableName,
+      documentId: mutation.documentId,
+      operation: mutation.type,
+      error: {
+        status: 503,
+        code: 'EDGE_API_UNAVAILABLE',
+        detail: 'Perubahan ini tetap tersimpan di perangkat dan akan disinkronkan saat layanan API kembali tersedia.'
+      }
+    }));
+
+  return {
+    results: [...response.results, ...deferredResults],
+    changes: response.changes || {},
+    cursor: response.cursor || new Date().toISOString()
+  };
+}
+
+async function syncFastApiBatch(batch: PendingMutation[]): Promise<SyncRunResult> {
+  let response: SyncResponse;
+  try {
+    response = await apiRequest<SyncResponse>('/sync', {
+      method: 'POST',
+      body: JSON.stringify({ mutations: batch.map(syncMutationPayload), pull: [] })
+    });
+  } catch (error) {
+    if (!isNetworkError(error)) throw error;
+    response = await authenticatedMeasurementFallback(batch);
+  }
   const results = new Map(response.results.map((result) => [result.id, result]));
   if (results.size !== batch.length || batch.some((mutation) => !results.has(mutation.id))) {
     throw new Error('Respons sinkronisasi tidak lengkap. Data tetap disimpan untuk dicoba kembali.');
