@@ -1,0 +1,2 @@
+NEON_DATABASE_URL=postgresql://eposyandu_replica_reader:PASSWORD@NEON_HOST/neondb?sslmode=require
+READ_REPLICA_SHARED_SECRET=ganti-dengan-secret-random-yang-panjang

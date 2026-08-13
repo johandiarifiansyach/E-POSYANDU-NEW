@@ -20,6 +20,7 @@ tests/                 Pengujian kontrak lintas komponen
 | Frontend | Cloudflare Pages |
 | API | Cloudflare Worker berbasis Rust |
 | Data utama dan autentikasi | Supabase PostgreSQL + Supabase Auth |
+| Replika baca query berat | Neon PostgreSQL melalui private Cloudflare Worker |
 | Cache ringkasan | Cloudflare Cache API |
 | Metadata invalidasi cache | Cloudflare KV |
 | Pembatas login | Upstash Redis |
@@ -37,6 +38,8 @@ npm run integration:test # Test kontrak migrasi, API, PWA, dan security header
 npm run e2e:test        # Test browser desktop dan ponsel
 npm run db:migrate      # Terapkan migration yang belum dijalankan
 npm run db:backup       # Buat backup PostgreSQL dengan izin file privat
+npm run replica:check   # Periksa TypeScript private Neon Read Worker
+npm run replica:verify  # Verifikasi logical replication dan role read-only
 npm run worker:deploy   # Deploy API ke Cloudflare Worker
 npm run worker:deploy:staging # Deploy API staging
 npm run pages:deploy    # Build dan deploy frontend ke Cloudflare Pages

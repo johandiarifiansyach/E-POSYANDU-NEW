@@ -25,6 +25,12 @@ id = "05421512a237477282deac4d63bd7d8e"
 binding = "E_POSYANDU_JOBS"
 queue = "e-posyandu-jobs"
 
+# Jalur privat dari API utama ke Worker baca Neon. Browser tidak pernah
+# memperoleh URL maupun kredensial database replica.
+[[services]]
+binding = "NEON_READ_SERVICE"
+service = "e-posyandu-neon-read"
+
 # R2 dipakai untuk hasil ekspor besar dan lampiran privat, bukan sebagai
 # database balita. File sementara dengan prefix `jobs/` dibersihkan otomatis.
 [[r2_buckets]]
@@ -38,6 +44,10 @@ ENVIRONMENT = "production"
 CORS_ORIGINS = "https://e-posyandu.pages.dev"
 TURNSTILE_HOSTNAMES = "e-posyandu.pages.dev"
 PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
+# Diaktifkan setelah Worker `e-posyandu-neon-read` tersedia dan secret
+# READ_REPLICA_SHARED_SECRET pada kedua Worker berisi nilai yang sama.
+# Ubah menjadi `primary-only` untuk mematikan replica tanpa deploy ulang kode.
+READ_REPLICA_MODE = "prefer-replica"
 
 [env.development]
 name = "e-posyandu-api-development"
@@ -49,6 +59,7 @@ CORS_ORIGINS = "http://localhost:5175,http://127.0.0.1:5175,http://localhost:517
 TURNSTILE_HOSTNAMES = "localhost,127.0.0.1"
 LOCAL_TURNSTILE_BYPASS = "true"
 PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
+READ_REPLICA_MODE = "primary-only"
 
 [env.development.observability]
 enabled = false
@@ -68,6 +79,7 @@ ENVIRONMENT = "staging"
 CORS_ORIGINS = "https://e-posyandu-staging.pages.dev"
 TURNSTILE_HOSTNAMES = "e-posyandu-staging.pages.dev"
 PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
+READ_REPLICA_MODE = "prefer-replica"
 
 [env.staging.observability]
 enabled = true
@@ -75,6 +87,10 @@ head_sampling_rate = 1.0
 
 [[env.staging.kv_namespaces]]
 binding = "E_POSYANDU_CACHE"
+
+[[env.staging.services]]
+binding = "NEON_READ_SERVICE"
+service = "e-posyandu-neon-read-staging"
 
 [env.staging.secrets]
 required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY"]

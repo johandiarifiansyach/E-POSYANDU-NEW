@@ -1,4 +1,6 @@
-use crate::{AccessScope, ApiFailure, ApiResult, hashed_key, require_scope, secret};
+use crate::{
+    AccessScope, ApiFailure, ApiResult, hashed_key, optional_secret, require_scope, secret,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -19,6 +21,7 @@ enum Resource {
 
 const DASHBOARD_CACHE_TTL_SECONDS: u64 = 60;
 const DASHBOARD_CACHE_VERSION_KEY: &str = "dashboard:version:v1";
+const REPLICA_PRIMARY_PIN_SECONDS: u64 = 30;
 const FEATURE_FLAGS_KEY: &str = "feature:flags:v1";
 const CHANGE_AUDIT_MAX_DISTANCE_MS: f64 = 5.0 * 60.0 * 1_000.0;
 const BACKGROUND_JOB_MAX_BODY_BYTES: usize = 4_000_000;
@@ -842,10 +845,31 @@ async fn cache_dashboard(key: &str, value: &Value) {
         .await;
 }
 
-async fn invalidate_dashboard_cache(env: &Env) {
+fn replica_primary_pin_key(user_id: &str) -> String {
+    hashed_key("replica:primary-pin:v1", user_id)
+}
+
+async fn replica_reads_pinned_to_primary(env: &Env, user_id: &str) -> bool {
+    let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
+        return false;
+    };
+    cache
+        .get(&replica_primary_pin_key(user_id))
+        .text()
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+async fn invalidate_dashboard_cache(env: &Env, user_id: &str) {
     let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
         return;
     };
+    if let Ok(builder) = cache.put(&replica_primary_pin_key(user_id), "primary") {
+        let write = builder.expiration_ttl(REPLICA_PRIMARY_PIN_SECONDS);
+        let _ = write.execute().await;
+    }
     let Ok(write) = cache.put(DASHBOARD_CACHE_VERSION_KEY, now_iso()) else {
         return;
     };
@@ -1104,8 +1128,9 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
         view,
         "problem_underweight" | "problem_stunting" | "problem_wasting" | "problem_tidak_naik"
     ) {
-        return rpc(
+        return read_rpc(
             env,
+            &scope.user_id,
             "eposyandu_problem_children_page",
             json!({
                 "p_month_start": measurement_start,
@@ -1123,6 +1148,31 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
             }),
         )
         .await;
+    }
+    let replica_payload = json!({
+        "p_as_of": as_of,
+        "p_measurement_start": measurement_start,
+        "p_measurement_end": measurement_end,
+        "p_page": page,
+        "p_size": size,
+        "p_sort": sort,
+        "p_view": view,
+        "p_search": search,
+        "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
+        "p_posyandu": first_query(&query, "posyandu").map(|value| value.trim()).filter(|value| !value.is_empty()),
+        "p_role": scope.role,
+        "p_scope_village": scope.desa,
+        "p_scope_posyandu": scope.posyandu,
+    });
+    if let Ok(value) = read_rpc(
+        env,
+        &scope.user_id,
+        "eposyandu_replica_children_page",
+        replica_payload,
+    )
+    .await
+    {
+        return Ok(value);
     }
     let mut parameters = vec![
         ("select".into(), "id,name,national_id,has_national_id,birth_date,sex,parent_name,village,posyandu,created_at,updated_at,version".into()),
@@ -1268,6 +1318,105 @@ async fn rpc(env: &Env, name: &str, payload: Value) -> ApiResult<Value> {
     Ok(value)
 }
 
+fn read_replica_config(env: &Env) -> Option<String> {
+    let mode = env
+        .var("READ_REPLICA_MODE")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "prefer-replica".into());
+    if mode == "primary-only" {
+        return None;
+    }
+    if env.service("NEON_READ_SERVICE").is_err()
+        && optional_secret(env, "NEON_READ_API_URL").is_none()
+    {
+        return None;
+    }
+    optional_secret(env, "READ_REPLICA_SHARED_SECRET")
+}
+
+async fn replica_rpc(env: &Env, name: &str, payload: Value) -> ApiResult<Value> {
+    let shared_secret = read_replica_config(env)
+        .ok_or_else(|| api_error(503, "Read replica belum dikonfigurasi."))?;
+    let headers = Headers::new();
+    headers
+        .set("Content-Type", "application/json")
+        .map_err(|_| api_error(503, "Read replica belum dapat dihubungi."))?;
+    headers
+        .set("Accept", "application/json")
+        .map_err(|_| api_error(503, "Read replica belum dapat dihubungi."))?;
+    headers
+        .set("X-EPosyandu-Replica-Secret", &shared_secret)
+        .map_err(|_| api_error(503, "Read replica belum dapat dihubungi."))?;
+    let encoded = serde_json::to_string(&json!({
+        "operation": name,
+        "payload": payload,
+    }))
+    .map_err(|_| api_error(422, "Parameter baca tidak valid."))?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(JsValue::from_str(&encoded)));
+    let mut response = if let Ok(service) = env.service("NEON_READ_SERVICE") {
+        service
+            .fetch("https://neon-read.internal/v1/read", Some(init))
+            .await
+            .map_err(|_| api_error(503, "Read replica belum dapat dihubungi."))?
+    } else {
+        let base_url = optional_secret(env, "NEON_READ_API_URL")
+            .ok_or_else(|| api_error(503, "Read replica belum dikonfigurasi."))?;
+        let endpoint = format!("{}/v1/read", base_url.trim_end_matches('/'));
+        let request = Request::new_with_init(&endpoint, &init)
+            .map_err(|_| api_error(503, "Read replica belum dapat dihubungi."))?;
+        Fetch::Request(request)
+            .send()
+            .await
+            .map_err(|_| api_error(503, "Read replica belum dapat dihubungi."))?
+    };
+    if !(200..300).contains(&response.status_code()) {
+        return Err(api_error(
+            503,
+            "Read replica belum dapat melayani permintaan.",
+        ));
+    }
+    let envelope = response
+        .json::<Value>()
+        .await
+        .map_err(|_| api_error(503, "Respons read replica tidak valid."))?;
+    envelope
+        .get("data")
+        .cloned()
+        .ok_or_else(|| api_error(503, "Respons read replica tidak valid."))
+}
+
+async fn read_rpc(env: &Env, user_id: &str, name: &str, payload: Value) -> ApiResult<Value> {
+    if read_replica_config(env).is_some() && !replica_reads_pinned_to_primary(env, user_id).await {
+        match replica_rpc(env, name, payload.clone()).await {
+            Ok(value) => {
+                worker::console_log!(
+                    "{}",
+                    json!({
+                        "level": "info",
+                        "event": "read_router",
+                        "operation": name,
+                        "source": "neon",
+                    })
+                );
+                return Ok(value);
+            }
+            Err(_) => worker::console_warn!(
+                "{}",
+                json!({
+                    "level": "warn",
+                    "event": "read_router_fallback",
+                    "operation": name,
+                    "source": "supabase",
+                })
+            ),
+        }
+    }
+    rpc(env, name, payload).await
+}
+
 async fn exclusive_breastfeeding_page(request: Request, env: &Env) -> ApiResult<Value> {
     let scope = require_scope(&request, env).await?;
     let query = query_pairs(&request)?;
@@ -1285,7 +1434,7 @@ async fn exclusive_breastfeeding_page(request: Request, env: &Env) -> ApiResult<
     }
     let page = parse_positive(first_query(&query, "page"), 1, 1_000_000)?;
     let size = parse_positive(first_query(&query, "size"), 10, 50)?;
-    rpc(env, "eposyandu_exclusive_breastfeeding_page", json!({
+    read_rpc(env, &scope.user_id, "eposyandu_exclusive_breastfeeding_page", json!({
         "p_measurement_start": start, "p_measurement_end": end, "p_age_group": age_group,
         "p_page": page, "p_size": size,
         "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
@@ -1319,7 +1468,7 @@ async fn dashboard(request: Request, env: &Env) -> ApiResult<Value> {
         return Ok(value);
     }
     log_dashboard_cache(env, &request, "MISS");
-    let value = rpc(env, "eposyandu_dashboard_stats", json!({
+    let value = read_rpc(env, &scope.user_id, "eposyandu_dashboard_stats", json!({
         "p_month_start": first_query(&query, "monthStart"), "p_month_end": first_query(&query, "monthEnd"),
         "p_previous_month_start": first_query(&query, "previousMonthStart"), "p_previous_month_end": first_query(&query, "previousMonthEnd"),
         "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
@@ -1349,8 +1498,9 @@ async fn sigizi_measurement_export(request: Request, env: &Env) -> ApiResult<Val
     let posyandu = first_query(&query, "posyandu")
         .map(|value| value.trim())
         .filter(|value| !value.is_empty());
-    let value = rpc(
+    let value = read_rpc(
         env,
+        &scope.user_id,
         "eposyandu_sigizi_measurement_export",
         json!({
             "p_month_start": month_start,
@@ -2457,7 +2607,7 @@ async fn collection_create(
         created_document.get("data").cloned(),
     )
     .await?;
-    invalidate_dashboard_cache(env).await;
+    invalidate_dashboard_cache(env, &scope.user_id).await;
     Ok(created_document)
 }
 
@@ -2632,7 +2782,7 @@ async fn collection_update(
         updated_document.get("data").cloned(),
     )
     .await?;
-    invalidate_dashboard_cache(env).await;
+    invalidate_dashboard_cache(env, &scope.user_id).await;
     Ok(updated_document)
 }
 
@@ -2733,7 +2883,7 @@ async fn collection_delete(
         None,
     )
     .await?;
-    invalidate_dashboard_cache(env).await;
+    invalidate_dashboard_cache(env, &scope.user_id).await;
     Ok(json!({}))
 }
 

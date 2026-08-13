@@ -22,6 +22,34 @@ Migrasi `014_unify_dashboard_report_counts.sql` menyatukan relasi balita lama da
 
 Migrasi `015_background_grpc_jobs.sql` menambahkan tabel status pekerjaan berat untuk Cloudflare Queue dan gRPC. Payload dan hasil hanya dapat dibaca `service_role`, dilindungi RLS, memakai idempotency key, memiliki masa berlaku, dan dicatat dalam audit operasional.
 
+Migrasi `020_read_replica_children_page.sql` menambahkan fungsi baca terpaginasikan untuk replika Neon. Fungsi ini hanya menerima konteks role dan wilayah yang sudah divalidasi Rust Worker; fungsi tidak dapat menulis data. Supabase tetap menjadi primary dan satu-satunya tujuan autentikasi, CRUD, audit, serta sinkronisasi offline.
+
+## Supabase primary dan Neon read replica
+
+Neon dipakai sebagai replika baca asinkron untuk dashboard, daftar balita, masalah gizi, ASI eksklusif, dan ekspor pengukuran. Semua perubahan tetap masuk ke Supabase. Aplikasi otomatis kembali membaca Supabase bila Neon belum aktif atau gagal merespons. Keterlambatan replikasi dipantau secara operasional; setelah mutasi, akun penulis sementara diarahkan ke primary agar perubahan langsung terlihat.
+
+Aktivasi dilakukan sekali setelah migration terbaru diterapkan pada Supabase:
+
+```bash
+SOURCE_DATABASE_URL='postgresql://koneksi-direct-supabase' \
+NEON_DATABASE_URL='postgresql://owner-neon-direct' \
+NEON_READER_DATABASE_URL='postgresql://role-baca-neon' \
+npm run replica:bootstrap
+```
+
+Ketiga URL bersifat rahasia dan tidak boleh disimpan ke Git. `SOURCE_DATABASE_URL` serta `NEON_DATABASE_URL` wajib memakai koneksi direct karena dipakai untuk logical replication. `NEON_READER_DATABASE_URL` boleh memakai endpoint pooled dan menjadi satu-satunya URL database yang diberikan kepada private Neon Read Worker.
+
+Skrip hanya mereplikasi tabel `children`, `measurements`, `mpasi_logs`, dan `eposyandu_growth_lms`. Skrip juga membuat role Worker tetap read-only, memeriksa salinan awal, dan menolak target yang sama dengan source. Pemeriksaan berikutnya dapat dijalankan tanpa membuat resource baru:
+
+```bash
+SOURCE_DATABASE_URL='postgresql://koneksi-direct-supabase' \
+NEON_DATABASE_URL='postgresql://owner-neon-direct' \
+NEON_READER_DATABASE_URL='postgresql://role-baca-neon' \
+npm run replica:verify
+```
+
+Logical replication bersifat asinkron. Karena itu angka pada Neon dapat tertinggal sesaat. Setelah pengguna menambah, mengubah, atau menghapus data, Rust Worker memaksa pembacaan akun tersebut ke Supabase selama 30 detik agar perubahan langsung terlihat. Neon tidak boleh dipromosikan otomatis menjadi tujuan tulis.
+
 ## Pemeriksaan
 
 ```sql

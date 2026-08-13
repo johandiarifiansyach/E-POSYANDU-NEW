@@ -705,6 +705,9 @@ async fn monitoring_status(request: Request, env: &Env) -> ApiResult<serde_json:
             })
         });
     let isolation = database_isolation_status(env);
+    let read_replica_configured = (env.service("NEON_READ_SERVICE").is_ok()
+        || optional_secret(env, "NEON_READ_API_URL").is_some())
+        && optional_secret(env, "READ_REPLICA_SHARED_SECRET").is_some();
     let r2_configured = env.bucket("E_POSYANDU_FILES").is_ok();
     let r2_state = read_r2_storage_state(env)
         .await
@@ -715,6 +718,13 @@ async fn monitoring_status(request: Request, env: &Env) -> ApiResult<serde_json:
         "database": {
             "isolation": isolation,
             "writesProtected": environment_name(env) != "production" && isolation != "isolated",
+            "primary": "supabase",
+            "readReplica": {
+                "configured": read_replica_configured,
+                "provider": "neon",
+                "mode": optional_secret(env, "READ_REPLICA_MODE").unwrap_or_else(|| "prefer-replica".into()),
+                "fallback": "supabase",
+            },
         },
         "storage": {
             "r2Configured": r2_configured,
@@ -735,6 +745,9 @@ async fn readiness_status(env: &Env) -> ApiResult<serde_json::Value> {
     let cache_configured = env.kv("E_POSYANDU_CACHE").is_ok();
     let queue_configured = env.queue("E_POSYANDU_JOBS").is_ok();
     let storage_configured = env.bucket("E_POSYANDU_FILES").is_ok();
+    let read_replica_configured = (env.service("NEON_READ_SERVICE").is_ok()
+        || optional_secret(env, "NEON_READ_API_URL").is_some())
+        && optional_secret(env, "READ_REPLICA_SHARED_SECRET").is_some();
     let worker = read_nutrition_worker_health(env).await;
     let worker_status = worker
         .as_ref()
@@ -752,6 +765,11 @@ async fn readiness_status(env: &Env) -> ApiResult<serde_json::Value> {
         "components": {
             "api": { "status": "healthy" },
             "database": { "configured": database_configured },
+            "readReplica": {
+                "configured": read_replica_configured,
+                "required": false,
+                "fallback": "supabase",
+            },
             "cache": { "configured": cache_configured },
             "queue": { "configured": queue_configured },
             "storage": { "configured": storage_configured },

@@ -14,7 +14,7 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '019_restore_location_access_helper.sql');
+  assert.equal(files.at(-1), '020_read_replica_children_page.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
@@ -87,6 +87,52 @@ test('helper akses wilayah dipulihkan untuk jalur penimbangan terautentikasi', a
   assert.match(migration, /users\.role = 'Kader Posyandu'/);
   assert.match(migration, /revoke all on function public\.eposyandu_location_allowed\(text, text\) from public, anon/);
   assert.match(migration, /grant execute on function public\.eposyandu_location_allowed\(text, text\) to authenticated, service_role/);
+});
+
+test('Neon hanya menjadi read replica privat dengan fallback ke Supabase', async () => {
+  const migration = await readFile(
+    resolve(root, 'database/migrations/020_read_replica_children_page.sql'),
+    'utf8'
+  );
+  const worker = await readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8');
+  const wrangler = await readFile(resolve(root, 'backend/wrangler.toml'), 'utf8');
+  const pipeline = await readFile(resolve(root, '.github/workflows/ci.yml'), 'utf8');
+  const replicaWorker = await readFile(
+    resolve(root, 'services/neon-read-worker/src/index.ts'),
+    'utf8'
+  );
+  const bootstrap = await readFile(
+    resolve(root, 'scripts/database/bootstrap-neon-read-replica.sh'),
+    'utf8'
+  );
+  const verifier = await readFile(
+    resolve(root, 'scripts/database/verify-neon-read-replica.sh'),
+    'utf8'
+  );
+
+  assert.match(migration, /eposyandu_replica_children_page/);
+  assert.match(migration, /p_role text default 'Ahli Gizi'/);
+  assert.match(worker, /env\.service\("NEON_READ_SERVICE"\)/);
+  assert.match(worker, /read_router_fallback/);
+  assert.match(worker, /replica:primary-pin:v1/);
+  assert.match(wrangler, /binding = "NEON_READ_SERVICE"/);
+  assert.match(pipeline, /npm ci --prefix services\/neon-read-worker/);
+  assert.ok(
+    pipeline.indexOf('name: Deploy private Neon read worker') <
+      pipeline.indexOf('npx --yes wrangler --cwd backend deploy --env=""')
+  );
+  assert.match(replicaWorker, /const READ_OPERATIONS = new Set/);
+  assert.doesNotMatch(replicaWorker, /insert\s+into|update\s+public\.|delete\s+from/i);
+  for (const table of ['children', 'measurements', 'mpasi_logs', 'eposyandu_growth_lms']) {
+    assert.match(bootstrap, new RegExp(`public\\.${table}`));
+    assert.match(verifier, new RegExp(`\\b${table}\\b`));
+  }
+  assert.match(bootstrap, /harus memakai koneksi direct, bukan pooler/);
+  assert.doesNotMatch(bootstrap, /grant execute on all functions/i);
+  assert.match(bootstrap, /default_transaction_read_only = on/);
+  assert.match(bootstrap, /grant select on table/);
+  assert.match(verifier, /Role %s masih memiliki hak tulis/);
+  assert.match(verifier, /eposyandu_dashboard_stats/);
 });
 
 test('dashboard dan daftar balita memakai tanggal acuan umur yang sama', async () => {

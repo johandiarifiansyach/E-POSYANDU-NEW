@@ -37,10 +37,11 @@ Salin template frontend yang sesuai menjadi file lokal tanpa akhiran `.example`.
 
 1. Jalankan `npm run check` dan `npm run build`.
 2. Terapkan migrasi PostgreSQL terbaru di staging.
-3. Jalankan `npm run worker:deploy:staging` dan `npm run pages:deploy:staging`.
-4. Uji alur online, offline, konflik edit, dan request berulang.
-5. Terapkan migrasi di production.
-6. Jalankan `npm run worker:deploy`, lalu `npm run pages:deploy`.
+3. Bila replika Neon dipakai, deploy private Neon Read Worker staging sebelum Rust Worker staging.
+4. Jalankan `npm run worker:deploy:staging` dan `npm run pages:deploy:staging`.
+5. Uji alur online, offline, konflik edit, fallback replika, dan request berulang.
+6. Terapkan migrasi di production.
+7. Deploy private Neon Read Worker production sebelum menjalankan `npm run worker:deploy`, lalu deploy Pages.
 
 Workflow [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) menjalankan TypeScript check, contract test, unit test Rust, build, dan E2E desktop/ponsel. Deploy production baru aktif setelah repository variable `AUTO_DEPLOY=true` dan secret `DATABASE_URL`, `CLOUDFLARE_API_TOKEN`, serta `CLOUDFLARE_ACCOUNT_ID` tersedia pada GitHub Environment `production`. Setelah deploy, smoke test memeriksa frontend, security headers, health API, dan OpenAPI.
 
@@ -92,6 +93,43 @@ Pantau setiap hari pada masa awal rilis:
 | Nutrition worker | Dashboard Admin Gizi dan key KV `monitoring:nutrition-worker:v1` | Alarm setelah 3 kegagalan beruntun; periksa Render dan Queue |
 
 Jangan menulis NIK, KK, nama balita, token, password, atau isi formulir ke log runtime.
+
+## Replika baca Neon
+
+Supabase adalah primary dan satu-satunya database yang menerima login, CRUD, audit, serta sinkronisasi offline. Neon hanya menerima salinan logical replication untuk pekerjaan baca yang berat. Rust Worker tetap memeriksa token, role, desa, dan posyandu sebelum meneruskan RPC yang diizinkan ke private Neon Read Worker melalui Cloudflare Service Binding.
+
+Urutan aktivasi production:
+
+1. Terapkan seluruh migration, termasuk `020_read_replica_children_page.sql`, pada Supabase.
+2. Buat project/database Neon kosong serta role login khusus baca.
+3. Jalankan `npm run replica:bootstrap` menggunakan tiga URL rahasia seperti pada `database/README.md`.
+4. Isi koneksi role baca pada private Worker:
+
+```bash
+cd services/neon-read-worker
+npx wrangler secret put NEON_DATABASE_URL
+npx wrangler secret put READ_REPLICA_SHARED_SECRET
+npm run deploy
+```
+
+5. Isi secret yang sama pada Rust Worker, lalu deploy ulang API:
+
+```bash
+cd backend
+npx wrangler secret put READ_REPLICA_SHARED_SECRET
+npm run deploy
+```
+
+Untuk staging, tambahkan `--env staging` pada perintah Wrangler. Jangan memasukkan URL owner Neon atau URL Supabase source ke private Worker. Service Binding tidak mengekspos Neon Read Worker ke internet dan harus dibuat lebih dahulu sebelum Rust Worker yang merujuk binding tersebut diterbitkan.
+
+Mode operasi ditentukan oleh `READ_REPLICA_MODE`:
+
+- `prefer-replica`: baca berat menuju Neon dan otomatis fallback ke Supabase.
+- `primary-only`: seluruh baca kembali ke Supabase tanpa mengubah kode atau data.
+
+Setelah mutasi berhasil, user terkait dipaksa membaca Supabase selama 30 detik. Cache daftar dan dashboard juga diinvalisasi. Ini menjaga read-your-own-write tanpa membuat setiap pembacaan mengenai primary.
+
+Periksa kondisi replikasi dengan `npm run replica:verify`. Pantau lag subscription Neon, ukuran replication slot Supabase, error fallback `read_router_fallback`, pemakaian compute Neon, dan egress Supabase. Router tidak menilai lag secara otomatis, jadi bila subscription tertinggal atau berhenti, set `READ_REPLICA_MODE=primary-only` terlebih dahulu; jangan mengarahkan operasi tulis ke Neon.
 
 Pemeriksaan terpadu tersedia pada `GET /api/v1/health/ready`. Endpoint ini memeriksa konfigurasi database, KV, Queue, R2, dan status nutrition worker tanpa membaca data balita. GitHub Actions menjalankannya pada Senin-Jumat pukul 07.07-16.00 WIB bersama pemeriksaan frontend dan health Render melalui `system-monitor.yml`. Pemeriksaan manual tetap dapat dijalankan kapan saja.
 

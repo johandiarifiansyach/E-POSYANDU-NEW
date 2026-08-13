@@ -1,0 +1,29 @@
+name = "e-posyandu-neon-read"
+main = "src/index.ts"
+compatibility_date = "2026-08-13"
+workers_dev = false
+
+[observability]
+enabled = true
+head_sampling_rate = 0.1
+
+[vars]
+ENVIRONMENT = "production"
+
+[env.development]
+name = "e-posyandu-neon-read-development"
+workers_dev = true
+
+[env.development.vars]
+ENVIRONMENT = "development"
+
+[env.staging]
+name = "e-posyandu-neon-read-staging"
+workers_dev = false
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1.0
