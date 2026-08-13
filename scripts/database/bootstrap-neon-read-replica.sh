@@ -76,8 +76,10 @@ cleanup() {
     echo "Aktivasi gagal; membersihkan publication, slot, dan subscription yang baru dibuat." >&2
     set +e
     if [[ "$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-      -v subscription="$subscription" \
-      -c "select exists(select 1 from pg_subscription where subname = :'subscription')")" == "t" ]]; then
+      -v subscription="$subscription" <<'SQL'
+select exists(select 1 from pg_subscription where subname = :'subscription');
+SQL
+    )" == "t" ]]; then
       psql "$NEON_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
         -c "alter subscription \"$subscription\" disable" >/dev/null
       psql "$NEON_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
@@ -112,6 +114,7 @@ target_database="$(connection_field "$NEON_DATABASE_URL" database)"
 reader_host="$(connection_field "$NEON_READER_DATABASE_URL" host)"
 reader_database="$(connection_field "$NEON_READER_DATABASE_URL" database)"
 reader_role="$(connection_field "$NEON_READER_DATABASE_URL" username)"
+validate_identifier "Role NEON_READER_DATABASE_URL" "$reader_role"
 
 if [[ "$source_host" == "$target_host" ]]; then
   echo "Supabase source dan Neon target tidak boleh menunjuk host yang sama." >&2
@@ -134,11 +137,16 @@ if [[ "$(psql "$SOURCE_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
 fi
 
 source_conflict="$(psql "$SOURCE_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-  -v publication="$publication" -v slot="$slot" \
-  -c "select exists(select 1 from pg_publication where pubname = :'publication') or exists(select 1 from pg_replication_slots where slot_name = :'slot')")"
+  -v publication="$publication" -v slot="$slot" <<'SQL'
+select exists(select 1 from pg_publication where pubname = :'publication')
+  or exists(select 1 from pg_replication_slots where slot_name = :'slot');
+SQL
+)"
 target_conflict="$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-  -v subscription="$subscription" \
-  -c "select exists(select 1 from pg_subscription where subname = :'subscription')")"
+  -v subscription="$subscription" <<'SQL'
+select exists(select 1 from pg_subscription where subname = :'subscription');
+SQL
+)"
 if [[ "$source_conflict" == "t" || "$target_conflict" == "t" ]]; then
   echo "Resource replikasi sudah ada. Jalankan npm run replica:verify, jangan membuatnya dua kali." >&2
   exit 1
@@ -152,8 +160,10 @@ if [[ "$target_has_tables" == "t" && "$allow_existing_schema" != "true" ]]; then
 fi
 
 if [[ "$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-  -v reader_role="$reader_role" \
-  -c "select exists(select 1 from pg_roles where rolname = :'reader_role')")" != "t" ]]; then
+  -v reader_role="$reader_role" <<'SQL'
+select exists(select 1 from pg_roles where rolname = :'reader_role');
+SQL
+)" != "t" ]]; then
   printf 'Role Neon %s belum ada. Buat role login khusus baca terlebih dahulu.\n' "$reader_role" >&2
   exit 1
 fi

@@ -131,8 +131,11 @@ test('Neon hanya menjadi read replica privat dengan fallback ke Supabase', async
   assert.doesNotMatch(bootstrap, /grant execute on all functions/i);
   assert.match(bootstrap, /default_transaction_read_only = on/);
   assert.match(bootstrap, /grant select on table/);
+  assert.match(bootstrap, /-v publication="\$publication"[^]*<<'SQL'/);
+  assert.doesNotMatch(bootstrap, /-c\s+"[^"]*:'(?:publication|slot|subscription|reader_role)'/);
   assert.match(verifier, /Role %s masih memiliki hak tulis/);
   assert.match(verifier, /eposyandu_dashboard_stats/);
+  assert.doesNotMatch(verifier, /-c\s+"[^"]*:'(?:publication|slot|subscription|reader_role|relation)'/);
 });
 
 test('dashboard dan daftar balita memakai tanggal acuan umur yang sama', async () => {

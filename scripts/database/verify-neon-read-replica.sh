@@ -19,6 +19,15 @@ wait_seconds="${REPLICA_WAIT_SECONDS:-0}"
 poll_seconds="${REPLICA_POLL_SECONDS:-5}"
 replicated_tables=(children measurements mpasi_logs eposyandu_growth_lms)
 
+validate_identifier() {
+  local label="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    printf '%s tidak valid: hanya huruf, angka, dan garis bawah yang diizinkan.\n' "$label" >&2
+    exit 1
+  fi
+}
+
 connection_field() {
   local connection="$1"
   local field="$2"
@@ -43,19 +52,40 @@ if [[ ! "$wait_seconds" =~ ^[0-9]+$ || ! "$poll_seconds" =~ ^[1-9][0-9]*$ ]]; th
 fi
 
 reader_role="$(connection_field "$NEON_READER_DATABASE_URL" username)"
+validate_identifier "REPLICA_PUBLICATION" "$publication"
+validate_identifier "REPLICA_SLOT" "$slot"
+validate_identifier "REPLICA_SUBSCRIPTION" "$subscription"
+validate_identifier "Role NEON_READER_DATABASE_URL" "$reader_role"
 deadline=$((SECONDS + wait_seconds))
 last_detail=""
 
 while true; do
   publication_tables="$(psql "$SOURCE_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-    -v publication="$publication" \
-    -c "select count(*) from pg_publication_tables where pubname = :'publication' and schemaname = 'public' and tablename = any(array['children','measurements','mpasi_logs','eposyandu_growth_lms'])")"
+    -v publication="$publication" <<'SQL'
+select count(*)
+from pg_publication_tables
+where pubname = :'publication'
+  and schemaname = 'public'
+  and tablename = any(array['children','measurements','mpasi_logs','eposyandu_growth_lms']);
+SQL
+)"
   slot_active="$(psql "$SOURCE_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-    -v slot="$slot" \
-    -c "select coalesce((select active from pg_replication_slots where slot_name = :'slot'), false)")"
+    -v slot="$slot" <<'SQL'
+select coalesce((select active from pg_replication_slots where slot_name = :'slot'), false);
+SQL
+)"
   subscription_ready="$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-    -v subscription="$subscription" \
-    -c "select exists(select 1 from pg_stat_subscription where subname = :'subscription' and pid is not null) and not exists(select 1 from pg_subscription_rel where srsubid = (select oid from pg_subscription where subname = :'subscription') and srsubstate <> 'r')")"
+    -v subscription="$subscription" <<'SQL'
+select exists(
+  select 1 from pg_stat_subscription where subname = :'subscription' and pid is not null
+) and not exists(
+  select 1
+  from pg_subscription_rel
+  where srsubid = (select oid from pg_subscription where subname = :'subscription')
+    and srsubstate <> 'r'
+);
+SQL
+)"
 
   counts_match=true
   count_details=()
@@ -84,8 +114,13 @@ done
 
 for table in "${replicated_tables[@]}"; do
   has_write="$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-    -v reader_role="$reader_role" -v relation="public.$table" \
-    -c "select has_table_privilege(:'reader_role', :'relation', 'INSERT') or has_table_privilege(:'reader_role', :'relation', 'UPDATE') or has_table_privilege(:'reader_role', :'relation', 'DELETE') or has_table_privilege(:'reader_role', :'relation', 'TRUNCATE')")"
+    -v reader_role="$reader_role" -v relation="public.$table" <<'SQL'
+select has_table_privilege(:'reader_role', :'relation', 'INSERT')
+  or has_table_privilege(:'reader_role', :'relation', 'UPDATE')
+  or has_table_privilege(:'reader_role', :'relation', 'DELETE')
+  or has_table_privilege(:'reader_role', :'relation', 'TRUNCATE');
+SQL
+)"
   if [[ "$has_write" == "t" ]]; then
     printf 'Role %s masih memiliki hak tulis pada public.%s.\n' "$reader_role" "$table" >&2
     exit 1
@@ -93,8 +128,12 @@ for table in "${replicated_tables[@]}"; do
 done
 
 read_only_setting="$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-  -v reader_role="$reader_role" \
-  -c "select coalesce(array_to_string(rolconfig, ','), '') from pg_roles where rolname = :'reader_role'")"
+  -v reader_role="$reader_role" <<'SQL'
+select coalesce(array_to_string(rolconfig, ','), '')
+from pg_roles
+where rolname = :'reader_role';
+SQL
+)"
 if [[ "$read_only_setting" != *"default_transaction_read_only=on"* ]]; then
   printf 'Role %s belum memiliki default_transaction_read_only=on.\n' "$reader_role" >&2
   exit 1
