@@ -558,7 +558,7 @@ test('sidebar desktop dapat diciutkan menjadi ikon dan dibuka kembali', async ({
   await expect(sidebarLabel).toBeVisible();
   await expect(sidebarBrand).toBeVisible();
   await expect(sidebarBrand).toContainText('E-Posyandu');
-  await expect(sidebarBrand).toContainText('v3.5.5');
+  await expect(sidebarBrand).toContainText('v3.5.6');
   await expect(page.getByRole('button', { name: 'Ringkas Menu', exact: true })).toBeVisible();
   await expect(page.locator('.app-sidebar')).toHaveCSS('width', '280px');
 
@@ -629,12 +629,12 @@ test('header bersih, periode berada di panel data, tema dan footer berfungsi', a
   }
 
   await expect(page.locator('.app-footer')).toContainText('© 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach');
-  const versionButton = page.locator('.app-footer').getByRole('button', { name: 'E-Posyandu v3.5.5' });
+  const versionButton = page.locator('.app-footer').getByRole('button', { name: 'E-Posyandu v3.5.6' });
   await expect(versionButton).toBeVisible();
   await versionButton.click();
   const releaseDialog = page.getByRole('dialog', { name: 'Apa yang Baru' });
   await expect(releaseDialog).toBeVisible();
-  await expect(releaseDialog.getByText('12 Agustus 2026', { exact: true }).first()).toBeVisible();
+  await expect(releaseDialog.getByText('13 Agustus 2026', { exact: true }).first()).toBeVisible();
   await expect(releaseDialog.getByText('v1.0.0', { exact: true })).toBeVisible();
   await releaseDialog.getByRole('button', { name: 'Selesai' }).click();
   await expect(releaseDialog).toBeHidden();

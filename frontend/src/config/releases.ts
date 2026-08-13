@@ -11,6 +11,20 @@ export type AppRelease = {
 export const RELEASE_HISTORY: AppRelease[] = [
   {
     version: APP_VERSION,
+    releaseDate: '13 Agustus 2026',
+    releaseDateIso: '2026-08-13',
+    title: 'Baca Darurat Aman melalui Neon',
+    changes: [
+      'Daftar, dashboard, dan laporan baca tetap dapat dibuka dari Neon ketika Supabase mengalami gangguan sementara.',
+      'Mode darurat hanya berlaku untuk sesi yang sebelumnya sudah diverifikasi, belum kedaluwarsa, serta maksimal selama satu jam.',
+      'Role, desa, dan posyandu tetap membatasi data; token mentah tidak disimpan karena cache memakai hash SHA-256.',
+      'Kesalahan token atau izin 401 dan 403 tidak pernah dialihkan ke replika agar pemeriksaan keamanan tidak dapat dilewati.',
+      'Login baru dan seluruh perubahan data tetap menuju Supabase sebagai database utama; Neon tidak menerima operasi tulis.',
+      'Status kesiapan API kini menampilkan konfigurasi mode baca darurat untuk membantu pemantauan layanan.'
+    ]
+  },
+  {
+    version: '3.5.5',
     releaseDate: '12 Agustus 2026',
     releaseDateIso: '2026-08-12',
     title: 'Simpan Penimbangan Tanpa Menunggu Antrean Lama',

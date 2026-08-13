@@ -1,3 +1,4 @@
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -12,6 +13,9 @@ mod api;
 mod graphql;
 
 const SCOPE_CACHE_TTL_MS: f64 = 90_000.0;
+const VERIFIED_SCOPE_CACHE_PREFIX: &str = "auth:verified-scope:v1";
+const VERIFIED_SCOPE_MAX_TTL_SECONDS: u64 = 3_600;
+const VERIFIED_SCOPE_MIN_TTL_SECONDS: u64 = 60;
 const LOGIN_IP_WINDOW_SECONDS: u64 = 600;
 const LOGIN_ACCOUNT_WINDOW_SECONDS: u64 = 600;
 const LOGIN_PAIR_WINDOW_SECONDS: u64 = 60;
@@ -42,6 +46,14 @@ struct AccessScope {
 struct CachedScope {
     expires_at: f64,
     scope: AccessScope,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VerifiedScopeRecord {
+    scope: AccessScope,
+    token_expires_at: u64,
+    cached_at: String,
 }
 
 struct LoginAttempt {
@@ -705,9 +717,7 @@ async fn monitoring_status(request: Request, env: &Env) -> ApiResult<serde_json:
             })
         });
     let isolation = database_isolation_status(env);
-    let read_replica_configured = (env.service("NEON_READ_SERVICE").is_ok()
-        || optional_secret(env, "NEON_READ_API_URL").is_some())
-        && optional_secret(env, "READ_REPLICA_SHARED_SECRET").is_some();
+    let read_replica_configured = read_replica_configured(env);
     let r2_configured = env.bucket("E_POSYANDU_FILES").is_ok();
     let r2_state = read_r2_storage_state(env)
         .await
@@ -724,6 +734,12 @@ async fn monitoring_status(request: Request, env: &Env) -> ApiResult<serde_json:
                 "provider": "neon",
                 "mode": optional_secret(env, "READ_REPLICA_MODE").unwrap_or_else(|| "prefer-replica".into()),
                 "fallback": "supabase",
+            },
+            "emergencyRead": {
+                "configured": emergency_read_configured(env),
+                "verifiedSessionRequired": true,
+                "maximumScopeCacheSeconds": VERIFIED_SCOPE_MAX_TTL_SECONDS,
+                "writes": "primary-only",
             },
         },
         "storage": {
@@ -745,9 +761,7 @@ async fn readiness_status(env: &Env) -> ApiResult<serde_json::Value> {
     let cache_configured = env.kv("E_POSYANDU_CACHE").is_ok();
     let queue_configured = env.queue("E_POSYANDU_JOBS").is_ok();
     let storage_configured = env.bucket("E_POSYANDU_FILES").is_ok();
-    let read_replica_configured = (env.service("NEON_READ_SERVICE").is_ok()
-        || optional_secret(env, "NEON_READ_API_URL").is_some())
-        && optional_secret(env, "READ_REPLICA_SHARED_SECRET").is_some();
+    let read_replica_configured = read_replica_configured(env);
     let worker = read_nutrition_worker_health(env).await;
     let worker_status = worker
         .as_ref()
@@ -769,6 +783,12 @@ async fn readiness_status(env: &Env) -> ApiResult<serde_json::Value> {
                 "configured": read_replica_configured,
                 "required": false,
                 "fallback": "supabase",
+            },
+            "emergencyRead": {
+                "configured": emergency_read_configured(env),
+                "verifiedSessionRequired": true,
+                "maximumScopeCacheSeconds": VERIFIED_SCOPE_MAX_TTL_SECONDS,
+                "writes": "primary-only",
             },
             "cache": { "configured": cache_configured },
             "queue": { "configured": queue_configured },
@@ -1248,6 +1268,163 @@ fn cache_scope(token: String, scope: AccessScope) {
     });
 }
 
+fn now_seconds() -> u64 {
+    (now_ms() / 1_000.0).floor().max(0.0) as u64
+}
+
+fn jwt_expiration_seconds(token: &str) -> Option<u64> {
+    let encoded_payload = token.split('.').nth(1)?;
+    let payload = URL_SAFE_NO_PAD.decode(encoded_payload).ok()?;
+    serde_json::from_slice::<serde_json::Value>(&payload)
+        .ok()?
+        .get("exp")?
+        .as_u64()
+}
+
+fn verified_scope_is_valid(scope: &AccessScope) -> bool {
+    if scope.user_id.trim().is_empty() {
+        return false;
+    }
+    let village_configured = scope
+        .desa
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let posyandu_configured = scope
+        .posyandu
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    match scope.role.as_str() {
+        "Ahli Gizi" => true,
+        "Bidan Desa" => village_configured,
+        "Kader Posyandu" => village_configured && posyandu_configured,
+        _ => false,
+    }
+}
+
+fn read_replica_configured(env: &Env) -> bool {
+    (env.service("NEON_READ_SERVICE").is_ok()
+        || optional_secret(env, "NEON_READ_API_URL").is_some())
+        && optional_secret(env, "READ_REPLICA_SHARED_SECRET").is_some()
+}
+
+fn emergency_read_configured(env: &Env) -> bool {
+    env.kv("E_POSYANDU_CACHE").is_ok()
+        && read_replica_configured(env)
+        && optional_secret(env, "READ_REPLICA_MODE").as_deref() != Some("primary-only")
+}
+
+fn is_emergency_read_route(method: &Method, path: &str) -> bool {
+    *method == Method::Get || (*method == Method::Post && path == "/api/v1/graphql")
+}
+
+fn upstream_is_unavailable(status: u16) -> bool {
+    status == 429 || status >= 500
+}
+
+async fn persist_verified_scope(env: &Env, token: &str, scope: &AccessScope) {
+    if !verified_scope_is_valid(scope) {
+        worker::console_warn!("Scope akun tidak valid dan tidak disimpan untuk baca darurat.");
+        return;
+    }
+    let Some(token_expires_at) = jwt_expiration_seconds(token) else {
+        worker::console_warn!("JWT tanpa waktu kedaluwarsa tidak disimpan untuk baca darurat.");
+        return;
+    };
+    let ttl = token_expires_at
+        .saturating_sub(now_seconds())
+        .min(VERIFIED_SCOPE_MAX_TTL_SECONDS);
+    if ttl < VERIFIED_SCOPE_MIN_TTL_SECONDS {
+        return;
+    }
+    let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
+        return;
+    };
+    let record = VerifiedScopeRecord {
+        scope: scope.clone(),
+        token_expires_at,
+        cached_at: now_iso(),
+    };
+    let Ok(payload) = serde_json::to_string(&record) else {
+        return;
+    };
+    let key = hashed_key(VERIFIED_SCOPE_CACHE_PREFIX, token);
+    let Ok(builder) = cache.put(&key, payload) else {
+        return;
+    };
+    if builder.expiration_ttl(ttl).execute().await.is_err() {
+        worker::console_warn!("Scope terverifikasi tidak dapat disimpan ke KV.");
+    }
+}
+
+async fn load_verified_scope(env: &Env, token: &str) -> Option<AccessScope> {
+    let token_expires_at = jwt_expiration_seconds(token)?;
+    if token_expires_at <= now_seconds() {
+        return None;
+    }
+    let cache = env.kv("E_POSYANDU_CACHE").ok()?;
+    let payload = cache
+        .get(&hashed_key(VERIFIED_SCOPE_CACHE_PREFIX, token))
+        .text()
+        .await
+        .ok()??;
+    let record = serde_json::from_str::<VerifiedScopeRecord>(&payload).ok()?;
+    if record.token_expires_at != token_expires_at || !verified_scope_is_valid(&record.scope) {
+        return None;
+    }
+    Some(record.scope)
+}
+
+fn schedule_verified_scope_cache(context: &Context, env: &Env, token: &str, scope: &AccessScope) {
+    let env = env.clone();
+    let token = token.to_owned();
+    let scope = scope.clone();
+    context.wait_until(async move {
+        persist_verified_scope(&env, &token, &scope).await;
+    });
+}
+
+async fn emergency_read_scope(
+    request: &Request,
+    env: &Env,
+    token: &str,
+    reason: &'static str,
+) -> ApiResult<AccessScope> {
+    let method = request.method();
+    let path = request.path();
+    if !is_emergency_read_route(&method, &path) {
+        return Err(ApiFailure::new(
+            503,
+            "Layanan utama sedang tidak tersedia. Perubahan data belum dapat dikirim.",
+        ));
+    }
+    if !emergency_read_configured(env) {
+        return Err(ApiFailure::new(
+            503,
+            "Layanan utama sedang tidak tersedia dan replika baca belum siap.",
+        ));
+    }
+    let scope = load_verified_scope(env, token).await.ok_or_else(|| {
+        ApiFailure::new(
+            401,
+            "Sesi tidak dapat diverifikasi saat layanan utama terganggu. Silakan masuk kembali setelah layanan pulih.",
+        )
+    })?;
+    cache_scope(token.to_owned(), scope.clone());
+    worker::console_warn!(
+        "{}",
+        json!({
+            "level": "warn",
+            "event": "emergency_read_session",
+            "request_id": request_id(request),
+            "route": path,
+            "reason": reason,
+            "database": "neon",
+            "writes": "blocked"
+        })
+    );
+    Ok(scope)
+}
+
 async fn request_value(
     url: String,
     method: Method,
@@ -1518,6 +1695,7 @@ async fn login(mut request: Request, env: &Env, context: &Context) -> ApiResult<
         posyandu: account.posyandu.clone(),
     };
     cache_scope(session.access_token.clone(), profile.clone());
+    schedule_verified_scope_cache(context, env, &session.access_token, &profile);
     schedule_login_attempt_clear(context, env, &remote_ip, &username);
     schedule_login_audit(
         context,
@@ -1595,14 +1773,24 @@ async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
         .trim_end_matches('/')
         .to_owned();
     let publishable_key = secret(env, "SUPABASE_PUBLISHABLE_KEY")?;
-    let (status, payload) = request_value(
+    let auth_response = request_value(
         format!("{supabase_url}/auth/v1/user"),
         Method::Get,
         supabase_headers(&publishable_key, Some(&token))
             .map_err(|_| ApiFailure::new(503, "Konfigurasi Supabase belum tersedia."))?,
         None,
     )
-    .await?;
+    .await;
+    let (status, payload) = match auth_response {
+        Ok((status, _)) if upstream_is_unavailable(status) => {
+            return emergency_read_scope(request, env, &token, "auth_upstream_status").await;
+        }
+        Ok(response) => response,
+        Err(error) if error.status >= 500 => {
+            return emergency_read_scope(request, env, &token, "auth_transport").await;
+        }
+        Err(error) => return Err(error),
+    };
     if status >= 300 {
         return Err(ApiFailure::new(401, "Sesi masuk tidak lagi valid."));
     }
@@ -1613,7 +1801,7 @@ async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
 
     let secret_key = secret(env, "SUPABASE_SECRET_KEY")?;
     let user_id = url::form_urlencoded::byte_serialize(identity.id.as_bytes()).collect::<String>();
-    let (status, payload) = request_value(
+    let profile_response = request_value(
         format!(
             "{supabase_url}/rest/v1/app_users?select=role,village,posyandu,active&user_id=eq.{user_id}&limit=1"
         ),
@@ -1622,7 +1810,17 @@ async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
             .map_err(|_| ApiFailure::new(503, "Konfigurasi Supabase belum tersedia."))?,
         None,
     )
-    .await?;
+    .await;
+    let (status, payload) = match profile_response {
+        Ok((status, _)) if upstream_is_unavailable(status) => {
+            return emergency_read_scope(request, env, &token, "profile_upstream_status").await;
+        }
+        Ok(response) => response,
+        Err(error) if error.status >= 500 => {
+            return emergency_read_scope(request, env, &token, "profile_transport").await;
+        }
+        Err(error) => return Err(error),
+    };
     if status >= 300 {
         return Err(ApiFailure::new(503, "Layanan profil akun belum tersedia."));
     }
@@ -1653,7 +1851,8 @@ async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
         desa: profile.village,
         posyandu: profile.posyandu,
     };
-    cache_scope(token, scope.clone());
+    cache_scope(token.clone(), scope.clone());
+    persist_verified_scope(env, &token, &scope).await;
     Ok(scope)
 }
 
@@ -1744,6 +1943,54 @@ mod tests {
         assert!(is_allowed_nonproduction_post("/api/v1/client-errors"));
         assert!(!is_allowed_nonproduction_post("/api/v1/sync"));
         assert!(!is_allowed_nonproduction_post("/api/v1/jobs"));
+    }
+
+    #[test]
+    fn jwt_expiration_is_read_from_url_safe_payload() {
+        let payload = URL_SAFE_NO_PAD.encode(br#"{"exp":1893456000}"#);
+        let token = format!("header.{payload}.signature");
+        assert_eq!(jwt_expiration_seconds(&token), Some(1_893_456_000));
+        assert_eq!(jwt_expiration_seconds("invalid"), None);
+    }
+
+    #[test]
+    fn emergency_session_only_supports_read_routes() {
+        assert!(is_emergency_read_route(
+            &Method::Get,
+            "/api/v1/children/page"
+        ));
+        assert!(is_emergency_read_route(&Method::Post, "/api/v1/graphql"));
+        assert!(!is_emergency_read_route(&Method::Post, "/api/v1/sync"));
+        assert!(!is_emergency_read_route(
+            &Method::Delete,
+            "/api/v1/measurements/example"
+        ));
+    }
+
+    #[test]
+    fn emergency_scope_keeps_role_and_location_boundaries() {
+        assert!(verified_scope_is_valid(&AccessScope {
+            user_id: "nutrition-user".into(),
+            email: None,
+            role: "Ahli Gizi".into(),
+            desa: None,
+            posyandu: None,
+        }));
+        assert!(!verified_scope_is_valid(&AccessScope {
+            user_id: "cadre-user".into(),
+            email: None,
+            role: "Kader Posyandu".into(),
+            desa: Some("Desa Gumukmas".into()),
+            posyandu: None,
+        }));
+    }
+
+    #[test]
+    fn emergency_fallback_only_accepts_unavailable_upstream() {
+        assert!(upstream_is_unavailable(429));
+        assert!(upstream_is_unavailable(503));
+        assert!(!upstream_is_unavailable(401));
+        assert!(!upstream_is_unavailable(403));
     }
 }
 

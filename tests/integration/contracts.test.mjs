@@ -253,6 +253,21 @@ test('environment database dipisahkan dan penulisan non-production dilindungi', 
   assert.match(checker, /development, staging, dan production masih memakai project Supabase yang sama/);
 });
 
+test('Neon mengambil alih baca hanya untuk sesi Supabase yang pernah diverifikasi', async () => {
+  const worker = await readFile(resolve(root, 'backend/src/lib.rs'), 'utf8');
+
+  assert.match(worker, /VERIFIED_SCOPE_CACHE_PREFIX/);
+  assert.match(worker, /hashed_key\(VERIFIED_SCOPE_CACHE_PREFIX, token\)/);
+  assert.match(worker, /expiration_ttl\(ttl\)/);
+  assert.match(worker, /jwt_expiration_seconds/);
+  assert.match(worker, /fn is_emergency_read_route/);
+  assert.match(worker, /path == "\/api\/v1\/graphql"/);
+  assert.match(worker, /fn upstream_is_unavailable/);
+  assert.match(worker, /status == 429 \|\| status >= 500/);
+  assert.match(worker, /"writes": "primary-only"/);
+  assert.match(worker, /Layanan utama sedang tidak tersedia\. Perubahan data belum dapat dikirim/);
+});
+
 test('monitoring worker tersimpan di KV dan MQTT ditunda sampai ada IoT', async () => {
   const worker = await readFile(resolve(root, 'backend/src/lib.rs'), 'utf8');
   const decision = await readFile(resolve(root, 'docs/decisions/001-mqtt-deferred.md'), 'utf8');
