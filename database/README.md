@@ -31,13 +31,13 @@ Neon dipakai sebagai replika baca asinkron untuk dashboard, daftar balita, masal
 Aktivasi dilakukan sekali setelah migration terbaru diterapkan pada Supabase:
 
 ```bash
-SOURCE_DATABASE_URL='postgresql://koneksi-direct-supabase' \
+SOURCE_DATABASE_URL='postgresql://session-pooler-supabase-port-5432' \
 NEON_DATABASE_URL='postgresql://owner-neon-direct' \
 NEON_READER_DATABASE_URL='postgresql://role-baca-neon' \
 npm run replica:bootstrap
 ```
 
-Ketiga URL bersifat rahasia dan tidak boleh disimpan ke Git. `SOURCE_DATABASE_URL` serta `NEON_DATABASE_URL` memakai koneksi direct selama pembuatan snapshot awal oleh komputer pengelola. `NEON_READER_DATABASE_URL` boleh memakai endpoint pooled dan digunakan private Neon Read Worker untuk query laporan.
+Ketiga URL bersifat rahasia dan tidak boleh disimpan ke Git. `SOURCE_DATABASE_URL` disarankan memakai **Session Pooler Supabase port 5432** agar komputer tanpa koneksi IPv6 tetap dapat membuat snapshot. Jangan memakai Transaction Pooler port 6543. `NEON_DATABASE_URL` memakai koneksi direct milik owner, sedangkan `NEON_READER_DATABASE_URL` boleh memakai endpoint pooled dan digunakan private Neon Read Worker untuk query laporan.
 
 Skrip hanya menyalin tabel `children`, `measurements`, `mpasi_logs`, dan `eposyandu_growth_lms`. Skrip juga menyiapkan state sinkronisasi, fungsi internal dengan allowlist, membuat role query tetap read-only, memeriksa snapshot awal, dan menolak target yang sama dengan source. Setelah bootstrap, private Worker mengambil perubahan `children`, `measurements`, `mpasi_logs`, serta tombstone penghapusan melalui HTTPS setiap lima menit. Tidak ada publication, replication slot, atau subscription antardatabase.
 
@@ -56,7 +56,7 @@ npm run deploy
 `NEON_DATABASE_URL` wajib memakai role baca. `NEON_SYNC_DATABASE_URL` memakai role owner dan hanya tersimpan di Worker privat. `SUPABASE_SECRET_KEY` adalah secret key backend, bukan publishable key. Pemeriksaan berikutnya dapat dijalankan tanpa membuat resource baru:
 
 ```bash
-SOURCE_DATABASE_URL='postgresql://koneksi-direct-supabase' \
+SOURCE_DATABASE_URL='postgresql://session-pooler-supabase-port-5432' \
 NEON_DATABASE_URL='postgresql://owner-neon-direct' \
 NEON_READER_DATABASE_URL='postgresql://role-baca-neon' \
 npm run replica:verify

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${SOURCE_DATABASE_URL:?Isi SOURCE_DATABASE_URL dengan koneksi direct Supabase production.}"
+: "${SOURCE_DATABASE_URL:?Isi SOURCE_DATABASE_URL dengan koneksi direct atau Session Pooler Supabase production.}"
 : "${NEON_DATABASE_URL:?Isi NEON_DATABASE_URL dengan koneksi direct Neon milik owner.}"
 : "${NEON_READER_DATABASE_URL:?Isi NEON_READER_DATABASE_URL dengan koneksi Neon role baca.}"
 
@@ -38,6 +38,7 @@ parsed = urlsplit(os.environ["CONNECTION_VALUE"])
 field = os.environ["CONNECTION_FIELD"]
 values = {
     "host": parsed.hostname or "",
+    "port": str(parsed.port or ""),
     "username": unquote(parsed.username or ""),
     "database": (parsed.path or "").lstrip("/"),
 }
@@ -49,21 +50,31 @@ validate_connection() {
   local label="$1"
   local connection="$2"
   local allow_pooler="$3"
-  local host username database
+  local host port username database
   host="$(connection_field "$connection" host)"
+  port="$(connection_field "$connection" port)"
   username="$(connection_field "$connection" username)"
   database="$(connection_field "$connection" database)"
   if [[ -z "$host" || -z "$username" || -z "$database" ]]; then
     printf '%s bukan connection string PostgreSQL yang lengkap.\n' "$label" >&2
     exit 1
   fi
+  if [[ "$host" == *"URL_"* || "$host" == *"HOST"* || "$connection" == *"PASSWORD"* ]]; then
+    printf '%s masih berisi placeholder. Salin connection string asli dari dashboard penyedia database.\n' "$label" >&2
+    exit 1
+  fi
   if [[ "$allow_pooler" != "true" && "$host" == *pooler* ]]; then
     printf '%s harus memakai koneksi direct untuk proses snapshot: %s\n' "$label" "$host" >&2
     exit 1
   fi
+  if [[ "$label" == "SOURCE_DATABASE_URL" && "$host" == *pooler* && "$port" != "5432" ]]; then
+    printf '%s harus memakai Supabase Session Pooler port 5432, bukan Transaction Pooler port %s.\n' \
+      "$label" "${port:-default}" >&2
+    exit 1
+  fi
 }
 
-validate_connection "SOURCE_DATABASE_URL" "$SOURCE_DATABASE_URL" false
+validate_connection "SOURCE_DATABASE_URL" "$SOURCE_DATABASE_URL" true
 validate_connection "NEON_DATABASE_URL" "$NEON_DATABASE_URL" false
 validate_connection "NEON_READER_DATABASE_URL" "$NEON_READER_DATABASE_URL" true
 

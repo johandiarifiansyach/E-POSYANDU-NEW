@@ -139,6 +139,8 @@ test('Neon hanya menjadi read replica privat dengan fallback ke Supabase', async
     assert.match(verifier, new RegExp(`\\b${table}\\b`));
   }
   assert.match(bootstrap, /Membuat snapshot awal melalui koneksi lokal/);
+  assert.match(bootstrap, /Session Pooler port 5432/);
+  assert.match(bootstrap, /validate_connection "SOURCE_DATABASE_URL" "\$SOURCE_DATABASE_URL" true/);
   assert.match(bootstrap, /eposyandu_replica_sync_state/);
   assert.match(bootstrap, /eposyandu_replica_apply_batch/);
   assert.match(bootstrap, /eposyandu_replica_apply_tombstones/);

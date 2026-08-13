@@ -102,7 +102,7 @@ Urutan aktivasi production:
 
 1. Terapkan seluruh migration, termasuk `020_read_replica_children_page.sql`, pada Supabase.
 2. Buat project/database Neon kosong serta role login khusus baca.
-3. Jalankan `npm run replica:bootstrap` menggunakan tiga URL rahasia seperti pada `database/README.md`. Perintah ini membuat snapshot melalui komputer pengelola dan aman diulang pada schema Neon yang sudah lengkap.
+3. Jalankan `npm run replica:bootstrap` menggunakan tiga URL rahasia seperti pada `database/README.md`. Gunakan Supabase Session Pooler port 5432 sebagai source agar snapshot dapat berjalan melalui IPv4. Perintah ini membuat snapshot melalui komputer pengelola dan aman diulang pada schema Neon yang sudah lengkap.
 4. Isi koneksi baca, koneksi sinkronisasi, dan sumber HTTPS pada private Worker:
 
 ```bash
