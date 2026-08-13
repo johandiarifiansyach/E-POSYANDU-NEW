@@ -10,12 +10,18 @@ head_sampling_rate = 0.1
 [vars]
 ENVIRONMENT = "production"
 
+[triggers]
+crons = ["*/5 * * * *"]
+
 [env.development]
 name = "e-posyandu-neon-read-development"
 workers_dev = true
 
 [env.development.vars]
 ENVIRONMENT = "development"
+
+[env.development.triggers]
+crons = []
 
 [env.staging]
 name = "e-posyandu-neon-read-staging"
@@ -27,3 +33,6 @@ ENVIRONMENT = "staging"
 [env.staging.observability]
 enabled = true
 head_sampling_rate = 1.0
+
+[env.staging.triggers]
+crons = ["*/10 * * * *"]

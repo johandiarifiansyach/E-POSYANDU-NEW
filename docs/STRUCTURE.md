@@ -43,6 +43,6 @@ E-POSYANDU/
 - Endpoint backend ditempatkan di `backend/src/api`; `lib.rs` hanya mengurus pintu masuk, autentikasi, keamanan, dan dispatch.
 - REST dipakai untuk autentikasi, CRUD, sinkronisasi ringan, pembuatan job, progres, dan unduhan. GraphQL hanya untuk query baca dashboard dan laporan terpaginasikan; gRPC hanya untuk validasi, kalkulasi, ekspor, dan normalisasi batch internal.
 - Cloudflare Queue hanya membawa ID job. Payload dan status tetap berada di PostgreSQL agar pesan kecil, dapat diulang secara idempoten, dan tidak menyimpan data kesehatan di antrean.
-- PostgreSQL Supabase adalah sumber kebenaran dan satu-satunya tujuan tulis. Neon menyimpan replika baca asinkron untuk query berat; Rust Worker selalu memvalidasi scope dan otomatis fallback ke Supabase.
+- PostgreSQL Supabase adalah sumber kebenaran dan satu-satunya tujuan tulis aplikasi. Neon menyimpan replika baca asinkron yang diperbarui lewat HTTPS untuk query berat; Rust Worker selalu memvalidasi scope dan otomatis fallback ke Supabase.
 - Setiap perubahan struktur database wajib menjadi migration baru di `database/migrations`.
 - Jangan menyimpan output build, cache, `.env`, `.dev.vars`, backup, atau credential ke Git.

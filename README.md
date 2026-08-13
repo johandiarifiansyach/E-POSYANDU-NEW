@@ -39,7 +39,7 @@ npm run e2e:test        # Test browser desktop dan ponsel
 npm run db:migrate      # Terapkan migration yang belum dijalankan
 npm run db:backup       # Buat backup PostgreSQL dengan izin file privat
 npm run replica:check   # Periksa TypeScript private Neon Read Worker
-npm run replica:verify  # Verifikasi logical replication dan role read-only
+npm run replica:verify  # Verifikasi sinkronisasi HTTPS dan role read-only
 npm run worker:deploy   # Deploy API ke Cloudflare Worker
 npm run worker:deploy:staging # Deploy API staging
 npm run pages:deploy    # Build dan deploy frontend ke Cloudflare Pages

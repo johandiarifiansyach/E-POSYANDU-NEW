@@ -101,6 +101,10 @@ test('Neon hanya menjadi read replica privat dengan fallback ke Supabase', async
     resolve(root, 'services/neon-read-worker/src/index.ts'),
     'utf8'
   );
+  const replicaWrangler = await readFile(
+    resolve(root, 'services/neon-read-worker/wrangler.toml'),
+    'utf8'
+  );
   const bootstrap = await readFile(
     resolve(root, 'scripts/database/bootstrap-neon-read-replica.sh'),
     'utf8'
@@ -122,20 +126,32 @@ test('Neon hanya menjadi read replica privat dengan fallback ke Supabase', async
       pipeline.indexOf('npx --yes wrangler --cwd backend deploy --env=""')
   );
   assert.match(replicaWorker, /const READ_OPERATIONS = new Set/);
-  assert.doesNotMatch(replicaWorker, /insert\s+into|update\s+public\.|delete\s+from/i);
+  assert.match(replicaWorker, /const SYNC_TABLES = \["children", "measurements", "mpasi_logs"\]/);
+  assert.match(replicaWorker, /SUPABASE_SECRET_KEY/);
+  assert.match(replicaWorker, /\/rest\/v1\//);
+  assert.match(replicaWorker, /eposyandu_replica_apply_batch/);
+  assert.match(replicaWorker, /eposyandu_replica_apply_tombstones/);
+  assert.match(replicaWorker, /async scheduled/);
+  assert.match(replicaWrangler, /crons = \["\*\/5 \* \* \* \*"\]/);
+  assert.match(replicaWrangler, /workers_dev = false/);
   for (const table of ['children', 'measurements', 'mpasi_logs', 'eposyandu_growth_lms']) {
     assert.match(bootstrap, new RegExp(`public\\.${table}`));
     assert.match(verifier, new RegExp(`\\b${table}\\b`));
   }
-  assert.match(bootstrap, /harus memakai koneksi direct, bukan pooler/);
+  assert.match(bootstrap, /Membuat snapshot awal melalui koneksi lokal/);
+  assert.match(bootstrap, /eposyandu_replica_sync_state/);
+  assert.match(bootstrap, /eposyandu_replica_apply_batch/);
+  assert.match(bootstrap, /eposyandu_replica_apply_tombstones/);
+  assert.doesNotMatch(bootstrap, /create publication|create subscription|replication_slot/i);
   assert.doesNotMatch(bootstrap, /grant execute on all functions/i);
   assert.match(bootstrap, /default_transaction_read_only = on/);
   assert.match(bootstrap, /grant select on table/);
-  assert.match(bootstrap, /-v publication="\$publication"[^]*<<'SQL'/);
-  assert.doesNotMatch(bootstrap, /-c\s+"[^"]*:'(?:publication|slot|subscription|reader_role)'/);
+  assert.match(bootstrap, /revoke all on function public\.eposyandu_replica_apply_batch/);
+  assert.doesNotMatch(bootstrap, /-c\s+"[^"]*:'(?:reader_role)'/);
   assert.match(verifier, /Role %s masih memiliki hak tulis/);
+  assert.match(verifier, /Sinkronisasi Neon tertinggal/);
   assert.match(verifier, /eposyandu_dashboard_stats/);
-  assert.doesNotMatch(verifier, /-c\s+"[^"]*:'(?:publication|slot|subscription|reader_role|relation)'/);
+  assert.doesNotMatch(verifier, /-c\s+"[^"]*:'(?:reader_role|relation)'/);
 });
 
 test('dashboard dan daftar balita memakai tanggal acuan umur yang sama', async () => {

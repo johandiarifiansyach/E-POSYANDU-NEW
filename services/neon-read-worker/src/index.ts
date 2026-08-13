@@ -3,7 +3,10 @@ import { neon } from "@neondatabase/serverless";
 interface Env {
   ENVIRONMENT: string;
   NEON_DATABASE_URL: string;
+  NEON_SYNC_DATABASE_URL: string;
   READ_REPLICA_SHARED_SECRET: string;
+  SUPABASE_URL: string;
+  SUPABASE_SECRET_KEY: string;
 }
 
 type Payload = Record<string, unknown>;
@@ -15,6 +18,18 @@ const READ_OPERATIONS = new Set([
   "eposyandu_dashboard_stats",
   "eposyandu_sigizi_measurement_export",
 ]);
+
+const SYNC_TABLES = ["children", "measurements", "mpasi_logs"] as const;
+const SYNC_PAGE_SIZE = 200;
+const SYNC_PAGE_LIMIT = 100;
+const SYNC_OVERLAP_MS = 5_000;
+
+type SyncResource = (typeof SYNC_TABLES)[number] | "sync_tombstones";
+
+interface SyncResult {
+  resource: SyncResource;
+  rows: number;
+}
 
 function jsonResponse(payload: unknown, status = 200): Response {
   return Response.json(payload, {
@@ -160,14 +175,134 @@ async function executeOperation(databaseUrl: string, operation: string, payload:
   throw new Error("Operasi baca tidak diizinkan.");
 }
 
+function sourceHeaders(secretKey: string): Headers {
+  const headers = new Headers({
+    Accept: "application/json",
+    apikey: secretKey,
+  });
+  if (secretKey.startsWith("eyJ")) headers.set("Authorization", `Bearer ${secretKey}`);
+  return headers;
+}
+
+function sourceUrl(env: Env, resource: SyncResource, cursor: string, until: string, offset: number): URL {
+  const table = resource === "sync_tombstones" ? "sync_tombstones" : resource;
+  const timestampColumn = resource === "sync_tombstones" ? "deleted_at" : "updated_at";
+  const url = new URL(`/rest/v1/${table}`, env.SUPABASE_URL);
+  url.searchParams.set("select", resource === "sync_tombstones" ? "resource,document_id,deleted_at" : "*");
+  url.searchParams.append(timestampColumn, `gte.${cursor}`);
+  url.searchParams.append(timestampColumn, `lt.${until}`);
+  if (resource === "sync_tombstones") {
+    url.searchParams.set("resource", "in.(children,measurements,mpasi_logs)");
+    url.searchParams.set("order", "deleted_at.asc,resource.asc,document_id.asc");
+  } else {
+    url.searchParams.set("order", "updated_at.asc,id.asc");
+  }
+  url.searchParams.set("limit", String(SYNC_PAGE_SIZE));
+  url.searchParams.set("offset", String(offset));
+  return url;
+}
+
+async function fetchSourceRows(
+  env: Env,
+  resource: SyncResource,
+  cursor: string,
+  until: string,
+  offset: number,
+): Promise<Payload[]> {
+  const response = await fetch(sourceUrl(env, resource, cursor, until, offset), {
+    headers: sourceHeaders(env.SUPABASE_SECRET_KEY),
+  });
+  if (!response.ok) throw new Error(`source_${resource}_${response.status}`);
+  const rows: unknown = await response.json();
+  if (!Array.isArray(rows)) throw new Error(`source_${resource}_invalid_payload`);
+  return rows.filter((row): row is Payload => Boolean(row) && typeof row === "object" && !Array.isArray(row));
+}
+
+async function syncResource(env: Env, resource: SyncResource, until: string): Promise<SyncResult> {
+  const writer = neon(env.NEON_SYNC_DATABASE_URL);
+  const stateRows = await writer`select cursor_at::text
+    from public.eposyandu_replica_sync_state
+    where resource = ${resource}
+    limit 1`;
+  const cursor = stateRows[0]?.cursor_at;
+  if (typeof cursor !== "string" || cursor.length === 0) throw new Error(`state_${resource}_missing`);
+
+  let rowCount = 0;
+  for (let page = 0; page < SYNC_PAGE_LIMIT; page += 1) {
+    const rows = await fetchSourceRows(env, resource, cursor, until, page * SYNC_PAGE_SIZE);
+    if (rows.length > 0) {
+      const encodedRows = JSON.stringify(rows);
+      if (resource === "sync_tombstones") {
+        await writer`select public.eposyandu_replica_apply_tombstones(${encodedRows}::jsonb)`;
+      } else {
+        await writer`select public.eposyandu_replica_apply_batch(${resource}, ${encodedRows}::jsonb)`;
+      }
+      rowCount += rows.length;
+    }
+    if (rows.length < SYNC_PAGE_SIZE) break;
+    if (page === SYNC_PAGE_LIMIT - 1) throw new Error(`source_${resource}_page_limit`);
+  }
+
+  const nextCursor = new Date(new Date(until).getTime() - SYNC_OVERLAP_MS).toISOString();
+  await writer`update public.eposyandu_replica_sync_state
+    set cursor_at = ${nextCursor}::timestamptz,
+        last_success_at = clock_timestamp(),
+        last_row_count = ${rowCount},
+        last_error = null,
+        updated_at = clock_timestamp()
+    where resource = ${resource}`;
+  return { resource, rows: rowCount };
+}
+
+async function recordSyncFailure(env: Env, resource: SyncResource): Promise<void> {
+  try {
+    const writer = neon(env.NEON_SYNC_DATABASE_URL);
+    await writer`update public.eposyandu_replica_sync_state
+      set last_error = 'scheduled sync failed', updated_at = clock_timestamp()
+      where resource = ${resource}`;
+  } catch {
+    console.error(JSON.stringify({ level: "error", event: "replica_sync_state_failed", resource }));
+  }
+}
+
+async function runIncrementalSync(env: Env): Promise<SyncResult[]> {
+  const until = new Date().toISOString();
+  const results: SyncResult[] = [];
+  const resources: SyncResource[] = [...SYNC_TABLES, "sync_tombstones"];
+  for (const resource of resources) {
+    try {
+      results.push(await syncResource(env, resource, until));
+    } catch (error) {
+      await recordSyncFailure(env, resource);
+      console.error(JSON.stringify({
+        level: "error",
+        event: "replica_sync_failed",
+        resource,
+        errorType: error instanceof Error ? error.name : "UnknownError",
+      }));
+      throw error;
+    }
+  }
+  console.log(JSON.stringify({ level: "info", event: "replica_sync_completed", until, results }));
+  return results;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
       try {
         const sql = neon(env.NEON_DATABASE_URL);
-        await sql`select 1 as healthy`;
-        return jsonResponse({ ok: true, service: "e-posyandu-neon-read", environment: env.ENVIRONMENT });
+        const rows = await sql`select min(last_success_at)::text as last_success_at,
+          greatest(0, extract(epoch from (clock_timestamp() - min(last_success_at)))::bigint) as lag_seconds
+          from public.eposyandu_replica_sync_state`;
+        return jsonResponse({
+          ok: true,
+          service: "e-posyandu-neon-read",
+          environment: env.ENVIRONMENT,
+          lastSuccessAt: rows[0]?.last_success_at ?? null,
+          lagSeconds: Number(rows[0]?.lag_seconds ?? 0),
+        });
       } catch (error) {
         console.error(JSON.stringify({ level: "error", event: "replica_health_failed", detail: String(error) }));
         return jsonResponse({ ok: false, service: "e-posyandu-neon-read" }, 503);
@@ -199,5 +334,8 @@ export default {
       console.error(JSON.stringify({ level: "error", event: "replica_query_failed", detail: String(error) }));
       return jsonResponse({ detail: "Read replica belum dapat melayani permintaan." }, 503);
     }
+  },
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(runIncrementalSync(env));
   },
 } satisfies ExportedHandler<Env>;

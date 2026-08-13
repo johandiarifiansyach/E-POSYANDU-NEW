@@ -21,7 +21,7 @@ enum Resource {
 
 const DASHBOARD_CACHE_TTL_SECONDS: u64 = 60;
 const DASHBOARD_CACHE_VERSION_KEY: &str = "dashboard:version:v1";
-const REPLICA_PRIMARY_PIN_SECONDS: u64 = 30;
+const REPLICA_PRIMARY_PIN_SECONDS: u64 = 360;
 const FEATURE_FLAGS_KEY: &str = "feature:flags:v1";
 const CHANGE_AUDIT_MAX_DISTANCE_MS: f64 = 5.0 * 60.0 * 1_000.0;
 const BACKGROUND_JOB_MAX_BODY_BYTES: usize = 4_000_000;

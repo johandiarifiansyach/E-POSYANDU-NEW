@@ -37,9 +37,23 @@ NEON_READER_DATABASE_URL='postgresql://role-baca-neon' \
 npm run replica:bootstrap
 ```
 
-Ketiga URL bersifat rahasia dan tidak boleh disimpan ke Git. `SOURCE_DATABASE_URL` serta `NEON_DATABASE_URL` wajib memakai koneksi direct karena dipakai untuk logical replication. `NEON_READER_DATABASE_URL` boleh memakai endpoint pooled dan menjadi satu-satunya URL database yang diberikan kepada private Neon Read Worker.
+Ketiga URL bersifat rahasia dan tidak boleh disimpan ke Git. `SOURCE_DATABASE_URL` serta `NEON_DATABASE_URL` memakai koneksi direct selama pembuatan snapshot awal oleh komputer pengelola. `NEON_READER_DATABASE_URL` boleh memakai endpoint pooled dan digunakan private Neon Read Worker untuk query laporan.
 
-Skrip hanya mereplikasi tabel `children`, `measurements`, `mpasi_logs`, dan `eposyandu_growth_lms`. Skrip juga membuat role Worker tetap read-only, memeriksa salinan awal, dan menolak target yang sama dengan source. Pemeriksaan berikutnya dapat dijalankan tanpa membuat resource baru:
+Skrip hanya menyalin tabel `children`, `measurements`, `mpasi_logs`, dan `eposyandu_growth_lms`. Skrip juga menyiapkan state sinkronisasi, fungsi internal dengan allowlist, membuat role query tetap read-only, memeriksa snapshot awal, dan menolak target yang sama dengan source. Setelah bootstrap, private Worker mengambil perubahan `children`, `measurements`, `mpasi_logs`, serta tombstone penghapusan melalui HTTPS setiap lima menit. Tidak ada publication, replication slot, atau subscription antardatabase.
+
+Isi secret private Worker setelah snapshot:
+
+```bash
+cd services/neon-read-worker
+npx wrangler secret put NEON_DATABASE_URL
+npx wrangler secret put NEON_SYNC_DATABASE_URL
+npx wrangler secret put SUPABASE_URL
+npx wrangler secret put SUPABASE_SECRET_KEY
+npx wrangler secret put READ_REPLICA_SHARED_SECRET
+npm run deploy
+```
+
+`NEON_DATABASE_URL` wajib memakai role baca. `NEON_SYNC_DATABASE_URL` memakai role owner dan hanya tersimpan di Worker privat. `SUPABASE_SECRET_KEY` adalah secret key backend, bukan publishable key. Pemeriksaan berikutnya dapat dijalankan tanpa membuat resource baru:
 
 ```bash
 SOURCE_DATABASE_URL='postgresql://koneksi-direct-supabase' \
@@ -48,7 +62,7 @@ NEON_READER_DATABASE_URL='postgresql://role-baca-neon' \
 npm run replica:verify
 ```
 
-Logical replication bersifat asinkron. Karena itu angka pada Neon dapat tertinggal sesaat. Setelah pengguna menambah, mengubah, atau menghapus data, Rust Worker memaksa pembacaan akun tersebut ke Supabase selama 30 detik agar perubahan langsung terlihat. Neon tidak boleh dipromosikan otomatis menjadi tujuan tulis.
+Sinkronisasi HTTPS bersifat asinkron. Karena itu angka pada Neon dapat tertinggal paling lama sekitar lima menit. Setelah pengguna menambah, mengubah, atau menghapus data, Rust Worker memaksa pembacaan akun tersebut ke Supabase selama enam menit agar perubahan langsung terlihat. Neon tidak boleh dipromosikan otomatis menjadi tujuan tulis aplikasi.
 
 ## Pemeriksaan
 

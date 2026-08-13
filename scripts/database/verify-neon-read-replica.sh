@@ -12,21 +12,9 @@ for command in psql python3; do
   }
 done
 
-publication="${REPLICA_PUBLICATION:-eposyandu_neon_read_pub}"
-slot="${REPLICA_SLOT:-eposyandu_neon_read_slot}"
-subscription="${REPLICA_SUBSCRIPTION:-eposyandu_supabase_read_sub}"
-wait_seconds="${REPLICA_WAIT_SECONDS:-0}"
-poll_seconds="${REPLICA_POLL_SECONDS:-5}"
+count_tolerance="${REPLICA_COUNT_TOLERANCE:-25}"
+max_lag_seconds="${REPLICA_MAX_LAG_SECONDS:-900}"
 replicated_tables=(children measurements mpasi_logs eposyandu_growth_lms)
-
-validate_identifier() {
-  local label="$1"
-  local value="$2"
-  if [[ ! "$value" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-    printf '%s tidak valid: hanya huruf, angka, dan garis bawah yang diizinkan.\n' "$label" >&2
-    exit 1
-  fi
-}
 
 connection_field() {
   local connection="$1"
@@ -36,83 +24,67 @@ import os
 from urllib.parse import unquote, urlsplit
 
 parsed = urlsplit(os.environ["CONNECTION_VALUE"])
-field = os.environ["CONNECTION_FIELD"]
 values = {
-    "host": parsed.hostname or "",
     "username": unquote(parsed.username or ""),
     "database": (parsed.path or "").lstrip("/"),
 }
-print(values[field])
+print(values[os.environ["CONNECTION_FIELD"]])
 PY
 }
 
-if [[ ! "$wait_seconds" =~ ^[0-9]+$ || ! "$poll_seconds" =~ ^[1-9][0-9]*$ ]]; then
-  echo "REPLICA_WAIT_SECONDS dan REPLICA_POLL_SECONDS harus berupa detik positif." >&2
+if [[ ! "$count_tolerance" =~ ^[0-9]+$ || ! "$max_lag_seconds" =~ ^[1-9][0-9]*$ ]]; then
+  echo "REPLICA_COUNT_TOLERANCE dan REPLICA_MAX_LAG_SECONDS harus berupa angka positif." >&2
   exit 1
 fi
 
 reader_role="$(connection_field "$NEON_READER_DATABASE_URL" username)"
-validate_identifier "REPLICA_PUBLICATION" "$publication"
-validate_identifier "REPLICA_SLOT" "$slot"
-validate_identifier "REPLICA_SUBSCRIPTION" "$subscription"
-validate_identifier "Role NEON_READER_DATABASE_URL" "$reader_role"
-deadline=$((SECONDS + wait_seconds))
-last_detail=""
+if [[ ! "$reader_role" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+  echo "Role pada NEON_READER_DATABASE_URL tidak valid." >&2
+  exit 1
+fi
 
-while true; do
-  publication_tables="$(psql "$SOURCE_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-    -v publication="$publication" <<'SQL'
-select count(*)
-from pg_publication_tables
-where pubname = :'publication'
-  and schemaname = 'public'
-  and tablename = any(array['children','measurements','mpasi_logs','eposyandu_growth_lms']);
-SQL
-)"
-  slot_active="$(psql "$SOURCE_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-    -v slot="$slot" <<'SQL'
-select coalesce((select active from pg_replication_slots where slot_name = :'slot'), false);
-SQL
-)"
-  subscription_ready="$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-    -v subscription="$subscription" <<'SQL'
-select exists(
-  select 1 from pg_stat_subscription where subname = :'subscription' and pid is not null
-) and not exists(
-  select 1
-  from pg_subscription_rel
-  where srsubid = (select oid from pg_subscription where subname = :'subscription')
-    and srsubstate <> 'r'
-);
-SQL
-)"
-
-  counts_match=true
-  count_details=()
-  for table in "${replicated_tables[@]}"; do
-    source_count="$(psql "$SOURCE_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-      -c "select count(*) from public.\"$table\"")"
-    target_count="$(psql "$NEON_READER_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-      -c "select count(*) from public.\"$table\"")"
-    count_details+=("$table=$source_count/$target_count")
-    if [[ "$source_count" != "$target_count" ]]; then
-      counts_match=false
-    fi
-  done
-
-  last_detail="publication=$publication_tables/4 slot_active=$slot_active subscription_ready=$subscription_ready counts=${count_details[*]}"
-  if [[ "$publication_tables" == "4" && "$slot_active" == "t" && "$subscription_ready" == "t" && "$counts_match" == "true" ]]; then
-    break
-  fi
-  if (( SECONDS >= deadline )); then
-    printf 'Read replica belum konsisten: %s\n' "$last_detail" >&2
+count_details=()
+for table in "${replicated_tables[@]}"; do
+  source_count="$(psql "$SOURCE_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
+    -c "select count(*) from public.\"$table\"")"
+  target_count="$(psql "$NEON_READER_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
+    -c "select count(*) from public.\"$table\"")"
+  difference=$((source_count - target_count))
+  (( difference < 0 )) && difference=$((-difference))
+  count_details+=("$table=$source_count/$target_count")
+  if (( difference > count_tolerance )); then
+    printf 'Selisih public.%s terlalu besar: source=%s target=%s toleransi=%s.\n' \
+      "$table" "$source_count" "$target_count" "$count_tolerance" >&2
     exit 1
   fi
-  printf 'Menunggu replikasi: %s\n' "$last_detail"
-  sleep "$poll_seconds"
 done
 
-for table in "${replicated_tables[@]}"; do
+state_count="$(psql "$NEON_READER_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 <<'SQL'
+select count(*)
+from public.eposyandu_replica_sync_state
+where resource = any(array['children', 'measurements', 'mpasi_logs', 'sync_tombstones'])
+  and last_success_at is not null;
+SQL
+)"
+if [[ "$state_count" != "4" ]]; then
+  echo "State sinkronisasi Neon belum lengkap." >&2
+  exit 1
+fi
+
+lag_seconds="$(psql "$NEON_READER_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 <<'SQL'
+select greatest(
+  0,
+  extract(epoch from (clock_timestamp() - min(last_success_at)))::bigint
+)
+from public.eposyandu_replica_sync_state;
+SQL
+)"
+if (( lag_seconds > max_lag_seconds )); then
+  printf 'Sinkronisasi Neon tertinggal %s detik (batas %s detik).\n' "$lag_seconds" "$max_lag_seconds" >&2
+  exit 1
+fi
+
+for table in "${replicated_tables[@]}" eposyandu_replica_sync_state; do
   has_write="$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
     -v reader_role="$reader_role" -v relation="public.$table" <<'SQL'
 select has_table_privilege(:'reader_role', :'relation', 'INSERT')
@@ -123,6 +95,19 @@ SQL
 )"
   if [[ "$has_write" == "t" ]]; then
     printf 'Role %s masih memiliki hak tulis pada public.%s.\n' "$reader_role" "$table" >&2
+    exit 1
+  fi
+done
+
+for signature in \
+  'public.eposyandu_replica_apply_batch(text,jsonb)' \
+  'public.eposyandu_replica_apply_tombstones(jsonb)'; do
+  if [[ "$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
+    -v reader_role="$reader_role" -v signature="$signature" <<'SQL'
+select has_function_privilege(:'reader_role', :'signature', 'EXECUTE');
+SQL
+)" == "t" ]]; then
+    printf 'Role %s tidak boleh menjalankan fungsi tulis %s.\n' "$reader_role" "$signature" >&2
     exit 1
   fi
 done
@@ -145,4 +130,5 @@ if [[ "$(psql "$NEON_READER_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
   exit 1
 fi
 
-printf 'Read replica sehat dan read-only: %s\n' "$last_detail"
+printf 'Read replica sehat, read-only, dan tertinggal %s detik: %s\n' \
+  "$lag_seconds" "${count_details[*]}"

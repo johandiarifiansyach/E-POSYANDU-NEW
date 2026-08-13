@@ -12,14 +12,9 @@ for command in psql pg_dump pg_restore python3; do
   }
 done
 
-publication="${REPLICA_PUBLICATION:-eposyandu_neon_read_pub}"
-slot="${REPLICA_SLOT:-eposyandu_neon_read_slot}"
-subscription="${REPLICA_SUBSCRIPTION:-eposyandu_supabase_read_sub}"
-allow_existing_schema="${REPLICA_ALLOW_EXISTING_SCHEMA:-false}"
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 temporary_dir="$(mktemp -d)"
-replication_started=false
-completed=false
+trap 'rm -rf "$temporary_dir"' EXIT
 
 replicated_tables=(children measurements mpasi_logs eposyandu_growth_lms)
 
@@ -43,7 +38,6 @@ parsed = urlsplit(os.environ["CONNECTION_VALUE"])
 field = os.environ["CONNECTION_FIELD"]
 values = {
     "host": parsed.hostname or "",
-    "port": str(parsed.port or 5432),
     "username": unquote(parsed.username or ""),
     "database": (parsed.path or "").lstrip("/"),
 }
@@ -64,46 +58,11 @@ validate_connection() {
     exit 1
   fi
   if [[ "$allow_pooler" != "true" && "$host" == *pooler* ]]; then
-    printf '%s harus memakai koneksi direct, bukan pooler: %s\n' "$label" "$host" >&2
+    printf '%s harus memakai koneksi direct untuk proses snapshot: %s\n' "$label" "$host" >&2
     exit 1
   fi
 }
 
-cleanup() {
-  local exit_code=$?
-  rm -rf "$temporary_dir"
-  if [[ "$completed" != "true" && "$replication_started" == "true" ]]; then
-    echo "Aktivasi gagal; membersihkan publication, slot, dan subscription yang baru dibuat." >&2
-    set +e
-    if [[ "$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-      -v subscription="$subscription" <<'SQL'
-select exists(select 1 from pg_subscription where subname = :'subscription');
-SQL
-    )" == "t" ]]; then
-      psql "$NEON_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
-        -c "alter subscription \"$subscription\" disable" >/dev/null
-      psql "$NEON_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
-        -c "alter subscription \"$subscription\" set (slot_name = none)" >/dev/null
-      psql "$NEON_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
-        -c "drop subscription \"$subscription\"" >/dev/null
-    fi
-    psql "$SOURCE_DATABASE_URL" -X -v ON_ERROR_STOP=1 -v slot="$slot" <<'SQL' >/dev/null
-select pg_drop_replication_slot(:'slot')
-where exists (
-  select 1 from pg_replication_slots where slot_name = :'slot' and not active
-);
-SQL
-    psql "$SOURCE_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
-      -c "drop publication if exists \"$publication\"" >/dev/null
-    set -e
-  fi
-  exit "$exit_code"
-}
-trap cleanup EXIT
-
-validate_identifier "REPLICA_PUBLICATION" "$publication"
-validate_identifier "REPLICA_SLOT" "$slot"
-validate_identifier "REPLICA_SUBSCRIPTION" "$subscription"
 validate_connection "SOURCE_DATABASE_URL" "$SOURCE_DATABASE_URL" false
 validate_connection "NEON_DATABASE_URL" "$NEON_DATABASE_URL" false
 validate_connection "NEON_READER_DATABASE_URL" "$NEON_READER_DATABASE_URL" true
@@ -129,36 +88,12 @@ if [[ "${target_host/-pooler/}" != "${reader_host/-pooler/}" ]]; then
   exit 1
 fi
 
-echo "Memeriksa migration dan resource replikasi..."
+echo "Memeriksa migration dan role Neon..."
 if [[ "$(psql "$SOURCE_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
   -c "select exists(select 1 from public.schema_migrations where version = '020')")" != "t" ]]; then
   echo "Migration 020 belum diterapkan pada Supabase production." >&2
   exit 1
 fi
-
-source_conflict="$(psql "$SOURCE_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-  -v publication="$publication" -v slot="$slot" <<'SQL'
-select exists(select 1 from pg_publication where pubname = :'publication')
-  or exists(select 1 from pg_replication_slots where slot_name = :'slot');
-SQL
-)"
-target_conflict="$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-  -v subscription="$subscription" <<'SQL'
-select exists(select 1 from pg_subscription where subname = :'subscription');
-SQL
-)"
-if [[ "$source_conflict" == "t" || "$target_conflict" == "t" ]]; then
-  echo "Resource replikasi sudah ada. Jalankan npm run replica:verify, jangan membuatnya dua kali." >&2
-  exit 1
-fi
-
-target_has_tables="$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
-  -c "select to_regclass('public.children') is not null")"
-if [[ "$target_has_tables" == "t" && "$allow_existing_schema" != "true" ]]; then
-  echo "Schema target sudah berisi tabel children. Gunakan database/branch Neon kosong atau set REPLICA_ALLOW_EXISTING_SCHEMA=true setelah memeriksa isinya." >&2
-  exit 1
-fi
-
 if [[ "$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
   -v reader_role="$reader_role" <<'SQL'
 select exists(select 1 from pg_roles where rolname = :'reader_role');
@@ -168,7 +103,26 @@ SQL
   exit 1
 fi
 
-if [[ "$target_has_tables" != "t" ]]; then
+target_table_count="$(psql "$NEON_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 <<'SQL'
+select count(*)
+from (values
+  (to_regclass('public.children')),
+  (to_regclass('public.measurements')),
+  (to_regclass('public.mpasi_logs')),
+  (to_regclass('public.eposyandu_growth_lms'))
+) tables(relation)
+where relation is not null;
+SQL
+)"
+if [[ "$target_table_count" != "0" && "$target_table_count" != "4" ]]; then
+  echo "Schema Neon hanya berisi sebagian tabel replika. Bersihkan branch Neon lalu ulangi aktivasi." >&2
+  exit 1
+fi
+
+snapshot_started_at="$(psql "$SOURCE_DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 \
+  -c "select clock_timestamp()")"
+
+if [[ "$target_table_count" == "0" ]]; then
   echo "Menyalin struktur empat tabel baca ke Neon..."
   pg_dump "$SOURCE_DATABASE_URL" \
     --format=custom \
@@ -187,6 +141,8 @@ if [[ "$target_has_tables" != "t" ]]; then
     --exit-on-error \
     --dbname="$NEON_DATABASE_URL" \
     "$temporary_dir/replica-schema.dump"
+else
+  echo "Empat tabel Neon sudah ada; struktur dipakai ulang secara idempoten."
 fi
 
 echo "Menyelaraskan index dan fungsi laporan pada Neon..."
@@ -241,6 +197,144 @@ order by array_position(array[
 SQL
 psql "$NEON_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$temporary_dir/functions.sql" >/dev/null
 
+echo "Membuat snapshot awal melalui koneksi lokal..."
+pg_dump "$SOURCE_DATABASE_URL" \
+  --format=custom \
+  --data-only \
+  --no-owner \
+  --no-acl \
+  --table=public.children \
+  --table=public.measurements \
+  --table=public.mpasi_logs \
+  --table=public.eposyandu_growth_lms \
+  --file="$temporary_dir/replica-data.dump"
+psql "$NEON_DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+truncate table
+  public.measurements,
+  public.mpasi_logs,
+  public.children,
+  public.eposyandu_growth_lms;
+SQL
+pg_restore \
+  --data-only \
+  --no-owner \
+  --no-acl \
+  --exit-on-error \
+  --dbname="$NEON_DATABASE_URL" \
+  "$temporary_dir/replica-data.dump"
+
+echo "Menyiapkan state dan fungsi sinkronisasi inkremental Neon..."
+psql "$NEON_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -v snapshot_started_at="$snapshot_started_at" <<'SQL' >/dev/null
+create table if not exists public.eposyandu_replica_sync_state (
+  resource text primary key,
+  cursor_at timestamptz not null,
+  last_success_at timestamptz,
+  last_row_count integer not null default 0,
+  last_error text,
+  updated_at timestamptz not null default clock_timestamp()
+);
+
+create or replace function public.eposyandu_replica_apply_batch(
+  p_table text,
+  p_rows jsonb
+)
+returns integer
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_update_set text;
+  v_count integer;
+begin
+  if p_table not in ('children', 'measurements', 'mpasi_logs') then
+    raise exception 'Replica table is not allowed';
+  end if;
+  if jsonb_typeof(p_rows) <> 'array' then
+    raise exception 'Replica rows must be a JSON array';
+  end if;
+
+  v_count := jsonb_array_length(p_rows);
+  if v_count = 0 then
+    return 0;
+  end if;
+
+  select string_agg(format('%1$I = excluded.%1$I', attributes.attname), ', ' order by attributes.attnum)
+  into v_update_set
+  from pg_attribute attributes
+  where attributes.attrelid = format('public.%I', p_table)::regclass
+    and attributes.attnum > 0
+    and not attributes.attisdropped
+    and attributes.attgenerated = ''
+    and attributes.attname <> 'id';
+
+  execute format(
+    'insert into public.%1$I select * from jsonb_populate_recordset(null::public.%1$I, $1) '
+      || 'on conflict (id) do update set %2$s',
+    p_table,
+    v_update_set
+  ) using p_rows;
+  return v_count;
+end;
+$$;
+
+create or replace function public.eposyandu_replica_apply_tombstones(p_rows jsonb)
+returns integer
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_table text;
+  v_deleted integer;
+  v_total integer := 0;
+begin
+  if jsonb_typeof(p_rows) <> 'array' then
+    raise exception 'Replica tombstones must be a JSON array';
+  end if;
+
+  for v_table in
+    select distinct records.resource
+    from jsonb_to_recordset(p_rows) as records(resource text, document_id text)
+  loop
+    if v_table not in ('children', 'measurements', 'mpasi_logs') then
+      raise exception 'Replica tombstone resource is not allowed';
+    end if;
+    execute format(
+      'delete from public.%I target using jsonb_to_recordset($1) '
+        || 'as records(resource text, document_id text) '
+        || 'where records.resource = $2 and target.id = records.document_id',
+      v_table
+    ) using p_rows, v_table;
+    get diagnostics v_deleted = row_count;
+    v_total := v_total + v_deleted;
+  end loop;
+  return v_total;
+end;
+$$;
+
+insert into public.eposyandu_replica_sync_state (
+  resource,
+  cursor_at,
+  last_success_at,
+  last_row_count,
+  last_error,
+  updated_at
+)
+select resource, :'snapshot_started_at'::timestamptz - interval '5 seconds', clock_timestamp(), 0, null, clock_timestamp()
+from unnest(array['children', 'measurements', 'mpasi_logs', 'sync_tombstones']) resources(resource)
+on conflict (resource) do update
+set cursor_at = excluded.cursor_at,
+    last_success_at = excluded.last_success_at,
+    last_row_count = 0,
+    last_error = null,
+    updated_at = excluded.updated_at;
+
+revoke all on function public.eposyandu_replica_apply_batch(text, jsonb) from public;
+revoke all on function public.eposyandu_replica_apply_tombstones(jsonb) from public;
+SQL
+
 echo "Mengunci kredensial Worker Neon menjadi read-only..."
 psql "$NEON_DATABASE_URL" -X -v ON_ERROR_STOP=1 -v reader_role="$reader_role" <<'SQL' >/dev/null
 revoke create on schema public from public;
@@ -249,19 +343,22 @@ revoke all on table
   public.children,
   public.measurements,
   public.mpasi_logs,
-  public.eposyandu_growth_lms
+  public.eposyandu_growth_lms,
+  public.eposyandu_replica_sync_state
 from public;
 revoke all on table
   public.children,
   public.measurements,
   public.mpasi_logs,
-  public.eposyandu_growth_lms
+  public.eposyandu_growth_lms,
+  public.eposyandu_replica_sync_state
 from :"reader_role";
 grant select on table
   public.children,
   public.measurements,
   public.mpasi_logs,
-  public.eposyandu_growth_lms
+  public.eposyandu_growth_lms,
+  public.eposyandu_replica_sync_state
 to :"reader_role";
 select format(
   'revoke all on function %s from public; revoke all on function %s from %I; grant execute on function %s to %I;',
@@ -288,48 +385,15 @@ where namespaces.nspname = 'public'
     'eposyandu_replica_children_page'
   ])
 \gexec
+revoke all on function public.eposyandu_replica_apply_batch(text, jsonb) from :"reader_role";
+revoke all on function public.eposyandu_replica_apply_tombstones(jsonb) from :"reader_role";
 alter role :"reader_role" set default_transaction_read_only = on;
 SQL
 
-echo "Membuat publication dan logical replication slot pada Supabase..."
-psql "$SOURCE_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
-  -v publication="$publication" -v slot="$slot" <<'SQL' >/dev/null
-create publication :"publication" for table
-  public.children,
-  public.measurements,
-  public.mpasi_logs,
-  public.eposyandu_growth_lms;
-select pg_create_logical_replication_slot(:'slot', 'pgoutput');
-SQL
-replication_started=true
-
-echo "Membuat subscription pada Neon..."
-psql "$NEON_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
-  -v subscription="$subscription" \
-  -v publication="$publication" \
-  -v slot="$slot" \
-  -v source_database_url="$SOURCE_DATABASE_URL" <<'SQL' >/dev/null
-create subscription :"subscription"
-connection :'source_database_url'
-publication :"publication"
-with (
-  create_slot = false,
-  enabled = true,
-  slot_name = :'slot',
-  copy_data = true,
-  streaming = on
-);
-SQL
-
-completed=true
-echo "Replikasi dibuat. Menunggu salinan awal dan memverifikasi keamanan..."
+echo "Snapshot selesai. Memverifikasi data dan keamanan Neon..."
 SOURCE_DATABASE_URL="$SOURCE_DATABASE_URL" \
 NEON_DATABASE_URL="$NEON_DATABASE_URL" \
 NEON_READER_DATABASE_URL="$NEON_READER_DATABASE_URL" \
-REPLICA_PUBLICATION="$publication" \
-REPLICA_SLOT="$slot" \
-REPLICA_SUBSCRIPTION="$subscription" \
-REPLICA_WAIT_SECONDS="${REPLICA_WAIT_SECONDS:-600}" \
   "$root_dir/scripts/database/verify-neon-read-replica.sh"
 
-echo "Supabase primary dan Neon read replica sudah aktif."
+echo "Snapshot Neon aktif. Deploy private Worker agar perubahan berikutnya tersinkron lewat HTTPS."

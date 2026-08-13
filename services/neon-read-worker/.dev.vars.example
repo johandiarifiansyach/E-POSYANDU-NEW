@@ -1,2 +1,5 @@
 NEON_DATABASE_URL=postgresql://eposyandu_replica_reader:PASSWORD@NEON_HOST/neondb?sslmode=require
+NEON_SYNC_DATABASE_URL=postgresql://neondb_owner:PASSWORD@NEON_HOST/neondb?sslmode=require
+SUPABASE_URL=https://PROJECT_REF.supabase.co
+SUPABASE_SECRET_KEY=configure_in_cloudflare_dashboard
 READ_REPLICA_SHARED_SECRET=ganti-dengan-secret-random-yang-panjang
