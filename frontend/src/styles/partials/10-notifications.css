@@ -1,0 +1,196 @@
+/* iOS-style liquid glass notifications. */
+.ios-notification {
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top));
+  left: 50%;
+  z-index: 120;
+  display: grid;
+  width: min(calc(100vw - 24px), 430px);
+  min-height: 70px;
+  grid-template-columns: 42px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 11px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.74);
+  border-radius: 20px;
+  background: rgba(248, 248, 250, 0.72);
+  padding: 12px;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.24), 0 8px 22px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  color: #1c1c1e;
+  opacity: 0;
+  pointer-events: auto;
+  transform: translate(-50%, -14px) scale(0.97);
+  -webkit-backdrop-filter: blur(34px) saturate(190%);
+  backdrop-filter: blur(34px) saturate(190%);
+  transition: opacity 200ms ease, transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.ios-notification.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+
+.ios-notification.is-leaving {
+  opacity: 0;
+  transform: translate(-50%, -9px) scale(0.985);
+}
+
+.ios-notification-icon {
+  display: inline-flex;
+  width: 42px;
+  height: 42px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.54);
+  border-radius: 13px;
+  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.42);
+  color: #fff;
+}
+
+.ios-notification-icon svg {
+  width: 23px;
+  height: 23px;
+}
+
+.ios-notification-success .ios-notification-icon { background: #34c759; }
+.ios-notification-error .ios-notification-icon { background: #ff3b30; }
+.ios-notification-info .ios-notification-icon { background: #007aff; }
+
+.ios-notification-content { min-width: 0; }
+
+.ios-notification-title,
+.ios-notification-detail { margin: 0; }
+
+.ios-notification-title {
+  color: #1c1c1e;
+  font-size: 14px;
+  font-weight: 760;
+  line-height: 1.25;
+}
+
+.ios-notification-detail {
+  margin-top: 2px;
+  color: rgba(60, 60, 67, 0.7);
+  font-size: 12px;
+  font-weight: 520;
+  line-height: 1.35;
+}
+
+.ios-notification-close {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(118, 118, 128, 0.13);
+  color: rgba(60, 60, 67, 0.66);
+  transition: background-color 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+.ios-notification-close svg {
+  width: 15px;
+  height: 15px;
+}
+
+.ios-notification-close:hover {
+  background: rgba(118, 118, 128, 0.22);
+  color: #1c1c1e;
+}
+
+.ios-notification-close:active { transform: scale(0.9); }
+
+.ios-notification-close:focus-visible {
+  outline: 3px solid rgba(0, 122, 255, 0.26);
+  outline-offset: 2px;
+}
+
+.ios-inline-notification {
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 16px;
+  background: rgba(248, 248, 250, 0.64);
+  padding: 12px 14px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  color: rgba(60, 60, 67, 0.78);
+  font-size: 13px;
+  font-weight: 600;
+  -webkit-backdrop-filter: blur(24px) saturate(175%);
+  backdrop-filter: blur(24px) saturate(175%);
+}
+
+.ios-inline-notification-error {
+  border-color: rgba(255, 59, 48, 0.22);
+  background: rgba(255, 59, 48, 0.1);
+  color: #c72d27;
+}
+
+.ios-inline-notification-warning {
+  border-color: rgba(255, 159, 10, 0.26);
+  background: rgba(255, 159, 10, 0.11);
+  color: #9a5a00;
+}
+
+.system-health-notice {
+  max-width: 760px;
+}
+
+html[data-theme="dark"] .ios-notification {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(36, 36, 41, 0.8);
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.54), 0 8px 24px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  color: #f5f5f7;
+}
+
+html[data-theme="dark"] .ios-notification-title { color: #f5f5f7; }
+html[data-theme="dark"] .ios-notification-detail { color: rgba(235, 235, 245, 0.66); }
+
+html[data-theme="dark"] .ios-notification-close {
+  background: rgba(118, 118, 128, 0.3);
+  color: rgba(235, 235, 245, 0.7);
+}
+
+html[data-theme="dark"] .ios-notification-close:hover {
+  background: rgba(118, 118, 128, 0.46);
+  color: #fff;
+}
+
+html[data-theme="dark"] .ios-inline-notification {
+  border-color: rgba(235, 235, 245, 0.12);
+  background: rgba(58, 58, 64, 0.6);
+  color: rgba(235, 235, 245, 0.72);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme="dark"] .ios-inline-notification-error {
+  border-color: rgba(255, 69, 58, 0.28);
+  background: rgba(255, 69, 58, 0.14);
+  color: #ff9f9a;
+}
+
+html[data-theme="dark"] .ios-inline-notification-warning {
+  border-color: rgba(255, 179, 64, 0.3);
+  background: rgba(255, 159, 10, 0.16);
+  color: #ffd08a;
+}
+
+@media (max-width: 520px) {
+  .ios-notification {
+    top: max(10px, env(safe-area-inset-top));
+    width: calc(100vw - 20px);
+    min-height: 66px;
+    grid-template-columns: 40px minmax(0, 1fr) 28px;
+    gap: 9px;
+    border-radius: 18px;
+    padding: 10px;
+  }
+
+  .ios-notification-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ios-notification { transition: opacity 120ms linear; }
+}

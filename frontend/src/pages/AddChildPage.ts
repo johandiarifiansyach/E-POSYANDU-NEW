@@ -1,125 +1,46 @@
 // @ts-nocheck
-import { addDoc, collection, serverTimestamp, syncPendingMutations } from '../api/client';
-import Native, { useState } from '../runtime/dom';
+import { addDoc, collection, serverTimestamp, syncPendingMutations } from '../api/syncApi';
+import Native, { useMemo, useState } from '../runtime/dom';
 import { Baby, CheckCircle2, ChevronLeft, MapPin, UserPlus, UserRound, XCircle } from '../ui/icons';
 import { showSuccess } from '../ui/notifications';
-import { appId, Button, Card, DATA_WILAYAH, db, formatChildName, InputGroup, ROLES, Select } from './DashboardApp';
+import { Button, Select, StatusBadge } from '../components';
+import { Card, InputGroup } from '../ui/dashboardPrimitives';
+import {
+    CHILD_BIRTH_DECIMAL_RULES,
+    createInitialChildForm,
+    formatChildName,
+    generateTemporaryKk,
+    generateTemporaryNik,
+    getBirthGrowthStatuses,
+    normalizeChildInput,
+    parseChildDecimalForRange,
+    validateChildBirthMeasurements
+} from '../features/children/childRules';
+import { appId, DATA_WILAYAH, db, ROLES } from './DashboardApp';
+import type { PageState } from '../shared/pageState';
 const inputClass = 'block w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-sm text-slate-900 transition-colors focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100';
-const normalizeDecimalInput = (value) => {
-    const raw = String(value ?? '').trim();
-    let result = '';
-    let hasSeparator = false;
-    for (const char of raw) {
-        if (char >= '0' && char <= '9') {
-            result += char;
-            continue;
-        }
-        if (!hasSeparator && char.trim() !== '') {
-            result += '.';
-            hasSeparator = true;
-        }
-    }
-    return result;
-};
-function randomDigits(length) {
-    const values = new Uint32Array(length);
-    if (globalThis.crypto?.getRandomValues)
-        globalThis.crypto.getRandomValues(values);
-    else
-        values.forEach((_, index) => values[index] = Math.floor(Math.random() * 10));
-    return Array.from(values, (value) => String(value % 10)).join('');
-}
-function generateTemporaryKk() {
-    return `350904${randomDigits(10)}`;
-}
-function generateTemporaryNik(data, allChildren) {
-    const [year = '', month = '', day = ''] = String(data.tglLahir || '').split('-');
-    const birthSegment = /^\d{4}$/.test(year) && /^\d{2}$/.test(month) && /^\d{2}$/.test(day)
-        ? `${day}${month}${year.slice(-2)}`
-        : randomDigits(6);
-    const existingNiks = new Set((Array.isArray(allChildren) ? allChildren : []).map((child) => String(child.nik || '')));
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-        const candidate = `350904${birthSegment}${randomDigits(4)}`;
-        if (!existingNiks.has(candidate))
-            return candidate;
-    }
-    return `350904${birthSegment}${String(Date.now()).slice(-4)}`;
-}
-function initialFormData(user) {
-    const defaultDesa = user.role === ROLES.KADER || user.role === ROLES.BIDAN
-        ? user.desa || Object.keys(DATA_WILAYAH)[0]
-        : Object.keys(DATA_WILAYAH)[0];
-    const defaultPosyandu = user.role === ROLES.KADER
-        ? user.posyandu || DATA_WILAYAH[defaultDesa][0]
-        : DATA_WILAYAH[defaultDesa][0];
-    return {
-        nama: '',
-        nik: '',
-        anakKe: '',
-        tglLahir: '',
-        jk: '',
-        noKK: '',
-        hasKK: true,
-        hasNIK: true,
-        usiaKehamilan: '',
-        bbLahir: '',
-        pbLahir: '',
-        lkLahir: '',
-        bukuKIA: '',
-        bukuKIAKecil: '',
-        imd: '',
-        namaOrtu: '',
-        nikOrtu: '',
-        noHpOrtu: '',
-        alamat: '',
-        rt: '',
-        rw: '',
-        desa: defaultDesa,
-        posyandu: defaultPosyandu
-    };
-}
 export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
-    const [formData, setFormData] = useState(() => initialFormData(user));
-    const [saving, setSaving] = useState(false);
-    const [errorMessage, setErrorMessage] = useState(null);
-    const parseLocaleDecimal = (value) => {
-        const normalized = normalizeDecimalInput(value).trim();
-        if (!normalized)
-            return null;
-        const parsed = Number(normalized);
-        return Number.isFinite(parsed) ? parsed : null;
-    };
-    const parseDecimalForRange = (value, minimum, maximum, decimalShiftLimit = 2) => {
-        const normalized = normalizeDecimalInput(value).trim();
-        if (!normalized)
-            return null;
-        const direct = Number(normalized);
-        if (Number.isFinite(direct) && direct >= minimum && direct <= maximum)
-            return direct;
-        if (!normalized.includes('.')) {
-            for (let shift = 1; shift <= decimalShiftLimit; shift += 1) {
-                const candidate = Number(normalized) / Math.pow(10, shift);
-                if (Number.isFinite(candidate) && candidate >= minimum && candidate <= maximum)
-                    return candidate;
-            }
-        }
-        return Number.isFinite(direct) ? direct : null;
-    };
+    const [formData, setFormData] = useState(() => createInitialChildForm(user));
+    const [saveState, setSaveState] = useState<PageState<void>>({ status: 'idle' });
+    const birthStatuses = useMemo(() => getBirthGrowthStatuses(formData), [
+        formData.bbLahir,
+        formData.pbLahir,
+        formData.lkLahir,
+        formData.jk
+    ]);
+    const saving = saveState.status === 'loading';
+    const errorMessage = saveState.status === 'error' ? saveState.message : null;
+    const setFormError = (message) => setSaveState(message ? { status: 'error', message } : { status: 'idle' });
     const handleDecimalFieldChange = (field) => (event) => {
-        const normalized = normalizeDecimalInput(event.target.value);
+        const normalized = normalizeChildInput(event.target.value);
         setFormData((previous) => ({ ...previous, [field]: normalized }));
     };
     const handleDecimalFieldBlur = (field) => () => {
         setFormData((previous) => {
             const value = String(previous[field] ?? '');
-            const decimalRules = {
-                bbLahir: { minimum: 0.1, maximum: 10, shift: 2 },
-                pbLahir: { minimum: 10, maximum: 120, shift: 1 },
-                lkLahir: { minimum: 10, maximum: 80, shift: 1 }
-            };
-            const rule = decimalRules[field];
+            const rule = CHILD_BIRTH_DECIMAL_RULES[field];
             if (rule) {
-                const parsed = parseDecimalForRange(value, rule.minimum, rule.maximum, rule.shift);
+                const parsed = parseChildDecimalForRange(value, rule.minimum, rule.maximum, rule.shift);
                 if (Number.isFinite(parsed)) {
                     const normalized = String(parsed).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
                     return { ...previous, [field]: normalized };
@@ -132,16 +53,23 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
     };
     const handleSubmit = async (event) => {
         event.preventDefault();
-        setErrorMessage(null);
+        setFormError(null);
         const formElement = event.currentTarget;
         const readLiveField = (field, fallback) => {
             const input = formElement?.querySelector?.(`[name="${field}"]`);
             const liveValue = typeof input?.value === 'string' ? input.value : '';
             return liveValue || String(fallback ?? '');
         };
-        const birthWeight = parseDecimalForRange(readLiveField('bbLahir', formData.bbLahir), 0.1, 10, 2);
-        const birthLength = parseDecimalForRange(readLiveField('pbLahir', formData.pbLahir), 10, 120, 1);
-        const birthHeadCircumference = parseDecimalForRange(readLiveField('lkLahir', formData.lkLahir), 10, 80, 1);
+        const birthValidation = validateChildBirthMeasurements({
+            bbLahir: readLiveField('bbLahir', formData.bbLahir),
+            pbLahir: readLiveField('pbLahir', formData.pbLahir),
+            lkLahir: readLiveField('lkLahir', formData.lkLahir)
+        });
+        if (!birthValidation.ok) {
+            setFormError(birthValidation.message);
+            return;
+        }
+        const { bbLahir: birthWeight, pbLahir: birthLength, lkLahir: birthHeadCircumference } = birthValidation.data;
         const submissionData = {
             ...formData,
             nama: formatChildName(formData.nama),
@@ -152,27 +80,15 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
             nik: formData.hasNIK || /^\d{16}$/.test(formData.nik) ? formData.nik : generateTemporaryNik(formData, allChildren)
         };
         if (!/^\d{16}$/.test(submissionData.noKK)) {
-            setErrorMessage('No. KK harus berisi 16 digit. Centang Tidak punya KK untuk membuat nomor sementara.');
+            setFormError('No. KK harus berisi 16 digit. Centang Tidak punya KK untuk membuat nomor sementara.');
             return;
         }
         if (!/^\d{16}$/.test(submissionData.nik)) {
-            setErrorMessage('NIK balita harus berisi 16 digit. Centang Tidak punya NIK untuk membuat nomor sementara.');
-            return;
-        }
-        if (!Number.isFinite(birthWeight) || birthWeight < 0.1 || birthWeight > 10) {
-            setErrorMessage('Berat lahir harus diisi dalam kilogram, misalnya 3,2 kg. Jangan masukkan 3200 gram.');
-            return;
-        }
-        if (!Number.isFinite(birthLength) || birthLength < 10 || birthLength > 120) {
-            setErrorMessage('Panjang lahir harus diisi desimal yang valid, misalnya 49,5 cm.');
-            return;
-        }
-        if (!Number.isFinite(birthHeadCircumference) || birthHeadCircumference < 10 || birthHeadCircumference > 80) {
-            setErrorMessage('Lingkar kepala lahir harus diisi desimal yang valid, misalnya 33,2 cm.');
+            setFormError('NIK balita harus berisi 16 digit. Centang Tidak punya NIK untuk membuat nomor sementara.');
             return;
         }
         setFormData(submissionData);
-        setSaving(true);
+        setSaveState({ status: 'loading' });
         try {
             const newChildRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'children'), {
                 ...submissionData,
@@ -205,15 +121,13 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
                 createdAt: serverTimestamp()
             });
             await syncPendingMutations([newChildRef.mutationId, birthMeasurementRef.mutationId]);
+            setSaveState({ status: 'success', data: undefined });
             showSuccess('Data balita berhasil ditambahkan.');
             onSuccess();
         }
         catch (error) {
             console.error('Gagal menyimpan balita:', error);
-            setErrorMessage(error instanceof Error ? error.message : 'Data balita belum dapat disimpan.');
-        }
-        finally {
-            setSaving(false);
+            setFormError(error instanceof Error ? error.message : 'Data balita belum dapat disimpan.');
         }
     };
     const genderOptions = [
@@ -313,7 +227,22 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
                         Native.createElement(InputGroup, { label: "Buku KIA Kecil" },
                             Native.createElement(Select, { required: true, value: formData.bukuKIAKecil, onChange: (event) => setFormData({ ...formData, bukuKIAKecil: event.target.value }), options: yesNoOptions })),
                         Native.createElement(InputGroup, { label: "IMD" },
-                            Native.createElement(Select, { required: true, value: formData.imd, onChange: (event) => setFormData({ ...formData, imd: event.target.value }), options: yesNoOptions })))),
+                            Native.createElement(Select, { required: true, value: formData.imd, onChange: (event) => setFormData({ ...formData, imd: event.target.value }), options: yesNoOptions }))),
+                    Native.createElement("section", { className: "measurement-live-status birth-live-status", "aria-live": "polite", "aria-label": "Hasil status pertumbuhan bayi baru secara realtime", "data-birth-live-status": true },
+                        Native.createElement("div", { className: "measurement-live-status-heading" },
+                            Native.createElement("h3", null, "Status Pertumbuhan Saat Lahir"),
+                            Native.createElement("p", null, "Dihitung realtime menurut standar WHO usia 0 bulan")),
+                        Native.createElement("div", { className: "measurement-live-status-grid birth-live-status-grid" },
+                            [
+                                ['BB/U', birthStatuses.statusBbu, birthStatuses.zScoreBbu],
+                                ['PB/U', birthStatuses.statusPbu, birthStatuses.zScorePbu],
+                                ['BB/PB', birthStatuses.statusBbpb, birthStatuses.zScoreBbpb],
+                                ['IMT/U', birthStatuses.statusImtu, birthStatuses.zScoreImtu],
+                                ['LK/U', birthStatuses.statusLku, birthStatuses.zScoreLku]
+                            ].map(([label, status, zScore]) => Native.createElement("div", { key: label, className: "measurement-live-status-item" },
+                                Native.createElement("span", { className: "measurement-live-status-label" }, label),
+                                Native.createElement(StatusBadge, { status: status }),
+                                Native.createElement("small", null, Number.isFinite(zScore) ? `Z-score ${zScore.toFixed(2).replace('.', ',')} SD` : 'Pilih jenis kelamin dan isi data')))))),
                 Native.createElement("section", { className: "border-t border-slate-200 pt-6 space-y-4" },
                     Native.createElement("div", { className: "ios-form-section-header text-slate-800" },
                         Native.createElement("span", { className: "apple-symbol-tile apple-symbol-tile-purple", "aria-hidden": "true" },

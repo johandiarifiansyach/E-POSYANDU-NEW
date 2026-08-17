@@ -1,4 +1,4 @@
-const CACHE_NAME = 'e-posyandu-shell-v31';
+const CACHE_NAME = 'e-posyandu-shell-v33';
 const APP_SHELL = [
   '/index.html',
   '/manifest.webmanifest',
@@ -7,11 +7,31 @@ const APP_SHELL = [
   '/icon-512.png',
   '/apple-touch-icon.svg'
 ];
+const APP_SHELL_PATHS = new Set(APP_SHELL);
+
+function isSafeStaticResponse(response) {
+  return Boolean(
+    response
+    && response.ok
+    && response.type === 'basic'
+    && !response.redirected
+  );
+}
+
+async function putSafeResponse(cacheKey, response) {
+  if (!isSafeStaticResponse(response)) return;
+  const cache = await caches.open(CACHE_NAME);
+  await cache.put(cacheKey, response.clone());
+}
 
 self.addEventListener('install', (event) => {
   // Keep the installation small. Hashed JavaScript and CSS are cached when the
   // browser requests them, so deployments cannot mix bundles across versions.
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
+  event.waitUntil(Promise.all(APP_SHELL.map(async (path) => {
+    const response = await fetch(new Request(path, { cache: 'reload', credentials: 'same-origin' }));
+    if (!isSafeStaticResponse(response)) throw new Error(`Aset aplikasi tidak valid: ${path}`);
+    await putSafeResponse(path, response);
+  })));
   self.skipWaiting();
 });
 
@@ -21,6 +41,15 @@ self.addEventListener('activate', (event) => {
       caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))),
       self.clients.claim()
     ])
+  );
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type !== 'CLEAR_APP_SHELL_CACHE') return;
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(
+      keys.filter((key) => key.startsWith('e-posyandu-')).map((key) => caches.delete(key))
+    ))
   );
 });
 
@@ -37,12 +66,12 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          if (!response.ok) return response;
-          const copy = response.clone();
-          event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put('/index.html', copy)));
+          const contentType = response.headers.get('Content-Type') || '';
+          if (!isSafeStaticResponse(response) || !contentType.includes('text/html')) return response;
+          event.waitUntil(putSafeResponse('/index.html', response));
           return response;
         })
-        .catch(() => caches.match('/index.html'))
+        .catch(async () => (await caches.match('/index.html')) || Response.error())
     );
     return;
   }
@@ -52,25 +81,19 @@ self.addEventListener('fetch', (event) => {
   if (isHashedAsset) {
     event.respondWith(
       caches.match(request).then((cached) => cached || fetch(request).then((response) => {
-        if (response.ok) {
-          const copy = response.clone();
-          event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)));
-        }
+        event.waitUntil(putSafeResponse(request, response));
         return response;
       }))
     );
     return;
   }
 
-  event.respondWith(
-    fetch(request)
-      .then((response) => {
-        if (response.ok) {
-          const copy = response.clone();
-          event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)));
-        }
-        return response;
-      })
-      .catch(() => caches.match(request))
-  );
+  if (!APP_SHELL_PATHS.has(url.pathname)) return;
+
+  event.respondWith(fetch(request)
+    .then((response) => {
+      event.waitUntil(putSafeResponse(request, response));
+      return response;
+    })
+    .catch(async () => (await caches.match(request)) || Response.error()));
 });

@@ -1,0 +1,4 @@
+/* Legacy compatibility entry point. Use index.css in the application. */
+@import "./forms.css";
+@import "./tables.css";
+@import "./responsive.css";

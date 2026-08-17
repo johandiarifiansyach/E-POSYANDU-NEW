@@ -1,10 +1,13 @@
 import Native from '../runtime/dom';
-import type { DashboardStatsResponse, MonitoringStatus } from '../api/client';
+import type { DashboardStatsResponse, MonitoringStatus } from '../api/dashboardApi';
+import type { PageState } from '../shared/pageState';
 import { Activity, AlertTriangle, Baby, CircleOff, Minus, Scale, TrendingUp, UserPlus, Users } from '../ui/icons';
-import { Card, MONTHS } from './DashboardApp';
+import { Card } from '../ui/dashboardPrimitives';
+import { MONTHS } from './DashboardApp';
 
 type DashboardOverviewPageProps = {
     stats: DashboardStatsResponse;
+    pageState?: PageState<DashboardStatsResponse>;
     loading?: boolean;
     monitoringStatus?: MonitoringStatus | null;
     filterMonth: number;
@@ -13,7 +16,13 @@ type DashboardOverviewPageProps = {
     viewPosyandu?: string | null;
 };
 
-export default function DashboardOverviewPage({ stats, loading = false, monitoringStatus, filterMonth, filterYear, viewDesa, viewPosyandu }: DashboardOverviewPageProps) {
+export default function DashboardOverviewPage({ stats: providedStats, pageState, loading = false, monitoringStatus, filterMonth, filterYear, viewDesa, viewPosyandu }: DashboardOverviewPageProps) {
+    const resolvedState: PageState<DashboardStatsResponse> = pageState ?? (loading
+        ? { status: 'loading' }
+        : { status: 'success', data: providedStats });
+    const pageLoading = resolvedState.status === 'loading';
+    const pageError = resolvedState.status === 'error' ? resolvedState.message : null;
+    const stats = resolvedState.status === 'success' ? resolvedState.data : providedStats;
     const workerStatus = monitoringStatus?.worker?.status;
     const monitoringMessage = workerStatus === 'down'
         ? `Worker laporan tidak tersedia setelah ${monitoringStatus?.worker.consecutiveFailures || 3} pemeriksaan. Login dan input data tetap dapat digunakan.`
@@ -41,7 +50,9 @@ export default function DashboardOverviewPage({ stats, loading = false, monitori
                     viewDesa && ` - ${viewDesa}`,
                     " ",
                     viewPosyandu && ` - ${viewPosyandu}`)),
-            loading && Native.createElement(Activity, { className: "w-5 h-5 animate-spin text-emerald-600", "aria-label": "Memuat ringkasan" })),
+            pageLoading && Native.createElement(Activity, { className: "w-5 h-5 animate-spin text-emerald-600", "aria-label": "Memuat ringkasan" })),
+        pageError && Native.createElement("div", { role: "alert", className: "ios-inline-notification ios-inline-notification-error system-health-notice" },
+            pageError),
         monitoringMessage && Native.createElement("div", { role: "status", "aria-live": "polite", className: `ios-inline-notification ${workerStatus === 'down' ? 'ios-inline-notification-error' : 'ios-inline-notification-warning'} system-health-notice flex items-start gap-3` },
             Native.createElement(AlertTriangle, { className: "w-5 h-5 flex-shrink-0" }),
             Native.createElement("div", null,

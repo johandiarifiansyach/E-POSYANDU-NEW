@@ -46,6 +46,9 @@ const Fragment = Symbol('DomFragment');
 const Suspense = Symbol('DomSuspense');
 const StrictMode = Symbol('DomStrictMode');
 const SVG_ELEMENTS = new Set(['svg', 'path', 'circle', 'line', 'rect', 'polyline', 'polygon', 'ellipse', 'g']);
+const BLOCKED_HTML_PROPS = new Set(['dangerouslySetInnerHTML', 'innerHTML', 'outerHTML', 'srcdoc']);
+const URL_PROPS = new Set(['href', 'src', 'action', 'formAction', 'poster', 'cite', 'xlinkHref']);
+const SAFE_DATA_IMAGE = /^data:image\/(?:png|jpe?g|gif|webp);base64,/i;
 let activeRoot: DomRoot | null = null;
 let currentRender: CurrentRender | null = null;
 type ElementEventState = {
@@ -225,9 +228,55 @@ function applyElementRef(element: Element, ref: unknown) {
   else if (typeof ref === 'object' && ref) (ref as { current: Element | null }).current = element;
 }
 
+export function sanitizeDomUrl(
+  value: unknown,
+  options: { allowContact?: boolean; allowImageData?: boolean; baseUrl?: string } = {}
+): string | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const compact = raw.replace(/[\u0000-\u0020\u007f]/g, '').toLowerCase();
+  if (compact.startsWith('javascript:') || compact.startsWith('vbscript:')) return null;
+  if (raw.startsWith('#')) return raw;
+  if (options.allowImageData && SAFE_DATA_IMAGE.test(raw)) return raw;
+  try {
+    const baseUrl = options.baseUrl || (typeof document !== 'undefined' ? document.baseURI : 'https://invalid.local/');
+    const url = new URL(raw, baseUrl);
+    if (url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'blob:') return raw;
+    if ((url.protocol === 'mailto:' || url.protocol === 'tel:') && options.allowContact) return raw;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function safeUrlAttribute(element: Element, name: string, value: unknown): string | null {
+  return sanitizeDomUrl(value, {
+    allowContact: element instanceof HTMLAnchorElement,
+    allowImageData: element instanceof HTMLImageElement || element instanceof SVGElement
+  });
+}
+
+export function isSafeInlineStyleValue(value: string | number) {
+  if (typeof value === 'number') return Number.isFinite(value);
+  return !/(?:url\s*\(|expression\s*\(|javascript:|vbscript:|@import|-moz-binding|behavior\s*:)/i.test(value);
+}
+
+export function isBlockedHtmlProp(name: string) {
+  return BLOCKED_HTML_PROPS.has(name) || name.toLowerCase().startsWith('on');
+}
+
+export function safeRelForTarget(target: unknown, current: unknown = '') {
+  if (target !== '_blank') return String(current || '');
+  const tokens = new Set(String(current || '').split(/\s+/).filter(Boolean));
+  tokens.add('noopener');
+  tokens.add('noreferrer');
+  return Array.from(tokens).join(' ');
+}
+
 function applyProps(element: Element, props: Record<string, unknown>, inSvg: boolean) {
   Object.entries(props).forEach(([name, value]) => {
     if (name === 'children' || name === 'key' || value === undefined || value === null) return;
+    if (BLOCKED_HTML_PROPS.has(name)) return;
     if (name === 'ref') {
       elementRefs.set(element, value);
       applyElementRef(element, value);
@@ -240,6 +289,7 @@ function applyProps(element: Element, props: Record<string, unknown>, inSvg: boo
       setElementEventHandler(element, eventName(name, element), value as EventListener);
       return;
     }
+    if (name.toLowerCase().startsWith('on')) return;
     if (name === 'className') {
       element.setAttribute('class', String(value));
       return;
@@ -250,9 +300,17 @@ function applyProps(element: Element, props: Record<string, unknown>, inSvg: boo
     }
     if (name === 'style' && typeof value === 'object') {
       Object.entries(value as Record<string, string | number>).forEach(([property, styleValue]) => {
+        if (property.startsWith('--') || !isSafeInlineStyleValue(styleValue)) return;
         const cssProperty = property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
         (element as HTMLElement).style.setProperty(cssProperty, String(styleValue));
       });
+      return;
+    }
+    if (URL_PROPS.has(name)) {
+      const safeValue = safeUrlAttribute(element, name, value);
+      if (safeValue === null) return;
+      const attribute = inSvg ? svgAttributeName(name) : name.toLowerCase();
+      element.setAttribute(attribute, safeValue);
       return;
     }
     if (!inSvg && element instanceof HTMLSelectElement && name === 'value') return;
@@ -269,6 +327,9 @@ function applyProps(element: Element, props: Record<string, unknown>, inSvg: boo
     else if (value === true) element.setAttribute(attribute, '');
     else element.setAttribute(attribute, String(value));
   });
+  if (element instanceof HTMLAnchorElement && element.target === '_blank') {
+    element.rel = safeRelForTarget(element.target, element.rel);
+  }
 }
 
 function focusKey(element: Element, cursor: number) {
@@ -436,6 +497,29 @@ function flushEffects(root: DomRoot, kind: EffectHook['kind']) {
   });
 }
 
+function renderRuntimeError(root: DomRoot) {
+  root.instances.forEach(cleanupInstance);
+  root.instances.clear();
+  root.container.replaceChildren();
+
+  const surface = document.createElement('section');
+  surface.className = 'runtime-error-screen';
+  surface.setAttribute('role', 'alert');
+
+  const title = document.createElement('h1');
+  title.textContent = 'Halaman belum dapat dimuat';
+  const message = document.createElement('p');
+  message.textContent = 'Aplikasi mengalami kendala saat menyiapkan halaman. Silakan coba lagi.';
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'runtime-error-retry';
+  retry.textContent = 'Muat ulang';
+  retry.addEventListener('click', () => window.location.reload());
+
+  surface.append(title, message, retry);
+  root.container.appendChild(surface);
+}
+
 function renderRoot(root: DomRoot) {
   if (root.disposed) return;
   const focused = activeField(root.container);
@@ -451,6 +535,7 @@ function renderRoot(root: DomRoot) {
   } catch (error) {
     console.error('Gagal merender halaman:', error);
     activeRoot = previousRoot;
+    renderRuntimeError(root);
     return;
   }
   activeRoot = previousRoot;

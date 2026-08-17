@@ -48,6 +48,7 @@ PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
 # READ_REPLICA_SHARED_SECRET pada kedua Worker berisi nilai yang sama.
 # Ubah menjadi `primary-only` untuk mematikan replica tanpa deploy ulang kode.
 READ_REPLICA_MODE = "prefer-replica"
+OPENAI_MODEL = "gpt-5.6-luna"
 
 [env.development]
 name = "e-posyandu-api-development"
@@ -60,6 +61,7 @@ TURNSTILE_HOSTNAMES = "localhost,127.0.0.1"
 LOCAL_TURNSTILE_BYPASS = "true"
 PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
 READ_REPLICA_MODE = "primary-only"
+OPENAI_MODEL = "gpt-5.6-luna"
 
 [env.development.observability]
 enabled = false
@@ -68,7 +70,7 @@ enabled = false
 binding = "E_POSYANDU_CACHE"
 
 [env.development.secrets]
-required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY"]
+required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY", "OPENAI_API_KEY"]
 
 [env.staging]
 name = "e-posyandu-api-staging"
@@ -80,6 +82,7 @@ CORS_ORIGINS = "https://e-posyandu-staging.pages.dev"
 TURNSTILE_HOSTNAMES = "e-posyandu-staging.pages.dev"
 PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
 READ_REPLICA_MODE = "prefer-replica"
+OPENAI_MODEL = "gpt-5.6-luna"
 
 [env.staging.observability]
 enabled = true
@@ -93,7 +96,7 @@ binding = "NEON_READ_SERVICE"
 service = "e-posyandu-neon-read-staging"
 
 [env.staging.secrets]
-required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY"]
+required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY", "OPENAI_API_KEY"]
 
 [secrets]
-required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY"]
+required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY", "OPENAI_API_KEY"]

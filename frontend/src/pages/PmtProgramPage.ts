@@ -1,82 +1,24 @@
 // @ts-nocheck
 import Native, { useMemo, useState } from '../runtime/dom';
-import { actionTooltipProps } from '../ui/actionTooltip';
+import { Button, DataTable, KenaikanBadge, StatusBadge, actionTooltipProps } from '../components';
 import { AlertCircle, Calendar, FileDown, Gift, Loader2, Minus, Trash2, TrendingDown } from '../ui/icons';
 import {
-  Button,
-  calculateGiziStatus,
-  formatIndoDate,
-  getAgeInMonths,
-  KenaikanBadge,
-  StatusBadge
-} from './DashboardApp';
-
-const CATEGORY_OPTIONS = [
-  { value: 'Semua', label: 'Semua PMT', shortLabel: 'Semua' },
-  { value: 'Underweight', label: 'Underweight (BB Kurang/Sangat Kurang)', shortLabel: 'Underweight' },
-  { value: 'Wasting', label: 'Wasting (Gizi Kurang/Buruk)', shortLabel: 'Wasting' },
-  { value: 'TidakNaik', label: 'BB Tidak Naik (N/T)', shortLabel: 'Tidak Naik' }
-];
-
-function maxWeeksForCategory(category) {
-  if (category === 'Wasting') return 8;
-  if (category === 'Underweight') return 4;
-  return 2;
-}
-
-function categoryLabel(category) {
-  if (category === 'TidakNaik') return 'BB Tidak Naik';
-  return category || '-';
-}
-
-function categoryMetric(category) {
-  if (category === 'Wasting') return 'BB/TB';
-  if (category === 'Underweight') return 'BB/U';
-  return 'N/T';
-}
+  CATEGORY_OPTIONS,
+  baselineForProgram,
+  categoryLabel,
+  categoryMetric,
+  getMonitoringForWeek,
+  maxWeeksForCategory,
+  monitoringStatus,
+  numericValue,
+} from '../features/pmt/pmtRules';
+import { formatIndoDate } from './DashboardApp';
+import type { PageState } from '../shared/pageState';
 
 function categoryIcon(category) {
   if (category === 'Wasting') return AlertCircle;
   if (category === 'Underweight') return TrendingDown;
   return Minus;
-}
-
-function numericValue(value) {
-  const normalized = String(value ?? '').replace(/,/g, '.').trim();
-  if (!normalized) return null;
-  const number = Number(normalized);
-  return Number.isFinite(number) && number > 0 ? number : null;
-}
-
-function baselineForProgram(program, child) {
-  return {
-    date: program.initialMeasurementDate || child?.lastMeasurementDate || program.tglPemberian,
-    weight: numericValue(program.initialBB) ?? numericValue(child?.currentBB) ?? numericValue(child?.bbLahir),
-    height: numericValue(program.initialTB) ?? numericValue(child?.currentTB) ?? numericValue(child?.pbLahir)
-  };
-}
-
-function monitoringStatus(program, child, monitoring, week, baseline) {
-  if (program.category === 'TidakNaik') {
-    if (!monitoring) return week === 0 ? 'T' : '-';
-    if (monitoring.statusNaik === 'N' || monitoring.statusNaik === 'T') return monitoring.statusNaik;
-    const previousMonitoring = week > 1 ? program.monitorings?.[week - 1] : null;
-    const previousWeight = numericValue(previousMonitoring?.bb) ?? baseline.weight;
-    const currentWeight = numericValue(monitoring.bb);
-    if (currentWeight === null || previousWeight === null) return '-';
-    return currentWeight > previousWeight ? 'N' : 'T';
-  }
-
-  const weight = week === 0 ? baseline.weight : numericValue(monitoring?.bb);
-  const height = week === 0 ? baseline.height : numericValue(monitoring?.tb);
-  const date = week === 0 ? baseline.date : monitoring?.tgl;
-  if (!child?.tglLahir || !child?.jk || weight === null) return '-';
-  const age = getAgeInMonths(child.tglLahir, date ? new Date(date) : new Date());
-  if (program.category === 'Wasting') {
-    if (height === null) return '-';
-    return calculateGiziStatus(weight, 'BBTB', age, child.jk, height, monitoring?.caraUkur);
-  }
-  return calculateGiziStatus(weight, 'BBU', age, child.jk);
 }
 
 function StatusResult({ category, status }) {
@@ -99,16 +41,21 @@ function MeasurementCell({ category, status, date, weight, height }) {
   );
 }
 
-export default function PmtProgramPage({ childrenData, pmtPrograms, onExportPmt, onDeleteProgram, onOpenMonitoring }) {
+export default function PmtProgramPage({ childrenData, pmtPrograms, onExportPmt, onDeleteProgram, onOpenMonitoring, pageState: externalPageState }) {
   const [categoryFilter, setCategoryFilter] = useState('Semua');
   const [openingProgramId, setOpeningProgramId] = useState(null);
+  const fallbackState = { status: 'success', data: pmtPrograms };
+  const effectiveState = externalPageState || fallbackState;
+  const displayedPrograms = effectiveState.status === 'success' ? effectiveState.data : pmtPrograms;
+  const pageLoading = effectiveState.status === 'loading';
+  const pageError = effectiveState.status === 'error' ? effectiveState.message : null;
   const childById = useMemo(() => new Map(childrenData.filter((child) => child.id).map((child) => [child.id, child])), [childrenData]);
   const filteredPrograms = useMemo(() => {
     const programs = categoryFilter === 'Semua'
-      ? pmtPrograms
-      : pmtPrograms.filter((program) => program.category === categoryFilter);
+      ? displayedPrograms
+      : displayedPrograms.filter((program) => program.category === categoryFilter);
     return [...programs].sort((left, right) => String(left.childName || '').localeCompare(String(right.childName || ''), 'id'));
-  }, [categoryFilter, pmtPrograms]);
+  }, [categoryFilter, displayedPrograms]);
   const visibleWeekCount = categoryFilter === 'Semua'
     ? Math.max(2, ...filteredPrograms.map((program) => maxWeeksForCategory(program.category)))
     : maxWeeksForCategory(categoryFilter);
@@ -131,7 +78,7 @@ export default function PmtProgramPage({ childrenData, pmtPrograms, onExportPmt,
           Native.createElement(Gift, { className: 'h-5 w-5' })),
         Native.createElement('div', { className: 'min-w-0' },
           Native.createElement('h2', { className: 'text-2xl font-bold text-slate-800' }, 'Program Pemberian PMT'),
-          Native.createElement('p', { className: 'mt-1 text-sm text-slate-500' }, `${pmtPrograms.length} balita penerima PMT`))),
+          Native.createElement('p', { className: 'mt-1 text-sm text-slate-500' }, `${displayedPrograms.length} balita penerima PMT`))),
       Native.createElement(Button, { onClick: onExportPmt, variant: 'primary', className: 'ios-toolbar-button', title: 'Export program PMT ke XLS' },
         Native.createElement('span', { className: 'ios-button-symbol', 'aria-hidden': 'true' },
           Native.createElement(FileDown, { className: 'h-4 w-4' })),
@@ -148,11 +95,19 @@ export default function PmtProgramPage({ childrenData, pmtPrograms, onExportPmt,
           onClick: () => setCategoryFilter(option.value)
         }, option.shortLabel)))),
     Native.createElement('div', { className: 'pmt-table-card ios-table-card' },
-      filteredPrograms.length === 0
+      pageLoading
+        ? Native.createElement('div', { className: 'pmt-empty-state', role: 'status' },
+            Native.createElement(Loader2, { className: 'h-8 w-8 animate-spin' }),
+            Native.createElement('p', null, 'Memuat program PMT...'))
+        : pageError
+          ? Native.createElement('div', { className: 'pmt-empty-state ios-inline-notification ios-inline-notification-error', role: 'alert' },
+              Native.createElement(AlertCircle, { className: 'h-8 w-8' }),
+              Native.createElement('p', null, `Gagal memuat program PMT: ${pageError}`))
+          : filteredPrograms.length === 0
         ? Native.createElement('div', { className: 'pmt-empty-state' },
             Native.createElement(Gift, { className: 'h-8 w-8' }),
             Native.createElement('p', null, 'Belum ada program PMT pada kategori ini.'))
-        : Native.createElement('div', { className: 'pmt-table-scroll ios-table-scroll', tabIndex: 0, 'aria-label': 'Tabel pemantauan PMT' },
+        : Native.createElement(DataTable, { className: 'pmt-table-scroll', ariaLabel: 'Tabel pemantauan PMT' },
             Native.createElement('table', { className: 'pmt-data-table ios-data-table' },
               Native.createElement('thead', null,
                 Native.createElement('tr', null,
@@ -192,7 +147,7 @@ export default function PmtProgramPage({ childrenData, pmtPrograms, onExportPmt,
                       Native.createElement(MeasurementCell, { category: program.category, status: initialStatus, date: baseline.date, weight: baseline.weight, height: baseline.height })),
                     ...weeks.map((week) => {
                       if (week > programWeeks) return Native.createElement('td', { key: week, className: 'pmt-week-column pmt-week-disabled' }, 'Tidak berlaku');
-                      const monitoring = program.monitorings?.[week];
+                      const monitoring = getMonitoringForWeek(program, week);
                       const status = monitoringStatus(program, child, monitoring, week, baseline);
                       return Native.createElement('td', { key: week, className: 'pmt-week-column' },
                         Native.createElement(MeasurementCell, { category: program.category, status, date: monitoring?.tgl, weight: monitoring?.bb, height: monitoring?.tb }));

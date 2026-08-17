@@ -36,7 +36,13 @@ function jsonResponse(payload: unknown, status = 200): Response {
     status,
     headers: {
       "Cache-Control": "private, no-store",
+      "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; sandbox",
+      "Permissions-Policy": "camera=(), geolocation=(), microphone=()",
+      "Referrer-Policy": "no-referrer",
+      "Strict-Transport-Security": "max-age=63072000; includeSubDomains",
       "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "X-Permitted-Cross-Domain-Policies": "none",
     },
   });
 }

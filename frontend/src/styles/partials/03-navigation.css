@@ -1,0 +1,380 @@
+/* Clean iOS navigation hierarchy: app identity belongs to the expanded sidebar. */
+.sidebar-brand-panel {
+  display: flex;
+  min-height: 82px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  margin: 0 12px;
+  padding: 15px 4px 13px;
+  border-bottom: 1px solid rgba(60, 60, 67, 0.12);
+}
+.sidebar-brand-logo-shell {
+  display: inline-flex;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(52, 199, 89, 0.18);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: 0 8px 20px rgba(52, 199, 89, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.sidebar-brand-copy { flex: 1 1 auto; }
+
+.sidebar-brand-name-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.sidebar-brand-name-row strong {
+  overflow: hidden;
+  color: #1c1c1e;
+  font-size: 16px;
+  font-weight: 780;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-brand-name-row span {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border-radius: 6px;
+  background: rgba(118, 118, 128, 0.11);
+  color: #6e6e73;
+  font-size: 9px;
+  font-weight: 720;
+}
+
+.sidebar-brand-copy p {
+  overflow: hidden;
+  margin: 4px 0 0;
+  color: #248a3d;
+  font-size: 9px;
+  font-weight: 760;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.app-shell.is-sidebar-collapsed .sidebar-brand-panel { display: none; }
+
+.app-topbar {
+  min-height: 68px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "title actions";
+  padding: 8px 20px;
+}
+
+.app-page-context {
+  display: block;
+  min-width: 0;
+}
+
+.app-page-context h1 {
+  overflow: hidden;
+  margin: 0;
+  color: var(--apple-label);
+  font-size: 20px;
+  font-weight: 760;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-actions {
+  grid-area: actions;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 46px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  color: #5856d6;
+  transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.theme-toggle:hover {
+  border-color: rgba(88, 86, 214, 0.28);
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.theme-toggle:active { transform: scale(0.94); }
+.theme-toggle:focus-visible {
+  outline: 3px solid rgba(0, 122, 255, 0.22);
+  outline-offset: 2px;
+}
+
+.theme-toggle[aria-pressed="true"] { color: #ffcc00; }
+
+.ios-scope-panel { isolation: isolate; }
+
+.ios-scope-period-row {
+  display: flex;
+  min-height: 68px;
+  align-items: center;
+  gap: 13px;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(60, 60, 67, 0.11);
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.ios-scope-panel.is-period-only .ios-scope-period-row { border-bottom: 0; }
+
+.ios-scope-period-title {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+  color: #1c1c1e;
+  font-size: 14px;
+  font-weight: 720;
+}
+
+.ios-scope-period-control {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 14px;
+}
+
+.ios-scope-period-control .period-select {
+  min-width: 110px;
+  height: 36px;
+}
+
+.ios-scope-period-control .period-year { min-width: 78px; }
+
+.ios-scope-period-divider {
+  width: 1px;
+  height: 22px;
+  background: rgba(60, 60, 67, 0.17);
+}
+
+.ios-scope-reset { flex: 0 0 auto; }
+
+.ios-scope-location-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+  padding: 16px;
+}
+
+.ios-scope-location-grid.is-gizi {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --apple-bg: #0b0b0f;
+  --apple-surface: rgba(31, 31, 36, 0.82);
+  --apple-separator: rgba(235, 235, 245, 0.14);
+  --apple-label: #f5f5f7;
+  --apple-secondary-label: rgba(235, 235, 245, 0.64);
+}
+
+html[data-theme="dark"] body,
+html[data-theme="dark"] .app-shell {
+  background: var(--apple-bg);
+  color: var(--apple-label);
+}
+
+html[data-theme="dark"] .app-topbar,
+html[data-theme="dark"] .app-footer {
+  border-color: var(--apple-separator);
+  background: rgba(24, 24, 28, 0.78);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.24);
+}
+
+html[data-theme="dark"] .app-footer {
+  color: rgba(235, 235, 245, 0.58);
+}
+
+html[data-theme="dark"] .glass-control,
+html[data-theme="dark"] .app-card,
+html[data-theme="dark"] .ios-table-card,
+html[data-theme="dark"] .apple-list-card {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(38, 38, 43, 0.76);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme="dark"] .theme-toggle:hover,
+html[data-theme="dark"] .account-trigger:hover,
+html[data-theme="dark"] .account-trigger[aria-expanded="true"] {
+  border-color: rgba(10, 132, 255, 0.32);
+  background: rgba(58, 58, 64, 0.84);
+}
+
+html[data-theme="dark"] .sidebar-brand-logo-shell,
+html[data-theme="dark"] .ios-scope-period-row {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+html[data-theme="dark"] .sidebar-brand-name-row strong,
+html[data-theme="dark"] .ios-scope-period-title,
+html[data-theme="dark"] .account-trigger .text-slate-800,
+html[data-theme="dark"] .account-menu .text-slate-800,
+html[data-theme="dark"] .text-slate-900,
+html[data-theme="dark"] .text-slate-800,
+html[data-theme="dark"] .text-slate-700 {
+  color: #f5f5f7 !important;
+}
+
+html[data-theme="dark"] .text-slate-600,
+html[data-theme="dark"] .text-slate-500,
+html[data-theme="dark"] .text-slate-400 {
+  color: rgba(235, 235, 245, 0.62) !important;
+}
+
+html[data-theme="dark"] .account-menu {
+  border-color: rgba(255, 255, 255, 0.11);
+  background: rgba(36, 36, 41, 0.94);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.09);
+}
+
+html[data-theme="dark"] .app-shell main input:not([type="checkbox"]):not([type="radio"]),
+html[data-theme="dark"] .app-shell main select,
+html[data-theme="dark"] .app-shell main textarea,
+html[data-theme="dark"] .ios-liquid-modal .ios-liquid-control,
+html[data-theme="dark"] .ios-identity-modal select {
+  border-color: rgba(235, 235, 245, 0.14);
+  background-color: rgba(58, 58, 64, 0.78);
+  color: #f5f5f7;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+html[data-theme="dark"] .app-shell main input::placeholder,
+html[data-theme="dark"] .app-shell main textarea::placeholder {
+  color: rgba(235, 235, 245, 0.38);
+}
+
+html[data-theme="dark"] .ios-liquid-modal {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(35, 35, 40, 0.88);
+  box-shadow: 0 34px 94px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark"] .ios-modal-header,
+html[data-theme="dark"] .ios-modal-actions {
+  border-color: rgba(235, 235, 245, 0.12);
+  background: rgba(44, 44, 49, 0.8);
+}
+
+html[data-theme="dark"] .ios-modal-title-group h2,
+html[data-theme="dark"] .ios-modal-context strong,
+html[data-theme="dark"] .ios-mpasi-food-toggle,
+html[data-theme="dark"] .ios-identity-modal .identity-modal-scroll > section h3 {
+  color: #f5f5f7;
+}
+
+html[data-theme="dark"] .ios-modal-context,
+html[data-theme="dark"] .ios-mpasi-food-toggle,
+html[data-theme="dark"] .ios-day-toggle,
+html[data-theme="dark"] .ios-week-button {
+  border-color: rgba(235, 235, 245, 0.13);
+  background: rgba(70, 70, 76, 0.46);
+}
+
+html[data-theme="dark"] .ios-mpasi-food-toggle.is-checked {
+  border-color: rgba(255, 159, 10, 0.56);
+  background: rgba(255, 159, 10, 0.18);
+}
+
+html[data-theme="dark"] .bg-white,
+html[data-theme="dark"] .bg-slate-50,
+html[data-theme="dark"] .bg-slate-100 {
+  background-color: rgba(44, 44, 49, 0.82) !important;
+}
+
+html[data-theme="dark"] .border-slate-100,
+html[data-theme="dark"] .border-slate-200,
+html[data-theme="dark"] .border-slate-300 {
+  border-color: rgba(235, 235, 245, 0.12) !important;
+}
+
+html[data-theme="dark"] .app-shell:not(.is-sidebar-collapsed) .app-sidebar {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(29, 29, 34, 0.58);
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark"] .app-shell.is-sidebar-collapsed .app-sidebar-nav {
+  border-color: rgba(255, 255, 255, 0.11);
+  background: rgba(44, 44, 49, 0.8);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+@media (max-width: 767px) {
+  .app-topbar {
+    min-height: 64px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "title actions";
+    gap: 9px;
+    padding: max(8px, env(safe-area-inset-top)) 10px 8px;
+  }
+
+  .app-page-context { display: block; }
+  .app-page-context h1 { font-size: 17px; }
+
+  .theme-toggle {
+    width: 44px;
+    height: 44px;
+    flex-basis: 44px;
+    border-radius: 13px;
+  }
+
+  .topbar-actions { gap: 7px; }
+
+  .sidebar-brand-panel {
+    margin-inline: 14px;
+    padding-inline: 2px;
+  }
+
+  .ios-scope-period-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .ios-scope-period-control {
+    width: 100%;
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .ios-scope-period-control .period-select {
+    min-width: 0;
+    flex: 1 1 56%;
+  }
+
+  .ios-scope-period-control .period-year { flex-basis: 44%; }
+
+  .ios-scope-location-grid,
+  .ios-scope-location-grid.is-gizi {
+    grid-template-columns: 1fr;
+    gap: 13px;
+    padding: 14px 12px;
+  }
+}

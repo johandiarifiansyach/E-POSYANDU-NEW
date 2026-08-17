@@ -6,6 +6,31 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const readJson = async (path) => JSON.parse(await readFile(resolve(root, path), 'utf8'));
+const API_MODULES = [
+  'frontend/src/api/client.ts',
+  'frontend/src/api/httpClient.ts',
+  'frontend/src/api/authApi.ts',
+  'frontend/src/api/childrenApi.ts',
+  'frontend/src/api/measurementApi.ts',
+  'frontend/src/api/dashboardApi.ts',
+  'frontend/src/api/exportApi.ts',
+  'frontend/src/api/syncApi.ts',
+  'frontend/src/api/legacyClient.ts'
+];
+const readApiClient = async () =>
+  (await Promise.all(API_MODULES.map((path) => readFile(resolve(root, path), 'utf8')))).join('\n');
+
+async function readSourceTree(path) {
+  const absolutePath = resolve(root, path);
+  const entries = await readdir(absolutePath, { withFileTypes: true });
+  const sources = await Promise.all(entries.map(async (entry) => {
+    const relativePath = `${path}/${entry.name}`;
+    if (entry.isDirectory()) return readSourceTree(relativePath);
+    if (!/\.(?:js|mjs|rs|ts|tsx)$/.test(entry.name)) return '';
+    return readFile(resolve(root, relativePath), 'utf8');
+  }));
+  return sources.flat(Infinity).join('\n');
+}
 
 test('migration database berurutan dan tercatat sampai versi terbaru', async () => {
   const files = (await readdir(resolve(root, 'database/migrations')))
@@ -14,7 +39,7 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '020_read_replica_children_page.sql');
+  assert.equal(files.at(-1), '026_allow_infant_lila_null.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
@@ -22,19 +47,16 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   }
 });
 
-test('fallback autentikasi hanya dapat membaca profil akun sendiri yang masih aktif', async () => {
+test('RPC profil lama tetap terkunci meskipun tidak lagi dipakai untuk melewati login utama', async () => {
   const migration = await readFile(
     resolve(root, 'database/migrations/016_auth_profile_fallback.sql'),
     'utf8'
   );
-  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
-
   assert.match(migration, /security definer/);
   assert.match(migration, /users\.user_id = auth\.uid\(\)/);
   assert.match(migration, /and users\.active/);
   assert.match(migration, /revoke all on function public\.eposyandu_current_access_profile\(\) from public, anon/);
   assert.match(migration, /grant execute on function public\.eposyandu_current_access_profile\(\) to authenticated, service_role/);
-  assert.match(client, /rest\/v1\/rpc\/eposyandu_current_access_profile/);
 });
 
 test('fallback baca darurat tetap dibatasi role dan wilayah akun aktif', async () => {
@@ -42,7 +64,7 @@ test('fallback baca darurat tetap dibatasi role dan wilayah akun aktif', async (
     resolve(root, 'database/migrations/017_authenticated_read_fallback.sql'),
     'utf8'
   );
-  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
+  const client = await readApiClient();
 
   assert.match(migration, /security definer/g);
   assert.match(migration, /profile\.user_id = auth\.uid\(\) and profile\.active/g);
@@ -60,7 +82,7 @@ test('fallback tulis penimbangan bersifat atomik dan hanya menerima kolom ringka
     resolve(root, 'database/migrations/018_authenticated_measurement_write_fallback.sql'),
     'utf8'
   );
-  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
+  const client = await readApiClient();
 
   assert.match(migration, /security definer/);
   assert.match(migration, /users\.user_id = auth\.uid\(\)/);
@@ -72,6 +94,17 @@ test('fallback tulis penimbangan bersifat atomik dan hanya menerima kolom ringka
   assert.match(client, /supportsAuthenticatedMeasurementFallback/);
   assert.match(client, /eposyandu_self_sync_measurement_batch/);
   assert.match(client, /if \(!isNetworkError\(error\)\) throw error/);
+});
+
+test('fallback penimbangan menyimpan LILA kosong untuk bayi di bawah tiga bulan', async () => {
+  const migration = await readFile(
+    resolve(root, 'database/migrations/026_allow_infant_lila_null.sql'),
+    'utf8'
+  );
+
+  assert.match(migration, /ageInMonths[\s\S]+< 3/);
+  assert.match(migration, /LiLA tidak diukur pada bayi usia 0 sampai 2 bulan/);
+  assert.match(migration, /nullif\(v_data->>'lila', ''\)::numeric/);
 });
 
 test('helper akses wilayah dipulihkan untuk jalur penimbangan terautentikasi', async () => {
@@ -172,8 +205,8 @@ test('dashboard, masalah gizi, dan ASI memakai sumber serta cakupan data yang sa
     resolve(root, 'database/migrations/014_unify_dashboard_report_counts.sql'),
     'utf8'
   );
-  const dashboard = await readFile(resolve(root, 'frontend/src/pages/DashboardApp.ts'), 'utf8');
-  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
+  const dashboard = await readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8');
+  const client = await readApiClient();
 
   assert.match(migration, /create or replace function public\.eposyandu_problem_children_page/);
   assert.match(migration, /c\.birth_date <= p_month_end/g);
@@ -193,7 +226,7 @@ test('dashboard, masalah gizi, dan ASI memakai sumber serta cakupan data yang sa
 });
 
 test('halaman balita hanya membaca cache untuk ID yang sedang ditampilkan', async () => {
-  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
+  const client = await readApiClient();
   const offlineStore = await readFile(
     resolve(root, 'frontend/src/services/offlineStore.ts'),
     'utf8'
@@ -223,6 +256,7 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
     '/api/v1/features',
     '/api/v1/monitoring/status',
     '/api/v1/client-errors',
+    '/api/v1/ai/growth-summary',
     '/api/v1/jobs',
     '/api/v1/jobs/{jobId}',
     '/api/v1/jobs/{jobId}/file'
@@ -236,6 +270,34 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
   assert.equal(
     document.components.schemas.LoginResponse.properties.profile.$ref,
     '#/components/schemas/AccessProfile'
+  );
+  assert.equal(
+    document.paths['/api/v1/ai/growth-summary'].post.requestBody.content['application/json'].schema.$ref,
+    '#/components/schemas/GrowthAiSummaryRequest'
+  );
+  assert.equal(document.components.schemas.GrowthAiSummaryRequest.additionalProperties, false);
+  assert.deepEqual(
+    Object.keys(document.components.schemas.GrowthAiSummaryRequest.properties).sort(),
+    ['measurements', 'sex']
+  );
+});
+
+test('Ringkasan AI hanya menerima data anonim dan tidak menyimpan respons penyedia', async () => {
+  const worker = await readFile(resolve(root, 'backend/src/ai.rs'), 'utf8');
+  const frontend = await readFile(
+    resolve(root, 'frontend/src/features/measurements/growthSummary.ts'),
+    'utf8'
+  );
+
+  assert.match(worker, /deny_unknown_fields/g);
+  assert.match(worker, /"store": false/);
+  assert.match(worker, /require_scope\(&request, env\)/);
+  assert.match(worker, /RATE_LIMIT_REQUESTS/);
+  assert.match(worker, /OPENAI_API_KEY/);
+  assert.match(frontend, /buildAnonymousGrowthSummaryPayload/);
+  assert.deepEqual(
+    Object.keys((await readJson('backend/openapi.json')).components.schemas.GrowthAiSummaryRequest.properties).sort(),
+    ['measurements', 'sex']
   );
 });
 
@@ -266,6 +328,24 @@ test('Neon mengambil alih baca hanya untuk sesi Supabase yang pernah diverifikas
   assert.match(worker, /status == 429 \|\| status >= 500/);
   assert.match(worker, /"writes": "primary-only"/);
   assert.match(worker, /Layanan utama sedang tidak tersedia\. Perubahan data belum dapat dikirim/);
+});
+
+test('ringkasan dashboard memakai primary dan cache browser terversi', async () => {
+  const worker = await readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8');
+  const dashboard = await readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8');
+  const dashboardStart = worker.indexOf('async fn dashboard(');
+  const dashboardEnd = worker.indexOf('async fn ', dashboardStart + 1);
+  const dashboardRoute = worker.slice(
+    dashboardStart,
+    dashboardEnd === -1 ? undefined : dashboardEnd,
+  );
+
+  assert.ok(dashboardStart >= 0, 'route dashboard tidak ditemukan');
+  assert.match(dashboardRoute, /let value = rpc\(env, "eposyandu_dashboard_stats"/);
+  assert.doesNotMatch(dashboardRoute, /read_rpc\(env/);
+  assert.match(worker, /DASHBOARD_CACHE_VERSION_KEY: &str = "dashboard:version:v3"/);
+  assert.match(dashboard, /e-posyandu:dashboard-stats:v4/);
+  assert.match(dashboard, /isDashboardTab/);
 });
 
 test('monitoring worker tersimpan di KV dan MQTT ditunda sampai ada IoT', async () => {
@@ -308,7 +388,7 @@ test('pekerjaan berat memakai migration privat, Queue, dan kontrak frontend', as
     'utf8'
   );
   const wrangler = await readFile(resolve(root, 'backend/wrangler.toml'), 'utf8');
-  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
+  const client = await readApiClient();
 
   assert.match(migration, /create table if not exists public\.background_jobs/);
   assert.match(migration, /force row level security/);
@@ -322,8 +402,8 @@ test('pekerjaan berat memakai migration privat, Queue, dan kontrak frontend', as
 
 test('riwayat perubahan dimuat langsung, dibatasi, dan rincian diproses bertahap', async () => {
   const worker = await readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8');
-  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
-  const dashboard = await readFile(resolve(root, 'frontend/src/pages/DashboardApp.ts'), 'utf8');
+  const client = await readApiClient();
+  const dashboard = await readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8');
 
   assert.match(worker, /for id_chunk in ids\.chunks\(75\)/);
   assert.match(
@@ -350,6 +430,7 @@ test('manifest dan service worker membentuk shell PWA yang dapat dipasang', asyn
 
 test('header keamanan frontend mencakup kebijakan utama', async () => {
   const headers = await readFile(resolve(root, 'frontend/public/_headers'), 'utf8');
+  const frontendPackage = await readJson('frontend/package.json');
   for (const header of [
     'Content-Security-Policy:',
     'Strict-Transport-Security:',
@@ -359,6 +440,35 @@ test('header keamanan frontend mencakup kebijakan utama', async () => {
   ]) {
     assert.match(headers, new RegExp(header));
   }
+  assert.match(headers, /default-src 'none'/);
+  assert.match(headers, /script-src-attr 'none'/);
+  assert.match(headers, /frame-ancestors 'none'/);
+  assert.match(headers, /object-src 'none'/);
+  assert.match(headers, /base-uri 'none'/);
+  assert.doesNotMatch(headers, /cdnjs\.cloudflare\.com|xlsx\.full\.min\.js/);
+  assert.equal(
+    frontendPackage.dependencies.xlsx,
+    'https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz'
+  );
+  assert.doesNotMatch(
+    headers,
+    /(?:^|;\s*)script-src\s+[^;]*(?:'unsafe-inline'|'unsafe-eval'|https:\/\/\*)/
+  );
+});
+
+test('kode aplikasi tidak memakai eval atau penyisipan HTML mentah', async () => {
+  const source = [
+    await readSourceTree('frontend/src'),
+    await readFile(resolve(root, 'frontend/public/service-worker.js'), 'utf8'),
+    await readSourceTree('backend/src'),
+    await readSourceTree('services/neon-read-worker/src'),
+    await readSourceTree('services/nutrition-grpc/src')
+  ].join('\n');
+
+  assert.doesNotMatch(
+    source,
+    /\beval\s*\(|new\s+Function\s*\(|\.innerHTML\s*=|\.outerHTML\s*=|insertAdjacentHTML\s*\(/
+  );
 });
 
 test('deployment diperiksa berkala dan backup hanya disimpan dalam bentuk terenkripsi', async () => {
@@ -392,8 +502,8 @@ test('deployment diperiksa berkala dan backup hanya disimpan dalam bentuk terenk
 
 test('sinkronisasi offline mendeteksi konflik dan tidak menimpa perubahan diam-diam', async () => {
   const store = await readFile(resolve(root, 'frontend/src/services/offlineStore.ts'), 'utf8');
-  const client = await readFile(resolve(root, 'frontend/src/api/client.ts'), 'utf8');
-  const dashboard = await readFile(resolve(root, 'frontend/src/pages/DashboardApp.ts'), 'utf8');
+  const client = await readApiClient();
+  const dashboard = await readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8');
   const worker = await readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8');
 
   assert.match(store, /const CONFLICT_STORE = 'conflicts'/);
@@ -406,6 +516,31 @@ test('sinkronisasi offline mendeteksi konflik dan tidak menimpa perubahan diam-d
   assert.match(dashboard, /Gunakan Data Server/);
   assert.match(worker, /serverDocument/);
   assert.match(worker, /expectedUpdatedAt/);
+});
+
+test('cache sensitif dienkripsi per akun dan login tidak melewati gerbang keamanan', async () => {
+  const store = await readFile(resolve(root, 'frontend/src/services/offlineStore.ts'), 'utf8');
+  const client = await readApiClient();
+
+  assert.match(store, /AES-GCM/);
+  assert.match(store, /OFFLINE_ENCRYPTION_SESSION_KEY/);
+  assert.match(store, /activeOwnerScope/);
+  assert.match(store, /initializeOfflineStoreSession/);
+  assert.match(store, /resetOfflineStoreWithoutSession/);
+  assert.match(client, /await initializeOfflineStoreSession\(session\.uid/);
+  assert.match(client, /response = await usernameLoginRequest/);
+  assert.doesNotMatch(client, /directSupabaseUsernameLogin/);
+  assert.doesNotMatch(client, /localStorage\.getItem\(AUTH_SESSION_KEY\)/);
+});
+
+test('skeleton awal mengikuti struktur aplikasi tanpa teks persiapan', async () => {
+  const skeleton = await readFile(resolve(root, 'frontend/src/ui/skeleton.ts'), 'utf8');
+  const app = await readFile(resolve(root, 'frontend/src/App.ts'), 'utf8');
+
+  assert.match(skeleton, /app-loading-sidebar/);
+  assert.match(skeleton, /app-loading-topbar/);
+  assert.match(skeleton, /app-loading-mobile-dock/);
+  assert.doesNotMatch(`${skeleton}\n${app}`, /Menyiapkan aplikasi/);
 });
 
 test('monitoring terpadu dan load test Queue gRPC memiliki batas aman', async () => {

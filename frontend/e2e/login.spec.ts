@@ -1,5 +1,26 @@
 import { expect, test } from '@playwright/test';
 
+test('skeleton awal mengikuti shell aplikasi tanpa teks persiapan', async ({ page }, testInfo) => {
+  await page.goto('/');
+  await page.evaluate(async () => {
+    const { AppLoadingSkeleton } = await import('/src/ui/skeleton.ts');
+    document.body.replaceChildren(AppLoadingSkeleton());
+  });
+
+  const skeleton = page.locator('.app-loading-shell');
+  await expect(skeleton).toBeVisible();
+  await expect(skeleton).toHaveAttribute('aria-label', 'Memuat konten aplikasi');
+  await expect(skeleton.locator('.app-loading-sidebar')).toHaveCount(1);
+  await expect(skeleton.locator('.app-loading-topbar')).toHaveCount(1);
+  await expect(skeleton.locator('.app-loading-card')).toHaveCount(6);
+  await expect(skeleton.locator('.app-loading-list-row')).toHaveCount(4);
+  await expect(page.getByText('Menyiapkan aplikasi')).toHaveCount(0);
+
+  if (process.env.E2E_CAPTURE_UI) {
+    await page.screenshot({ path: `${process.env.E2E_CAPTURE_UI}/app-skeleton-${testInfo.project.name}.png`, fullPage: true });
+  }
+});
+
 test('login dapat dipakai dengan keyboard, footer rilis, dan pengaturan password', async ({ page }, testInfo) => {
   await page.goto('/');
 
@@ -89,6 +110,9 @@ test('halaman login tidak melebar di layar ponsel', async ({ page }, testInfo) =
 
 test('login memakai profil dari respons yang sama tanpa meminta endpoint me', async ({ page }) => {
   let profileRequests = 0;
+  await page.addInitScript(() => {
+    sessionStorage.setItem('e-posyandu:api-unavailable-until', String(Date.now() + 10 * 60 * 1000));
+  });
   await page.route('http://127.0.0.1:9/api/v1/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -146,13 +170,10 @@ test('login memakai profil dari respons yang sama tanpa meminta endpoint me', as
   expect(profileRequests).toBe(0);
 });
 
-test('login beralih ke Supabase Auth saat Worker mencapai batas kapasitas', async ({ page }) => {
+test('login tidak melewati Turnstile dan rate limiter saat Worker mencapai batas kapasitas', async ({ page }) => {
   let directAuthRequests = 0;
   let directProfileRequests = 0;
-  let profileRequests = 0;
   await page.route('http://127.0.0.1:9/api/v1/**', async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path.endsWith('/me')) profileRequests += 1;
     await route.fulfill({
       status: 429,
       headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'text/plain' },
@@ -198,13 +219,141 @@ test('login beralih ke Supabase Auth saat Worker mencapai batas kapasitas', asyn
   await page.getByRole('textbox', { name: 'Kata Sandi', exact: true }).fill('kata-sandi-uji');
   await page.getByRole('button', { name: 'Masuk' }).click();
 
-  await expect(page.locator('[data-nav-id="dashboard"]')).toBeVisible();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem('e-posyandu:user'))).toBe(JSON.stringify({
-    role: 'Ahli Gizi',
-    desa: null,
-    posyandu: null
-  }));
-  expect(directAuthRequests).toBe(1);
-  expect(directProfileRequests).toBe(1);
-  expect(profileRequests).toBe(0);
+  await expect(page.getByRole('alert')).toContainText('Layanan login aman sementara tidak tersedia');
+  await expect(page.locator('[data-nav-id="dashboard"]')).toHaveCount(0);
+  expect(directAuthRequests).toBe(0);
+  expect(directProfileRequests).toBe(0);
+});
+
+test('cache offline dienkripsi dan dipisahkan sebelum akun lain dapat membaca', async ({ page }) => {
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    const offlineStore = await import('/src/services/offlineStore.ts');
+    const now = new Date().toISOString();
+    await offlineStore.initializeOfflineStoreSession('user-sensitive-a', { forceReset: true });
+    await offlineStore.putCachedDocument(offlineStore.makeCachedDocument(
+      'children',
+      'child-sensitive',
+      { nama: 'BALITA SANGAT RAHASIA', nik: '3509040101259999' },
+      now,
+      now,
+      false
+    ));
+    await offlineStore.queueMutation({
+      type: 'update',
+      tableName: 'children',
+      documentId: 'child-sensitive',
+      payload: { data: { namaOrtu: 'ORANG TUA SANGAT RAHASIA' } }
+    });
+
+    const readRawStores = async () => {
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open('e-posyandu-offline');
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const read = (storeName: string) => new Promise<any[]>((resolve, reject) => {
+        const request = database.transaction(storeName, 'readonly').objectStore(storeName).getAll();
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const stores = {
+        documents: await read('documents'),
+        mutations: await read('mutations'),
+        conflicts: await read('conflicts')
+      };
+      database.close();
+      return stores;
+    };
+
+    const before = await readRawStores();
+    const serializedBefore = JSON.stringify(before);
+    const readableByOwner = await offlineStore.getCachedDocument('children', 'child-sensitive');
+    await offlineStore.initializeOfflineStoreSession('user-sensitive-b', { forceReset: true });
+    const visibleToOtherOwner = await offlineStore.getCachedDocuments('children');
+    const after = await readRawStores();
+
+    return {
+      envelopesAreEncrypted: [...before.documents, ...before.mutations].every((entry) => (
+        entry.encrypted === true && entry.encryptionVersion === 1 && entry.iv && entry.ciphertext
+      )),
+      containsChildName: serializedBefore.includes('BALITA SANGAT RAHASIA'),
+      containsNik: serializedBefore.includes('3509040101259999'),
+      containsParentName: serializedBefore.includes('ORANG TUA SANGAT RAHASIA'),
+      readableByOwner: readableByOwner?.data?.nama,
+      visibleToOtherOwner: visibleToOtherOwner.length,
+      persistedAfterAccountChange: after.documents.length + after.mutations.length + after.conflicts.length
+    };
+  });
+
+  expect(result).toEqual({
+    envelopesAreEncrypted: true,
+    containsChildName: false,
+    containsNik: false,
+    containsParentName: false,
+    readableByOwner: 'BALITA SANGAT RAHASIA',
+    visibleToOtherOwner: 0,
+    persistedAfterAccountChange: 0
+  });
+});
+
+test('startup tanpa sesi menghapus cache terenkripsi dan kunci akun sebelumnya', async ({ page }) => {
+  await page.goto('/');
+
+  await page.evaluate(async () => {
+    const offlineStore = await import('/src/services/offlineStore.ts');
+    const now = new Date().toISOString();
+    await offlineStore.initializeOfflineStoreSession('user-closed-session', { forceReset: true });
+    await offlineStore.putCachedDocument(offlineStore.makeCachedDocument(
+      'children',
+      'child-closed-session',
+      { nama: 'DATA SESI LAMA', nik: '3509040101258888' },
+      now,
+      now,
+      false
+    ));
+    localStorage.setItem('e-posyandu:auth-session', JSON.stringify({
+      uid: 'user-closed-session',
+      email: 'stale@example.test',
+      accessToken: 'stale-access-token',
+      refreshToken: 'stale-refresh-token',
+      expiresAt: Date.now() + 60_000
+    }));
+  });
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'E-Posyandu' })).toBeVisible();
+
+  const remaining = await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('e-posyandu-offline');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const count = (storeName: string) => new Promise<number>((resolve, reject) => {
+      const request = database.transaction(storeName, 'readonly').objectStore(storeName).count();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const result = {
+      documents: await count('documents'),
+      mutations: await count('mutations'),
+      conflicts: await count('conflicts'),
+      owner: sessionStorage.getItem('e-posyandu:offline-owner-v1'),
+      key: sessionStorage.getItem('e-posyandu:offline-key-v1'),
+      legacyAuth: localStorage.getItem('e-posyandu:auth-session')
+    };
+    database.close();
+    return result;
+  });
+
+  expect(remaining).toEqual({
+    documents: 0,
+    mutations: 0,
+    conflicts: 0,
+    owner: null,
+    key: null,
+    legacyAuth: null
+  });
 });

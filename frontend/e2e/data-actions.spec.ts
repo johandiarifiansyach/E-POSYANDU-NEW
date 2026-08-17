@@ -104,6 +104,7 @@ async function configureAuthenticatedPage(
   syncDelayMs = 0
 ) {
   const syncedMutations: Array<Record<string, any>> = [];
+  const aiSummaryPayloads: Array<Record<string, any>> = [];
   let activeChild: { id: string; data: Record<string, any> } = {
     id: child.id,
     data: { ...child.data }
@@ -175,6 +176,20 @@ async function configureAuthenticatedPage(
         role: 'Kader Posyandu',
         desa: 'Desa Gumukmas',
         posyandu: 'SALAK 1'
+      } });
+      return;
+    }
+    if (path.endsWith('/ai/growth-summary')) {
+      aiSummaryPayloads.push(request.postDataJSON() as Record<string, any>);
+      await route.fulfill({ status: 200, headers, json: {
+        overview: 'Pertumbuhan anak terpantau melalui satu pengukuran yang tersedia.',
+        observations: ['Status WHO tetap menjadi dasar penilaian pertumbuhan.'],
+        followUp: ['Lanjutkan pengukuran rutin setiap bulan.'],
+        disclaimer: 'Ringkasan AI hanya membantu membaca pola. Keputusan status gizi tetap mengikuti hasil WHO dan penilaian tenaga kesehatan.',
+        anonymous: true,
+        stored: false,
+        provider: 'OpenAI',
+        model: 'gpt-5.6-luna'
       } });
       return;
     }
@@ -339,7 +354,7 @@ async function configureAuthenticatedPage(
     await route.fulfill({ status: 404, headers, json: { detail: 'Rute uji tidak tersedia.' } });
   });
 
-  return { syncedMutations };
+  return { syncedMutations, aiSummaryPayloads };
 }
 
 test('balita yang dihapus tidak muncul kembali ketika pengiriman masih tertunda', async ({ page }) => {
@@ -411,7 +426,7 @@ test('form edit identitas dapat digulir sampai tombol simpan', async ({ page }) 
   }
 });
 
-test('halaman tambah balita memakai simbol dan kontrol bergaya iOS', async ({ page }) => {
+test('halaman tambah balita memakai simbol dan kontrol bergaya iOS', async ({ page }, testInfo) => {
   await configureAuthenticatedPage(page);
   await page.goto('/#add_child');
 
@@ -433,12 +448,24 @@ test('halaman tambah balita memakai simbol dan kontrol bergaya iOS', async ({ pa
   await birthWeight.fill('3.2');
   await birthLength.fill('49.5');
   await birthHead.fill('33.2');
+  await addChildPage.getByRole('combobox').nth(2).selectOption('L');
   await parentName.fill('orang tua bayi');
   await expect(childName).toHaveValue('Bayi Uji Form');
   await expect(birthWeight).toHaveValue('3.2');
   await expect(birthLength).toHaveValue('49.5');
   await expect(birthHead).toHaveValue('33.2');
   await expect(parentName).toHaveValue('orang tua bayi');
+
+  const birthLiveStatus = addChildPage.locator('[data-birth-live-status]');
+  await expect(birthLiveStatus).toBeVisible();
+  await expect(birthLiveStatus.locator('.measurement-live-status-item')).toHaveCount(5);
+  await expect(birthLiveStatus).toContainText('Berat Normal');
+  await expect(birthLiveStatus).toContainText('Gizi Baik');
+  await expect(birthLiveStatus).toContainText('Z-score');
+
+  if (process.env.E2E_CAPTURE_UI) {
+    await page.screenshot({ path: `${process.env.E2E_CAPTURE_UI}/add-child-birth-status-${testInfo.project.name}.png`, fullPage: true });
+  }
 
   await expect(page.getByRole('button', { name: 'Batal' }).locator('svg')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Simpan Data Balita' }).locator('svg')).toBeVisible();
@@ -675,6 +702,45 @@ test('mode gelap menjaga kontras sidebar dan seluruh permukaan tabel', async ({ 
   }
 });
 
+test('tabel ASI eksklusif menampilkan skeleton sesuai enam kolom saat memuat', async ({ page }, testInfo) => {
+  await configureAuthenticatedPage(page);
+  let releaseResponse = () => {};
+  const responseGate = new Promise<void>((resolve) => {
+    releaseResponse = resolve;
+  });
+
+  await page.route('http://127.0.0.1:9/api/v1/graphql', async (route) => {
+    const payload = route.request().postDataJSON() as { query?: string };
+    if (!payload.query?.includes('exclusiveBreastfeedingPage')) {
+      await route.fallback();
+      return;
+    }
+    await responseGate;
+    await route.fulfill({
+      status: 200,
+      headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' },
+      json: { data: { exclusiveBreastfeedingPage: { items: [], total: 0 } } }
+    });
+  });
+
+  await page.goto('/#asi_eksklusif');
+  const table = page.locator('.ios-asi-table');
+  await expect(table).toHaveAttribute('aria-busy', 'true');
+  await expect(table.locator('.app-asi-table-skeleton-row')).toHaveCount(6);
+  await expect(table.locator('.app-asi-table-skeleton-row').first().locator('td')).toHaveCount(6);
+  await expect(table.locator('.app-asi-skeleton-name').first()).toBeVisible();
+  await expect(table.locator('.app-asi-skeleton-status').first()).toBeVisible();
+
+  if (process.env.E2E_CAPTURE_UI) {
+    await page.screenshot({ path: `${process.env.E2E_CAPTURE_UI}/exclusive-breastfeeding-skeleton-${testInfo.project.name}.png`, fullPage: true });
+  }
+
+  releaseResponse();
+  await expect(table).toHaveAttribute('aria-busy', 'false');
+  await expect(table.locator('.app-asi-table-skeleton-row')).toHaveCount(0);
+  await expect(table.getByText('Tidak ada data ASI eksklusif pada kelompok usia ini.')).toBeVisible();
+});
+
 test('mode gelap mencakup form identitas, pengukuran, ASI eksklusif, dan PMT', async ({ page }, testInfo) => {
   await configureAuthenticatedPage(page, false, true);
   await page.goto('/#data_balita');
@@ -840,6 +906,38 @@ test('form penimbangan memakai tata letak iOS yang responsif', async ({ page }) 
     mutation.resource === 'children' && mutation.documentId === child.id && mutation.data?.currentBB === 5.25
   ))).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+test('ringkasan AI grafik pertumbuhan hanya mengirim payload anonim', async ({ page }) => {
+  const { aiSummaryPayloads } = await configureAuthenticatedPage(page);
+  await page.goto('/#data_balita');
+  await page.getByRole('button', { name: 'Pengukuran Balita', exact: true }).click();
+  await page.getByRole('button', { name: 'Buka enam grafik pertumbuhan WHO' }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Grafik Pertumbuhan WHO' });
+  await expect(dialog.getByRole('heading', { name: 'Ringkasan AI Pertumbuhan' })).toBeVisible();
+  await expect(dialog.getByText(/Nama, NIK, tanggal lahir/)).toBeVisible();
+  await dialog.getByRole('button', { name: 'Buat Ringkasan AI' }).click();
+
+  await expect(dialog.getByText('Pertumbuhan anak terpantau melalui satu pengukuran yang tersedia.')).toBeVisible();
+  await expect(dialog.getByText('Status WHO tetap menjadi dasar penilaian pertumbuhan.')).toBeVisible();
+  await expect(dialog.getByText('Lanjutkan pengukuran rutin setiap bulan.')).toBeVisible();
+  await expect(dialog.getByText(/Keputusan status gizi tetap mengikuti hasil WHO/)).toBeVisible();
+  expect(aiSummaryPayloads).toHaveLength(1);
+
+  const encoded = JSON.stringify(aiSummaryPayloads[0]);
+  for (const privateValue of [
+    child.id,
+    child.data.nama,
+    child.data.nik,
+    child.data.tglLahir,
+    child.data.desa,
+    child.data.posyandu,
+    measurement.data.tglUkur
+  ]) {
+    expect(encoded).not.toContain(privateValue);
+  }
+  expect(Object.keys(aiSummaryPayloads[0]).sort()).toEqual(['measurements', 'sex']);
 });
 
 test('penimbangan tetap tersimpan saat batas harian Cloudflare tercapai', async ({ page }) => {

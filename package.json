@@ -6,9 +6,10 @@
   "scripts": {
     "dev": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build",
-    "check": "npm run frontend:check && npm run replica:check && npm run integration:test && npm run worker:test && npm run grpc:test",
+    "check": "npm run frontend:check && npm run frontend:test && npm run replica:check && npm run integration:test && npm run worker:test && npm run grpc:test",
     "frontend:check": "npm --prefix frontend run typecheck",
     "integration:test": "node --test tests/integration/*.test.mjs",
+    "frontend:test": "npm --prefix frontend exec -- playwright test --config=frontend/playwright.unit.config.ts",
     "e2e:test": "npm --prefix frontend run e2e:test",
     "ci": "npm run check && npm run build",
     "db:migrate": "./scripts/database/migrate.sh",

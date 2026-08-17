@@ -1,0 +1,55 @@
+
+:root {
+  color-scheme: light;
+  --apple-font-text: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", Arial, sans-serif;
+  --apple-font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Segoe UI", Arial, sans-serif;
+  font-family: var(--apple-font-text);
+  font-synthesis: none;
+  --apple-blue: #007aff;
+  --apple-blue-hover: #006ee6;
+  --apple-green: #34c759;
+  --apple-red: #ff3b30;
+  --apple-orange: #ff9500;
+  --apple-yellow: #ffcc00;
+  --apple-cyan: #32ade6;
+  --apple-indigo: #5856d6;
+  --apple-bg: #f2f2f7;
+  --apple-surface: rgba(255, 255, 255, 0.78);
+  --apple-separator: rgba(60, 60, 67, 0.16);
+  --apple-label: #1c1c1e;
+  --apple-secondary-label: rgba(60, 60, 67, 0.68);
+}
+html {
+  min-width: 320px;
+  background: var(--apple-bg);
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background: var(--apple-bg);
+  color: var(--apple-label);
+  letter-spacing: 0;
+  font-family: var(--apple-font-text);
+}
+
+#root,
+.app-shell,
+button,
+input,
+select,
+textarea,
+table {
+  font-family: var(--apple-font-text);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--apple-font-display);
+  letter-spacing: 0;
+}

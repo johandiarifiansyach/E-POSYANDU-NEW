@@ -1,0 +1,56 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "02:00"
+      timezone: Asia/Jakarta
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /services/neon-read-worker
+    schedule:
+      interval: weekly
+      day: monday
+      time: "02:15"
+      timezone: Asia/Jakarta
+    open-pull-requests-limit: 5
+    groups:
+      replica-worker-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: cargo
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "02:30"
+      timezone: Asia/Jakarta
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: cargo
+    directory: /services/nutrition-grpc
+    schedule:
+      interval: weekly
+      day: monday
+      time: "02:45"
+      timezone: Asia/Jakarta
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+      timezone: Asia/Jakarta
+    open-pull-requests-limit: 5

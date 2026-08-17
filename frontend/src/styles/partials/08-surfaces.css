@@ -1,0 +1,641 @@
+/* Shared Apple-style application surfaces */
+.apple-page {
+  color: var(--apple-label);
+}
+.apple-page-header {
+  gap: 16px;
+}
+
+.apple-page-title,
+.apple-page > div:first-child h2 {
+  margin: 0;
+  color: var(--apple-label);
+  font-size: 28px;
+  font-weight: 760;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+.apple-page > div:first-child p,
+.apple-page-header p {
+  color: var(--apple-secondary-label);
+}
+
+.apple-section-title {
+  color: var(--apple-label);
+  font-size: 19px;
+  font-weight: 740;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.apple-button {
+  min-height: 40px;
+  border-radius: 12px;
+  letter-spacing: 0;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.055), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.apple-button .apple-symbol {
+  width: 17px;
+  height: 17px;
+}
+
+.apple-button.ios-toolbar-button {
+  min-height: 44px;
+  padding: 5px 12px 5px 5px;
+  gap: 8px;
+  border-radius: 13px;
+}
+
+.ios-button-symbol {
+  position: relative;
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34), 0 2px 5px rgba(0, 0, 0, 0.08);
+}
+
+.ios-button-symbol::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.17), transparent 55%);
+  content: "";
+  pointer-events: none;
+}
+
+.apple-button.ios-toolbar-button .ios-button-symbol .apple-symbol {
+  position: relative;
+  z-index: 1;
+  width: 17px;
+  height: 17px;
+  color: currentColor;
+}
+
+@media (max-width: 639px) {
+  .apple-button.ios-toolbar-button.icon-only-mobile {
+    width: 44px;
+    min-width: 44px;
+    padding: 5px;
+    gap: 0;
+  }
+}
+
+.apple-button-primary {
+  box-shadow: 0 7px 18px rgba(0, 122, 255, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.apple-button-secondary {
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  backdrop-filter: blur(16px) saturate(160%);
+}
+
+.apple-button-ghost,
+.apple-button-danger {
+  box-shadow: none;
+}
+
+.apple-button:focus-visible,
+.icon-button:focus-visible,
+.account-trigger:focus-visible {
+  outline: 3px solid rgba(0, 122, 255, 0.24);
+  outline-offset: 2px;
+}
+
+.apple-select {
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  backdrop-filter: blur(14px) saturate(150%);
+}
+
+.apple-segmented-control {
+  gap: 2px;
+  border: 1px solid rgba(60, 60, 67, 0.11);
+  border-radius: 13px;
+  background: rgba(118, 118, 128, 0.12);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.025);
+}
+
+.apple-segmented-control button {
+  min-height: 36px;
+  border-radius: 10px;
+  padding: 7px 16px;
+  color: rgba(60, 60, 67, 0.76);
+  font-size: 13px;
+  font-weight: 650;
+  transition: color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.apple-segmented-control button:hover {
+  color: var(--apple-label);
+}
+
+.apple-segmented-control button.is-selected,
+.apple-segmented-control button.is-active {
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--apple-label);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.13), inset 0 1px 0 rgba(255, 255, 255, 0.96);
+}
+
+.apple-metric-card,
+.apple-feature-card,
+.apple-prevalence-card,
+.apple-summary-card,
+.apple-list-card {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(255, 255, 255, 0.82);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.052), inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+  backdrop-filter: blur(24px) saturate(170%);
+}
+
+.apple-metric-card {
+  min-height: 146px;
+  isolation: isolate;
+}
+
+.apple-metric-card::after {
+  position: absolute;
+  inset: auto 13px 10px;
+  z-index: -1;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--metric-color, var(--apple-blue));
+  content: "";
+  opacity: 0.78;
+}
+
+.apple-metric-card svg {
+  color: var(--metric-color, var(--apple-blue));
+}
+
+.apple-metric-card > div:first-child > .apple-symbol {
+  width: 32px;
+  height: 32px;
+  padding: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 10px;
+  background: var(--metric-color, var(--apple-blue));
+  box-shadow: 0 5px 12px rgba(0, 0, 0, 0.13), inset 0 1px 0 rgba(255, 255, 255, 0.38);
+  color: #fff;
+  stroke-width: 1.9;
+}
+
+.apple-metric-card .text-2xl,
+.apple-metric-card .text-3xl {
+  color: var(--apple-label);
+  font-variant-numeric: tabular-nums;
+}
+
+.apple-metric-blue { --metric-color: var(--apple-blue); }
+.apple-metric-green { --metric-color: var(--apple-green); }
+.apple-metric-indigo { --metric-color: var(--apple-indigo); }
+.apple-metric-orange { --metric-color: var(--apple-orange); }
+.apple-metric-cyan { --metric-color: var(--apple-cyan); }
+.apple-metric-red { --metric-color: var(--apple-red); }
+
+.apple-feature-card {
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.apple-feature-card .bg-gradient-to-r {
+  background: rgba(52, 199, 89, 0.11);
+}
+
+.apple-prevalence-card {
+  min-height: 176px;
+  border: 1px solid rgba(255, 255, 255, 0.86);
+}
+
+.apple-prevalence-card::before,
+.apple-summary-card::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 5px;
+  background: var(--status-color, var(--apple-blue));
+  content: "";
+}
+
+.prevalence-red { --status-color: var(--apple-red); }
+.prevalence-orange { --status-color: var(--apple-orange); }
+.prevalence-yellow { --status-color: var(--apple-yellow); }
+
+.prevalence-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  border-radius: 999px;
+}
+
+.prevalence-red .prevalence-dot { box-shadow: 0 0 0 4px rgba(255, 59, 48, 0.12); }
+.prevalence-orange .prevalence-dot { box-shadow: 0 0 0 4px rgba(255, 149, 0, 0.13); }
+.prevalence-yellow .prevalence-dot { box-shadow: 0 0 0 4px rgba(255, 204, 0, 0.14); }
+
+.apple-prevalence-card .text-4xl {
+  color: var(--apple-label);
+  font-size: 34px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.apple-summary-card {
+  min-height: 112px;
+  padding-left: 20px;
+}
+
+.apple-summary-blue { --status-color: var(--apple-blue); }
+.apple-summary-green { --status-color: var(--apple-green); }
+
+.apple-count-chip {
+  border: 1px solid rgba(88, 86, 214, 0.16);
+  border-radius: 999px;
+  background: rgba(88, 86, 214, 0.1);
+  color: #4f46c8;
+  font-variant-numeric: tabular-nums;
+}
+
+.apple-list-card {
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.apple-list-card:hover {
+  border-color: rgba(0, 122, 255, 0.17);
+  box-shadow: 0 11px 30px rgba(0, 0, 0, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  transform: translateY(-1px);
+}
+
+.apple-page .app-card {
+  border-radius: 18px;
+}
+
+.apple-page .app-card.overflow-hidden,
+.apple-page .overflow-x-auto {
+  scrollbar-color: rgba(60, 60, 67, 0.3) transparent;
+  scrollbar-width: thin;
+}
+
+.apple-page table th {
+  border-bottom: 1px solid var(--apple-separator);
+  padding-top: 12px;
+  padding-bottom: 12px;
+  color: rgba(60, 60, 67, 0.64);
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.apple-page table td {
+  border-bottom-color: rgba(60, 60, 67, 0.1);
+  color: rgba(28, 28, 30, 0.88);
+}
+
+.apple-page table tbody {
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.apple-page table tbody tr:last-child td {
+  border-bottom-width: 0;
+}
+
+.apple-page label,
+.apple-page legend {
+  letter-spacing: 0;
+}
+
+.apple-page input[type="checkbox"],
+.apple-page input[type="radio"] {
+  accent-color: var(--apple-blue);
+}
+
+.apple-page .rounded-full.bg-emerald-100,
+.apple-page .rounded-full.bg-green-100 {
+  background: rgba(52, 199, 89, 0.12);
+  color: #248a3d;
+}
+
+.apple-page .rounded-full.bg-rose-100,
+.apple-page .rounded-full.bg-red-100 {
+  background: rgba(255, 59, 48, 0.11);
+  color: #d70015;
+}
+
+.app-shell > .fixed.inset-0.z-50 {
+  background: rgba(28, 28, 30, 0.28);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  backdrop-filter: blur(14px) saturate(130%);
+}
+
+.app-shell > .fixed.inset-0.z-50 > div {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 24px;
+  background: rgba(248, 248, 250, 0.9);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  -webkit-backdrop-filter: blur(34px) saturate(180%);
+  backdrop-filter: blur(34px) saturate(180%);
+}
+
+.app-shell > .fixed.inset-0.z-50 > div > .border-b,
+.app-shell > .fixed.inset-0.z-50 > div > .border-t {
+  border-color: var(--apple-separator);
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.app-shell *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.app-shell *::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.app-shell *::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(60, 60, 67, 0.28);
+  background-clip: padding-box;
+}
+
+.app-shell *::-webkit-scrollbar-thumb:hover {
+  background: rgba(60, 60, 67, 0.42);
+  background-clip: padding-box;
+}
+
+@keyframes account-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-5px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 767px) {
+  .app-topbar {
+    min-height: 124px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "title account"
+      "period period";
+    gap: 8px 10px;
+    padding: max(9px, env(safe-area-inset-top)) 12px 10px;
+  }
+
+  .app-header-eyebrow {
+    display: none;
+  }
+
+  .app-page-context,
+  .topbar-title-divider {
+    display: none;
+  }
+
+  .topbar-brand-logo-shell {
+    width: 38px;
+    height: 38px;
+    flex-basis: 38px;
+    border-radius: 12px;
+  }
+
+  .topbar-brand-logo-shell img {
+    width: 28px;
+    height: 28px;
+  }
+
+  .topbar-brand-copy {
+    max-width: min(150px, 38vw);
+  }
+
+  .topbar-brand-name-row h1 {
+    font-size: 14px;
+  }
+
+  .topbar-version-badge {
+    padding-inline: 4px;
+    font-size: 8px;
+  }
+
+  .topbar-brand-copy > p {
+    font-size: 8px;
+  }
+
+  .period-control {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .period-select {
+    min-width: 0;
+    flex: 1 1 50%;
+    font-size: 14px;
+  }
+
+  .period-year {
+    flex-basis: 35%;
+  }
+
+  .account-trigger {
+    width: 46px;
+    min-width: 46px;
+    height: 46px;
+    justify-content: center;
+    padding: 4px;
+    border-radius: 14px;
+  }
+
+  .account-trigger-copy,
+  .account-trigger .account-chevron {
+    display: none;
+  }
+
+  .account-avatar {
+    width: 36px;
+    height: 36px;
+    flex-basis: 36px;
+    border-radius: 11px;
+  }
+
+  .account-menu {
+    position: fixed;
+    top: calc(max(56px, env(safe-area-inset-top) + 46px) + 6px);
+    right: 10px;
+  }
+
+  .app-content {
+    padding: 14px 12px 24px;
+  }
+
+  .app-sidebar {
+    width: min(88vw, 304px);
+    flex-basis: auto;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .measurement-history-heading {
+    min-height: 62px;
+    padding: 12px 14px;
+  }
+
+  .ios-measurement-table {
+    min-width: 1240px;
+  }
+
+  .app-footer {
+    min-height: 68px;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+    padding-inline: 16px;
+  }
+
+  .apple-page {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  .apple-page-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .apple-page-title,
+  .apple-page > div:first-child h2 {
+    font-size: 23px;
+  }
+
+  .apple-section-title {
+    font-size: 18px;
+  }
+
+  .apple-metrics-grid {
+    gap: 10px;
+  }
+
+  .apple-metric-card {
+    min-height: 132px;
+    padding: 14px;
+  }
+
+  .apple-prevalence-card {
+    min-height: 154px;
+  }
+
+  .apple-segmented-control {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .apple-segmented-control button {
+    width: 100%;
+    padding-inline: 9px;
+  }
+
+  .apple-page .app-card {
+    border-radius: 16px;
+  }
+
+  .app-shell > .fixed.inset-0.z-50 {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .app-shell > .fixed.inset-0.z-50 > div {
+    width: 100%;
+    max-width: none;
+    max-height: 92dvh;
+    margin: 0;
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 24px 24px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Keep the clean top bar rules last so legacy responsive declarations cannot restore the old layout. */
+.app-topbar {
+  min-height: 68px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "title actions";
+  gap: 12px;
+  padding: 8px 20px;
+}
+
+.app-page-context { display: block; }
+
+.app-page-context h1 {
+  overflow: hidden;
+  margin: 0;
+  color: var(--apple-label);
+  font-size: 20px;
+  font-weight: 760;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-actions {
+  grid-area: actions;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.app-sidebar-nav { min-height: 0; }
+
+@media (min-width: 768px), (orientation: landscape) and (min-width: 560px) {
+  .app-shell:not(.is-sidebar-collapsed) .app-sidebar-nav {
+    height: auto;
+    max-height: none;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1100px) {
+  .app-shell .app-topbar {
+    min-height: 68px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "title actions";
+    gap: 12px;
+  }
+}
+
+@media (max-width: 767px) {
+  .app-topbar {
+    min-height: 64px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "title actions";
+    gap: 9px;
+    padding: max(8px, env(safe-area-inset-top)) 10px 8px;
+  }
+
+  .app-page-context { display: block; }
+  .app-page-context h1 { font-size: 17px; }
+  .topbar-actions { gap: 7px; }
+}

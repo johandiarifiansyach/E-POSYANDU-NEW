@@ -20,10 +20,13 @@ enum Resource {
 }
 
 const DASHBOARD_CACHE_TTL_SECONDS: u64 = 60;
-const DASHBOARD_CACHE_VERSION_KEY: &str = "dashboard:version:v1";
+// Dashboard aggregates are correctness-critical. Keep them on the primary
+// database so the cards cannot lag behind the paginated read replica.
+const DASHBOARD_CACHE_VERSION_KEY: &str = "dashboard:version:v3";
 const REPLICA_PRIMARY_PIN_SECONDS: u64 = 360;
 const FEATURE_FLAGS_KEY: &str = "feature:flags:v1";
 const CHANGE_AUDIT_MAX_DISTANCE_MS: f64 = 5.0 * 60.0 * 1_000.0;
+const COLLECTION_MUTATION_MAX_BODY_BYTES: usize = 256 * 1024;
 const BACKGROUND_JOB_MAX_BODY_BYTES: usize = 4_000_000;
 const BACKGROUND_JOB_MAX_FILE_BYTES: usize = 50_000_000;
 const IDENTITY_CHANGE_FIELDS: [&str; 23] = [
@@ -1468,7 +1471,9 @@ async fn dashboard(request: Request, env: &Env) -> ApiResult<Value> {
         return Ok(value);
     }
     log_dashboard_cache(env, &request, "MISS");
-    let value = read_rpc(env, &scope.user_id, "eposyandu_dashboard_stats", json!({
+    // The dashboard must agree with writes immediately. Other read-heavy
+    // pages may use Neon, but these aggregate counters stay on Supabase.
+    let value = rpc(env, "eposyandu_dashboard_stats", json!({
         "p_month_start": first_query(&query, "monthStart"), "p_month_end": first_query(&query, "monthEnd"),
         "p_previous_month_start": first_query(&query, "previousMonthStart"), "p_previous_month_end": first_query(&query, "previousMonthEnd"),
         "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
@@ -1929,15 +1934,16 @@ async fn collection_get(
 
 fn input_text(data: &Map<String, Value>, key: &str) -> Option<Value> {
     data.get(key)
-        .map(|value| Value::String(string_value(Some(value))))
+        .map(|value| Value::String(sanitize_text(&string_value(Some(value)))))
 }
 
 fn input_nullable(data: &Map<String, Value>, key: &str) -> Option<Value> {
     data.get(key).map(|value| {
-        if value.is_null() || string_value(Some(value)).trim().is_empty() {
+        let sanitized = sanitize_text(&string_value(Some(value)));
+        if value.is_null() || sanitized.trim().is_empty() {
             Value::Null
         } else {
-            Value::String(string_value(Some(value)))
+            Value::String(sanitized)
         }
     })
 }
@@ -2058,6 +2064,134 @@ fn required(data: &Map<String, Value>, keys: &[&str]) -> ApiResult<()> {
         if string_value(data.get(*key)).trim().is_empty() {
             return Err(api_error(422, format!("Kolom {key} wajib diisi.")));
         }
+    }
+    Ok(())
+}
+
+fn is_forbidden_text_character(character: char) -> bool {
+    (character.is_control() && !matches!(character, '\t' | '\n' | '\r'))
+        || matches!(
+            character,
+            '\u{202a}'
+                | '\u{202b}'
+                | '\u{202c}'
+                | '\u{202d}'
+                | '\u{202e}'
+                | '\u{2066}'
+                | '\u{2067}'
+                | '\u{2068}'
+                | '\u{2069}'
+        )
+}
+
+fn sanitize_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !is_forbidden_text_character(*character))
+        .collect()
+}
+
+fn validate_text(
+    data: &Map<String, Value>,
+    key: &str,
+    label: &str,
+    maximum: usize,
+) -> ApiResult<()> {
+    let Some(value) = data.get(key) else {
+        return Ok(());
+    };
+    if !value.is_string() && !value.is_number() && !value.is_boolean() && !value.is_null() {
+        return Err(api_error(422, format!("{label} harus berupa teks.")));
+    }
+    let value = string_value(Some(value));
+    if value.chars().any(is_forbidden_text_character) {
+        return Err(api_error(
+            422,
+            format!("{label} mengandung karakter kontrol yang tidak diizinkan."),
+        ));
+    }
+    if value.chars().count() > maximum {
+        return Err(api_error(
+            422,
+            format!("{label} maksimal {maximum} karakter."),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_resource_text(resource: Resource, data: &Map<String, Value>) -> ApiResult<()> {
+    let fields: &[(&str, &str, usize)] = match resource {
+        Resource::Children => &[
+            ("nama", "Nama balita", 120),
+            ("tglLahir", "Tanggal lahir", 32),
+            ("jk", "Jenis kelamin", 8),
+            ("noKK", "Nomor KK", 32),
+            ("nik", "NIK balita", 32),
+            ("namaOrtu", "Nama orang tua", 120),
+            ("nikOrtu", "NIK orang tua", 32),
+            ("noHpOrtu", "Nomor HP orang tua", 32),
+            ("alamat", "Alamat", 500),
+            ("rt", "RT", 8),
+            ("rw", "RW", 8),
+            ("desa", "Desa", 120),
+            ("posyandu", "Posyandu", 120),
+            ("createdBy", "Pembuat data", 80),
+            ("deleteReason", "Alasan penghapusan", 500),
+            ("deathCause", "Penyebab kematian", 500),
+            ("deathLocation", "Lokasi kematian", 200),
+        ],
+        Resource::Measurements => &[
+            ("childId", "ID balita", 128),
+            ("childName", "Nama balita", 120),
+            ("tglUkur", "Tanggal ukur", 32),
+            ("desa", "Desa", 120),
+            ("posyandu", "Posyandu", 120),
+            ("edema", "Edema", 32),
+            ("kelasIbu", "Kelas ibu", 32),
+            ("mbg", "MBG", 32),
+            ("vitA", "Vitamin A", 32),
+            ("asi", "ASI eksklusif", 32),
+            ("caraUkur", "Cara ukur", 32),
+            ("statusNaik", "Status kenaikan", 8),
+        ],
+        Resource::MpasiLogs => &[
+            ("childId", "ID balita", 128),
+            ("childName", "Nama balita", 120),
+            ("tglMonitoring", "Tanggal monitoring", 32),
+            ("asi", "ASI", 32),
+            ("intervensiGizi", "Intervensi gizi", 32),
+        ],
+        Resource::PmtPrograms => &[
+            ("childId", "ID balita", 128),
+            ("childName", "Nama balita", 120),
+            ("category", "Kategori PMT", 32),
+            ("jenisPmt", "Jenis PMT", 32),
+            ("sumberAnggaran", "Sumber anggaran", 120),
+            ("pmtSesuaiJuknis", "Kesesuaian juknis", 32),
+            ("status", "Status PMT", 32),
+            ("mitra", "Mitra", 120),
+            ("mitraLain", "Mitra lain", 200),
+            ("tglPemberian", "Tanggal pemberian", 32),
+            ("initialMeasurementDate", "Tanggal ukur awal", 32),
+        ],
+        Resource::ChangeLogs => &[
+            ("childId", "ID balita", 128),
+            ("childName", "Nama balita", 120),
+            ("changedBy", "Pengubah data", 80),
+        ],
+    };
+    for (key, label, maximum) in fields {
+        validate_text(data, key, label, *maximum)?;
+    }
+    Ok(())
+}
+
+fn validate_collection_payload_size(payload: &Value) -> ApiResult<()> {
+    let size = serde_json::to_vec(payload)
+        .map_err(|_| api_error(422, "Data dokumen tidak valid."))?
+        .len();
+    if size > COLLECTION_MUTATION_MAX_BODY_BYTES {
+        return Err(api_error(413, "Data dokumen melebihi batas 256 KB."));
     }
     Ok(())
 }
@@ -2190,10 +2324,8 @@ fn map_payload(resource: Resource, data: &Map<String, Value>) -> Map<String, Val
                 copy_value(&mut output, column, input_date(data, key));
             }
             if let Some(value) = data.get("tglLahir") {
-                output.insert(
-                    "birth_date_raw".into(),
-                    Value::String(string_value(Some(value))),
-                );
+                let raw_birth_date = sanitize_text(&string_value(Some(value)));
+                output.insert("birth_date_raw".into(), Value::String(raw_birth_date));
                 output.insert("birth_date".into(), date_value(Some(value)));
             }
             copy_value(
@@ -2239,9 +2371,10 @@ fn map_payload(resource: Resource, data: &Map<String, Value>) -> Map<String, Val
                 input_integer(data, "ageInMonths"),
             );
             if let Some(value) = data.get("tglUkur") {
+                let raw_measurement_date = sanitize_text(&string_value(Some(value)));
                 output.insert(
                     "measurement_date_raw".into(),
-                    Value::String(string_value(Some(value))),
+                    Value::String(raw_measurement_date),
                 );
                 output.insert("measurement_date".into(), date_value(Some(value)));
             }
@@ -2495,6 +2628,7 @@ async fn collection_create(
         .json::<Value>()
         .await
         .map_err(|_| api_error(422, "Data dokumen tidak valid."))?;
+    validate_collection_payload_size(&payload)?;
     let id = string_value(payload.get("id"));
     let mut data = payload
         .get("data")
@@ -2504,6 +2638,7 @@ async fn collection_create(
     if id.trim().is_empty() {
         return Err(api_error(422, "ID dan data dokumen wajib diisi."));
     }
+    validate_resource_text(resource, &data)?;
     match resource {
         Resource::Children => {
             required(&data, &["nama", "tglLahir", "jk", "desa", "posyandu"])?;
@@ -2624,6 +2759,7 @@ async fn collection_update(
         .json::<Value>()
         .await
         .map_err(|_| api_error(422, "Data dokumen tidak valid."))?;
+    validate_collection_payload_size(&payload)?;
     let mut data = payload
         .get("data")
         .and_then(Value::as_object)
@@ -2703,6 +2839,7 @@ async fn collection_update(
         }
     }
     candidate.extend(data.clone());
+    validate_resource_text(resource, &candidate)?;
     data.remove("createdAt");
     data.remove("updatedAt");
     data.remove("createdBy");
@@ -3661,6 +3798,55 @@ mod tests {
     fn rejects_short_or_unsafe_idempotency_key() {
         assert!(!valid_idempotency_key("short"));
         assert!(!valid_idempotency_key("mutation key with spaces"));
+    }
+
+    #[test]
+    fn rejects_control_characters_and_oversized_identity_text() {
+        let control = json!({"nama": "Bayi\u{202e}uji"})
+            .as_object()
+            .cloned()
+            .expect("child payload");
+        let oversized = json!({"nama": "A".repeat(121)})
+            .as_object()
+            .cloned()
+            .expect("child payload");
+
+        assert_eq!(
+            validate_resource_text(Resource::Children, &control)
+                .expect_err("bidi control must be rejected")
+                .status,
+            422
+        );
+        assert_eq!(
+            validate_resource_text(Resource::Children, &oversized)
+                .expect_err("oversized child name must be rejected")
+                .status,
+            422
+        );
+    }
+
+    #[test]
+    fn strips_forbidden_controls_before_database_mapping() {
+        let data = json!({"nama": "Bayi\u{0000} Aman"})
+            .as_object()
+            .cloned()
+            .expect("child payload");
+
+        let payload = map_payload(Resource::Children, &data);
+
+        assert_eq!(payload.get("name"), Some(&json!("Bayi Aman")));
+    }
+
+    #[test]
+    fn limits_collection_mutation_payload_size() {
+        let payload = json!({"data": {"alamat": "A".repeat(COLLECTION_MUTATION_MAX_BODY_BYTES)}});
+
+        assert_eq!(
+            validate_collection_payload_size(&payload)
+                .expect_err("oversized payload must be rejected")
+                .status,
+            413
+        );
     }
 
     #[test]

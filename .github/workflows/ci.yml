@@ -28,6 +28,10 @@ jobs:
             services/nutrition-grpc
       - run: npm ci --prefix frontend
       - run: npm ci --prefix services/neon-read-worker
+      - run: npm audit --audit-level=high
+        working-directory: frontend
+      - run: npm audit --audit-level=high
+        working-directory: services/neon-read-worker
       - run: npm run check
       - run: npm run build
 

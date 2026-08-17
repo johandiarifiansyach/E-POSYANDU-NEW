@@ -23,3 +23,7 @@ MONITORING_ALERT_WEBHOOK_URL=https://your-alert-webhook.example/worker-health
 # cadangan sehingga login tetap dapat digunakan.
 UPSTASH_REDIS_REST_URL=https://your-redis.upstash.io
 UPSTASH_REDIS_REST_TOKEN=replace-with-upstash-rest-token
+# Opsional. Aktifkan Ringkasan AI Pertumbuhan dengan menyimpan kunci hanya di
+# Worker/server. Jangan memakai prefiks VITE_ atau menaruh kunci di frontend.
+# OPENAI_API_KEY=replace-with-openai-api-key
+OPENAI_MODEL=gpt-5.6-luna

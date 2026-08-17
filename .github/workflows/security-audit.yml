@@ -1,0 +1,33 @@
+name: Dependency Security Audit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 19 * * 1'
+  pull_request:
+    paths:
+      - 'backend/Cargo.lock'
+      - 'backend/Cargo.toml'
+      - 'services/nutrition-grpc/Cargo.lock'
+      - 'services/nutrition-grpc/Cargo.toml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rustsec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install RustSec cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit Cloudflare API dependencies
+        run: cargo audit --file backend/Cargo.lock
+      - name: Audit nutrition worker dependencies
+        run: cargo audit --file services/nutrition-grpc/Cargo.lock

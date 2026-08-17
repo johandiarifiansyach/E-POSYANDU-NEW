@@ -1,74 +1,73 @@
 import { LATEST_RELEASE, RELEASE_HISTORY, type AppRelease } from '../config/releases';
+import { createElement as h } from '../runtime/dom';
 
 let activeDialog: HTMLElement | null = null;
 let previousFocus: HTMLElement | null = null;
 let previousBodyOverflow = '';
 
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
 function changeList(release: AppRelease) {
-  return release.changes.map((change) => `<li>${escapeHtml(change)}</li>`).join('');
+  return h('ul', null, release.changes.map((change) => h('li', null, change)));
 }
 
-function historyMarkup() {
-  return RELEASE_HISTORY.map((release, index) => `
-    <article class="release-history-item${index === 0 ? ' is-current' : ''}">
-      <div class="release-history-rail" aria-hidden="true"><span></span></div>
-      <div class="release-history-content">
-        <div class="release-history-heading">
-          <div>
-            <span class="release-version-chip">v${escapeHtml(release.version)}</span>
-            <h3>${escapeHtml(release.title)}</h3>
-          </div>
-          <time datetime="${release.releaseDateIso}">${escapeHtml(release.releaseDate)}</time>
-        </div>
-        <ul>${changeList(release)}</ul>
-      </div>
-    </article>
-  `).join('');
+function historyItem(release: AppRelease, index: number) {
+  return h('article', { className: `release-history-item${index === 0 ? ' is-current' : ''}` },
+    h('div', { className: 'release-history-rail', 'aria-hidden': 'true' }, h('span', null)),
+    h('div', { className: 'release-history-content' },
+      h('div', { className: 'release-history-heading' },
+        h('div', null,
+          h('span', { className: 'release-version-chip' }, `v${release.version}`),
+          h('h3', null, release.title)
+        ),
+        h('time', { dateTime: release.releaseDateIso }, release.releaseDate)
+      ),
+      changeList(release)
+    )
+  );
 }
 
-function dialogMarkup() {
-  return `
-    <section class="release-notes-dialog" role="dialog" aria-modal="true" aria-labelledby="release-notes-title" aria-describedby="release-notes-description">
-      <header class="release-notes-header">
-        <div class="release-notes-title-group">
-          <span class="release-notes-logo"><img src="/logo-puskesmas-32981.svg" alt="" /></span>
-          <div>
-            <p class="release-notes-eyebrow">E-Posyandu v${escapeHtml(LATEST_RELEASE.version)}</p>
-            <h2 id="release-notes-title">Apa yang Baru</h2>
-          </div>
-        </div>
-        <button type="button" class="release-notes-close" data-release-notes-close aria-label="Tutup Apa yang Baru" title="Tutup">&times;</button>
-      </header>
-      <div class="release-notes-scroll">
-        <section class="release-current" id="release-notes-description">
-          <div class="release-current-heading">
-            <div>
-              <span class="release-current-label">Rilis terbaru</span>
-              <h3>${escapeHtml(LATEST_RELEASE.title)}</h3>
-            </div>
-            <time datetime="${LATEST_RELEASE.releaseDateIso}">${escapeHtml(LATEST_RELEASE.releaseDate)}</time>
-          </div>
-          <ul>${changeList(LATEST_RELEASE)}</ul>
-        </section>
-        <section class="release-history" aria-labelledby="release-history-title">
-          <h2 id="release-history-title">Riwayat Pembaruan</h2>
-          <div class="release-history-list">${historyMarkup()}</div>
-        </section>
-      </div>
-      <footer class="release-notes-actions">
-        <button type="button" class="release-notes-done" data-release-notes-close>Selesai</button>
-      </footer>
-    </section>
-  `;
+function dialogView() {
+  return h('section', {
+    className: 'release-notes-dialog',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-labelledby': 'release-notes-title',
+    'aria-describedby': 'release-notes-description'
+  },
+  h('header', { className: 'release-notes-header' },
+    h('div', { className: 'release-notes-title-group' },
+      h('span', { className: 'release-notes-logo' }, h('img', { src: '/logo-puskesmas-32981.svg', alt: '' })),
+      h('div', null,
+        h('p', { className: 'release-notes-eyebrow' }, `E-Posyandu v${LATEST_RELEASE.version}`),
+        h('h2', { id: 'release-notes-title' }, 'Apa yang Baru')
+      )
+    ),
+    h('button', {
+      type: 'button',
+      className: 'release-notes-close',
+      'data-release-notes-close': true,
+      'aria-label': 'Tutup Apa yang Baru',
+      title: 'Tutup'
+    }, '×')
+  ),
+  h('div', { className: 'release-notes-scroll' },
+    h('section', { className: 'release-current', id: 'release-notes-description' },
+      h('div', { className: 'release-current-heading' },
+        h('div', null,
+          h('span', { className: 'release-current-label' }, 'Rilis terbaru'),
+          h('h3', null, LATEST_RELEASE.title)
+        ),
+        h('time', { dateTime: LATEST_RELEASE.releaseDateIso }, LATEST_RELEASE.releaseDate)
+      ),
+      changeList(LATEST_RELEASE)
+    ),
+    h('section', { className: 'release-history', 'aria-labelledby': 'release-history-title' },
+      h('h2', { id: 'release-history-title' }, 'Riwayat Pembaruan'),
+      h('div', { className: 'release-history-list' }, RELEASE_HISTORY.map(historyItem))
+    )
+  ),
+  h('footer', { className: 'release-notes-actions' },
+    h('button', { type: 'button', className: 'release-notes-done', 'data-release-notes-close': true }, 'Selesai')
+  ));
 }
 
 export function closeReleaseNotes() {
@@ -92,7 +91,7 @@ export function openReleaseNotes() {
   previousBodyOverflow = document.body.style.overflow;
   const backdrop = document.createElement('div');
   backdrop.className = 'release-notes-backdrop';
-  backdrop.innerHTML = dialogMarkup();
+  backdrop.append(dialogView());
   document.body.append(backdrop);
   document.body.style.overflow = 'hidden';
   activeDialog = backdrop;

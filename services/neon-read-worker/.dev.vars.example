@@ -1,5 +1,7 @@
-NEON_DATABASE_URL=postgresql://eposyandu_replica_reader:PASSWORD@NEON_HOST/neondb?sslmode=require
-NEON_SYNC_DATABASE_URL=postgresql://neondb_owner:PASSWORD@NEON_HOST/neondb?sslmode=require
-SUPABASE_URL=https://PROJECT_REF.supabase.co
-SUPABASE_SECRET_KEY=configure_in_cloudflare_dashboard
-READ_REPLICA_SHARED_SECRET=ganti-dengan-secret-random-yang-panjang
+# Salin menjadi .dev.vars untuk pengembangan lokal. Semua nilai di bawah ini
+# hanyalah placeholder dan tidak boleh dipakai sebagai kredensial nyata.
+NEON_DATABASE_URL=replace-with-neon-read-only-connection-url
+NEON_SYNC_DATABASE_URL=replace-with-neon-owner-connection-url
+SUPABASE_URL=https://project-ref.supabase.co
+SUPABASE_SECRET_KEY=replace-with-local-supabase-secret
+READ_REPLICA_SHARED_SECRET=replace-with-at-least-32-random-characters

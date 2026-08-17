@@ -9,6 +9,7 @@ use worker::{
     wasm_bindgen::JsValue,
 };
 
+mod ai;
 mod api;
 mod graphql;
 
@@ -286,7 +287,10 @@ fn database_isolation_status(env: &Env) -> &'static str {
 fn is_allowed_nonproduction_post(path: &str) -> bool {
     matches!(
         path,
-        "/api/v1/auth/login" | "/api/v1/graphql" | "/api/v1/client-errors"
+        "/api/v1/auth/login"
+            | "/api/v1/graphql"
+            | "/api/v1/client-errors"
+            | "/api/v1/ai/growth-summary"
     )
 }
 
@@ -343,19 +347,28 @@ fn with_api_headers(
     request_id: &str,
 ) -> Result<Response> {
     let headers = response.headers_mut();
-    headers.set("Content-Type", "application/json; charset=utf-8")?;
+    if headers.get("Content-Type")?.is_none() {
+        headers.set("Content-Type", "application/json; charset=utf-8")?;
+    }
     headers.set("Cache-Control", cache_control)?;
     headers.set("Referrer-Policy", "no-referrer")?;
     headers.set(
         "Strict-Transport-Security",
-        "max-age=31536000; includeSubDomains",
+        "max-age=63072000; includeSubDomains",
+    )?;
+    headers.set(
+        "Content-Security-Policy",
+        "default-src 'none'; frame-ancestors 'none'; sandbox",
     )?;
     headers.set("X-Content-Type-Options", "nosniff")?;
     headers.set("X-Frame-Options", "DENY")?;
+    headers.set("X-Permitted-Cross-Domain-Policies", "none")?;
+    headers.set("X-Download-Options", "noopen")?;
+    headers.set("Cross-Origin-Resource-Policy", "cross-origin")?;
     headers.set("X-Request-ID", request_id)?;
     headers.set(
         "Permissions-Policy",
-        "camera=(), geolocation=(), microphone=()",
+        "accelerometer=(), autoplay=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()",
     )?;
     headers.set("Vary", "Origin, Authorization, Accept-Encoding")?;
     if let Some(origin) = origin {
@@ -368,7 +381,10 @@ fn with_api_headers(
             "Access-Control-Allow-Headers",
             "Authorization, Content-Type, Idempotency-Key, If-None-Match, X-Request-ID",
         )?;
-        headers.set("Access-Control-Expose-Headers", "ETag, X-Request-ID")?;
+        headers.set(
+            "Access-Control-Expose-Headers",
+            "Content-Disposition, ETag, X-Request-ID",
+        )?;
     }
     Ok(response)
 }
@@ -1868,6 +1884,7 @@ async fn dispatch(request: Request, env: &Env, context: &Context) -> ApiResult<s
             internal_background_job(request, env).await
         }
         (Method::Post, "/api/v1/auth/login") => login(request, env, context).await,
+        (Method::Post, "/api/v1/ai/growth-summary") => ai::growth_summary(request, env).await,
         (Method::Get, "/api/v1/me") => {
             let scope = require_scope(&request, env).await?;
             Ok(json!({
@@ -1941,6 +1958,7 @@ mod tests {
         assert!(is_allowed_nonproduction_post("/api/v1/auth/login"));
         assert!(is_allowed_nonproduction_post("/api/v1/graphql"));
         assert!(is_allowed_nonproduction_post("/api/v1/client-errors"));
+        assert!(is_allowed_nonproduction_post("/api/v1/ai/growth-summary"));
         assert!(!is_allowed_nonproduction_post("/api/v1/sync"));
         assert!(!is_allowed_nonproduction_post("/api/v1/jobs"));
     }

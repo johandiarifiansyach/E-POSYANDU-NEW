@@ -1,9 +1,12 @@
 // @ts-nocheck
 import Native from '../runtime/dom';
-import IosPagination from '../components/IosPagination';
+import { Badge, Button, DataTable, KenaikanBadge, Pagination, StatusBadge } from '../components';
 import { ChevronDown, FileDown, FileText, FileUp, Filter, Gift, Pencil, Plus, RotateCcw, Ruler, Search, Trash2, Utensils, X } from '../ui/icons';
 import { TableLoadingSkeleton } from '../ui/skeleton';
-import { Badge, Button, calculateGiziStatus, Card, formatIndoDate, getAgeInMonths, KenaikanBadge, MONTHS, ROLES, StatusBadge } from './DashboardApp';
+import { Card, formatIndoDate, MONTHS, ROLES } from './DashboardApp';
+import { getMeasurementStatuses } from '../features/measurements/measurementRules';
+import { getPmtCategoryForTab } from '../features/children/childRules';
+import type { PageState } from '../shared/pageState';
 function getPageTitle(activeTab, filterMonth, filterYear) {
     if (activeTab === 'recycle_bin')
         return 'Daftar Sampah (Recycle Bin)';
@@ -21,15 +24,15 @@ function getPageTitle(activeTab, filterMonth, filterYear) {
         return 'Balita MPASI (6-23 Bulan)';
     return 'Data Balita Lengkap';
 }
-function getPmtCategory(activeTab) {
-    if (activeTab === 'problem_underweight')
-        return 'Underweight';
-    if (activeTab === 'problem_tidak_naik')
-        return 'TidakNaik';
-    return 'Wasting';
-}
-export default function ChildrenTablePage({ activeTab, currentFilterDate, currentPage, displayData, fileInputRef, filterMonth, filterYear, handleExportMpasi, handleExportPengukuranSigizi, handleExportSigizi, handleExportTable, handleImportIdentitas, handlePermanentDelete, handleRestore, itemsPerPage, loading, monthlyMeasurements, mpasiLogs, paginatedData, onClearSearch, searchTerm, searchDraft, setChildToDelete, setChildToMpasi, setCurrentPage, onEditChild, setPmtModalData, setSearchDraft, onOpenAddChild, onOpenMeasurement, onSubmitSearch, setSortOrder, sortOrder, totalDataCount, user }) {
-    const totalItems = totalDataCount ?? displayData.length;
+export default function ChildrenTablePage({ activeTab, currentFilterDate, currentPage, displayData, fileInputRef, filterMonth, filterYear, handleExportMpasi, handleExportPengukuranSigizi, handleExportSigizi, handleExportTable, handleImportIdentitas, handlePermanentDelete, handleRestore, itemsPerPage, loading, monthlyMeasurements, mpasiLogs, paginatedData, onClearSearch, searchTerm, searchDraft, setChildToDelete, setChildToMpasi, setCurrentPage, onEditChild, setPmtModalData, setSearchDraft, onOpenAddChild, onOpenMeasurement, onSubmitSearch, setSortOrder, sortOrder, totalDataCount, user, pageState }) {
+    const fallbackTotal = totalDataCount ?? displayData.length;
+    const resolvedState = pageState ?? (loading
+        ? { status: 'loading' }
+        : { status: 'success', data: { items: paginatedData, total: fallbackTotal } });
+    const pageLoading = resolvedState.status === 'loading';
+    const pageError = resolvedState.status === 'error' ? resolvedState.message : null;
+    const pageItems = resolvedState.status === 'success' ? resolvedState.data.items : paginatedData;
+    const totalItems = resolvedState.status === 'success' ? resolvedState.data.total : fallbackTotal;
     const totalPages = Math.ceil(totalItems / itemsPerPage);
     return (Native.createElement("div", { className: "apple-page space-y-6" },
         Native.createElement("div", { className: "flex flex-col xl:flex-row xl:items-center justify-between gap-4" },
@@ -63,7 +66,7 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                     Native.createElement(ChevronDown, { className: "absolute right-3 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 pointer-events-none" })),
                 Native.createElement("div", { className: "flex gap-2 overflow-x-auto pb-1 sm:pb-0 no-scrollbar" },
                     activeTab === 'recent' && (Native.createElement(Native.Fragment, null,
-                        Native.createElement("input", { type: "file", ref: fileInputRef, onChange: handleImportIdentitas, accept: ".xls,.xlsx", style: { display: 'none' } }),
+                        Native.createElement("input", { type: "file", ref: fileInputRef, onChange: handleImportIdentitas, accept: ".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", style: { display: 'none' } }),
                         Native.createElement(Button, { onClick: () => fileInputRef.current?.click(), variant: "primary", className: "ios-toolbar-button icon-only-mobile bg-indigo-600 hover:bg-indigo-700 whitespace-nowrap", title: "Import identitas balita" },
                             Native.createElement("span", { className: "ios-button-symbol", "aria-hidden": "true" },
                                 Native.createElement(FileUp, { className: "w-4 h-4" })),
@@ -94,8 +97,11 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                             Native.createElement(Plus, { className: "w-4 h-4" })),
                         " ",
                         Native.createElement("span", { className: "hidden sm:inline" }, "Tambah")))))),
+        pageError && Native.createElement("div", { role: "alert", className: "ios-inline-notification ios-inline-notification-error" },
+            "Gagal memuat data balita: ",
+            pageError),
         Native.createElement(Card, { className: "ios-table-card overflow-hidden flex flex-col" },
-            Native.createElement("div", { className: "ios-table-scroll relative w-full overflow-x-auto overflow-y-visible" },
+            Native.createElement(DataTable, { className: "relative w-full overflow-y-visible", ariaLabel: "Daftar balita" },
                 Native.createElement("table", { className: "ios-data-table ios-children-table min-w-full" },
                     Native.createElement("thead", { className: "bg-slate-50" },
                         Native.createElement("tr", null,
@@ -152,19 +158,20 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                                     Native.createElement("br", null),
                                     "IMT/U"))),
                             Native.createElement("th", { className: "px-4 py-3 text-center text-[10px] font-bold text-slate-500 uppercase tracking-wider" }, "Aksi"))),
-                    Native.createElement("tbody", { className: "bg-white divide-y divide-slate-100" }, loading ? (Native.createElement(TableLoadingSkeleton, { columnCount: 15 })) : paginatedData.length === 0 ? (Native.createElement("tr", null,
-                        Native.createElement("td", { colSpan: 15, className: "px-6 py-12 text-center text-slate-400" }, "Tidak ada data ditemukan"))) : (paginatedData.map((child, index) => {
+                    Native.createElement("tbody", { className: "bg-white divide-y divide-slate-100" }, pageLoading ? (Native.createElement(TableLoadingSkeleton, { columnCount: 15 })) : pageItems.length === 0 ? (Native.createElement("tr", null,
+                        Native.createElement("td", { colSpan: 15, className: "px-6 py-12 text-center text-slate-400" }, "Tidak ada data ditemukan"))) : (pageItems.map((child, index) => {
                         if (!child.id)
                             return null;
                         const realIndex = (currentPage - 1) * itemsPerPage + index + 1;
                         const mpasiLog = mpasiLogs[child.id];
                         const hasMpasi = !!mpasiLog;
                         const measurement = monthlyMeasurements[child.id];
-                        const age = getAgeInMonths(child.tglLahir, measurement?.tglUkur ? new Date(measurement.tglUkur) : currentFilterDate);
-                        const statusBbu = calculateGiziStatus(measurement?.bb, 'BBU', age, child.jk);
-                        const statusTbu = calculateGiziStatus(measurement?.tb, 'TBU', age, child.jk, null, measurement?.caraUkur);
-                        const statusBbtb = calculateGiziStatus(measurement?.bb, 'BBTB', age, child.jk, measurement?.tb, measurement?.caraUkur);
-                        const statusImtu = calculateGiziStatus(measurement?.bb, 'IMTU', age, child.jk, measurement?.tb, measurement?.caraUkur);
+                        const statuses = getMeasurementStatuses(measurement || {}, child, measurement?.tglUkur ? new Date(measurement.tglUkur) : currentFilterDate);
+                        const age = statuses.age;
+                        const statusBbu = statuses.statusBbu;
+                        const statusTbu = statuses.statusTbu;
+                        const statusBbtb = statuses.statusBbtb;
+                        const statusImtu = statuses.statusImtu;
                         return (Native.createElement("tr", { key: child.id, className: "ios-data-row text-xs" },
                             Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap text-slate-500 border-r border-slate-100 text-center md:sticky md:left-0 bg-white z-10" }, realIndex),
                             Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap border-r border-slate-100 md:sticky md:left-[48px] bg-white z-10 md:shadow-lg" },
@@ -214,7 +221,7 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                                         Native.createElement(X, { className: "w-4 h-4" })))) : (Native.createElement(Native.Fragment, null,
                                     activeTab === 'mpasi' && (Native.createElement(Button, { variant: "actionOrange", className: "table-action-button table-action-orange", onClick: () => setChildToMpasi(child), title: "Input MPASI" },
                                         Native.createElement(Utensils, { className: "w-4 h-4" }))),
-                                    ['problem_wasting', 'problem_underweight', 'problem_tidak_naik'].includes(activeTab) && (Native.createElement(Button, { variant: "actionGreen", className: "table-action-button table-action-pmt", onClick: () => setPmtModalData({ child, category: getPmtCategory(activeTab) }), title: "Beri PMT" },
+                                    ['problem_wasting', 'problem_underweight', 'problem_tidak_naik'].includes(activeTab) && (Native.createElement(Button, { variant: "actionGreen", className: "table-action-button table-action-pmt", onClick: () => setPmtModalData({ child, category: getPmtCategoryForTab(activeTab) }), title: "Beri PMT" },
                                         Native.createElement(Gift, { className: "w-4 h-4" }))),
                                     Native.createElement(Button, { variant: "actionBlue", className: "table-action-button table-action-blue", onClick: () => onEditChild(child), title: "Edit Identitas" },
                                         Native.createElement(Pencil, { className: "w-4 h-4" })),
@@ -226,11 +233,11 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
             Native.createElement("div", { className: "ios-table-footer flex flex-col sm:flex-row justify-between items-center gap-4" },
                 Native.createElement("span", { className: "text-xs text-slate-500 font-medium" },
                     "Menampilkan ",
-                    paginatedData.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0,
+                    pageItems.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0,
                     " - ",
                     Math.min(currentPage * itemsPerPage, totalItems),
                     " dari ",
                     totalItems,
                     " data"),
-                Native.createElement(IosPagination, { currentPage: currentPage, totalPages: totalPages, disablePrevious: currentPage === 1, disableNext: currentPage >= totalPages || totalItems === 0, onPrevious: () => setCurrentPage((page) => Math.max(1, page - 1)), onNext: () => setCurrentPage((page) => page + 1) })))));
+                Native.createElement(Pagination, { currentPage: currentPage, totalPages: totalPages, disablePrevious: pageLoading || currentPage === 1, disableNext: pageLoading || currentPage >= totalPages || totalItems === 0, onPrevious: () => setCurrentPage((page) => Math.max(1, page - 1)), onNext: () => setCurrentPage((page) => page + 1) })))));
 }

@@ -1,11 +1,11 @@
 import { mountApp } from './App';
-import { reportClientError } from './api/client';
+import { reportClientError } from './api/dashboardApi';
 import { initializeColorScheme } from './theme/colorScheme';
 import { setupProblemReporter } from './ui/problemReporter';
 import './styles/index.css';
 
 const rootNode = document.getElementById('root');
-const SERVICE_WORKER_CACHE_VERSION = 'v31';
+const SERVICE_WORKER_CACHE_VERSION = 'v33';
 const SERVICE_WORKER_MIGRATION_KEY = 'e-posyandu:service-worker-cache-version';
 
 if (!rootNode) throw new Error('Root element tidak ditemukan.');

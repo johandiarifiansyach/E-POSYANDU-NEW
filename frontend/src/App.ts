@@ -6,7 +6,7 @@ import {
   restoreAuthSession,
   signInWithPassword,
   signOut
-} from './api/client';
+} from './api/authApi';
 import { AppLoadingSkeleton } from './ui/skeleton';
 
 type UserRole = {
@@ -55,7 +55,25 @@ function clearStoredUser() {
 }
 
 function showLoading(container: HTMLElement) {
-  container.replaceChildren(AppLoadingSkeleton({ message: 'Menyiapkan aplikasi' }) as Node);
+  container.replaceChildren(AppLoadingSkeleton() as Node);
+}
+
+function showStartupError(container: HTMLElement) {
+  container.replaceChildren();
+  const surface = document.createElement('section');
+  surface.className = 'runtime-error-screen';
+  surface.setAttribute('role', 'alert');
+  const title = document.createElement('h1');
+  title.textContent = 'Aplikasi belum dapat dimuat';
+  const message = document.createElement('p');
+  message.textContent = 'Silakan coba muat ulang halaman.';
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'runtime-error-retry';
+  retry.textContent = 'Muat ulang';
+  retry.addEventListener('click', () => window.location.reload());
+  surface.append(title, message, retry);
+  container.appendChild(surface);
 }
 
 function startIdleSession(onExpired: () => Promise<void>): Cleanup {
@@ -216,7 +234,10 @@ export function mountApp(container: HTMLElement): Cleanup {
     }
   };
 
-  void initialize();
+  void initialize().catch((error) => {
+    console.error('Bootstrap aplikasi gagal:', error);
+    if (!disposed) showStartupError(container);
+  });
   return () => {
     disposed = true;
     viewCleanup?.();
