@@ -112,10 +112,7 @@ async function configureAuthenticatedPage(
   await page.addInitScript(() => {
     window.sessionStorage.setItem('e-posyandu:auth-session', JSON.stringify({
       uid: 'user-regression',
-      email: 'salak1@posyandu.com',
-      accessToken: 'access-token-regression',
-      refreshToken: 'refresh-token-regression',
-      expiresAt: Date.now() + 3_600_000
+      email: 'salak1@posyandu.com'
     }));
     window.localStorage.setItem('e-posyandu:user', JSON.stringify({
       role: 'Kader Posyandu',
@@ -154,7 +151,7 @@ async function configureAuthenticatedPage(
     });
   });
 
-  await page.route('http://127.0.0.1:9/api/v1/**', async (route) => {
+  await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
     const requestUrl = new URL(request.url());
     const path = requestUrl.pathname;
@@ -167,6 +164,20 @@ async function configureAuthenticatedPage(
 
     if (request.method() === 'OPTIONS') {
       await route.fulfill({ status: 204, headers });
+      return;
+    }
+    if (path.endsWith('/auth/session')) {
+      await route.fulfill({ status: 200, headers, json: {
+        user: { id: 'user-regression', email: 'salak1@posyandu.com' },
+        profile: {
+          userId: 'user-regression',
+          email: 'salak1@posyandu.com',
+          role: 'Kader Posyandu',
+          desa: 'Desa Gumukmas',
+          posyandu: 'SALAK 1'
+        },
+        mfa: { required: true, state: 'verified' }
+      } });
       return;
     }
     if (path.endsWith('/me')) {
@@ -709,7 +720,7 @@ test('tabel ASI eksklusif menampilkan skeleton sesuai enam kolom saat memuat', a
     releaseResponse = resolve;
   });
 
-  await page.route('http://127.0.0.1:9/api/v1/graphql', async (route) => {
+  await page.route('**/api/v1/graphql', async (route) => {
     const payload = route.request().postDataJSON() as { query?: string };
     if (!payload.query?.includes('exclusiveBreastfeedingPage')) {
       await route.fallback();
@@ -941,7 +952,7 @@ test('ringkasan AI grafik pertumbuhan hanya mengirim payload anonim', async ({ p
 });
 
 test('penimbangan tetap tersimpan saat batas harian Cloudflare tercapai', async ({ page }) => {
-  const { syncedMutations } = await configureAuthenticatedPage(page, false, false, [], false, true, 5_000);
+  await configureAuthenticatedPage(page, false, false, [], false, true, 5_000);
   await page.goto('/#data_balita');
   await page.getByRole('button', { name: 'Pengukuran Balita', exact: true }).click();
   await page.getByRole('tab', { name: 'Tambah' }).click();
@@ -957,13 +968,17 @@ test('penimbangan tetap tersimpan saat batas harian Cloudflare tercapai', async 
   await expect(page.getByText('Data penimbangan berhasil disimpan.')).toBeVisible({ timeout: 3_000 });
   expect(Date.now() - saveStartedAt).toBeLessThan(3_000);
   await expect(page.getByRole('tab', { name: 'Riwayat' })).toHaveClass(/is-active/);
-  await expect.poll(() => syncedMutations.some((mutation) => (
-    mutation.resource === 'measurements' && mutation.data?.bb === 5.35
+  const queued = await page.evaluate(async () => {
+    const offlineStore = await import('/src/services/offlineStore.ts');
+    return offlineStore.getPendingMutations();
+  });
+  expect(queued.some((mutation) => (
+    mutation.tableName === 'measurements' && mutation.payload?.data?.bb === 5.35
   ))).toBe(true);
-  await expect.poll(() => syncedMutations.some((mutation) => (
-    mutation.resource === 'children'
+  expect(queued.some((mutation) => (
+    mutation.tableName === 'children'
       && mutation.documentId === child.id
-      && mutation.data?.currentBB === 5.35
+      && mutation.payload?.data?.currentBB === 5.35
   ))).toBe(true);
 });
 

@@ -1,9 +1,19 @@
 // Shared select control used by filters and forms.
-// @ts-nocheck
 import Native from '../runtime/dom';
 import { ChevronDown } from '../ui/icons';
 
-export const Select = ({ value, onChange, options, disabled, required = false, className = '' }) => Native.createElement(
+type SelectOption = { value: string | number; label: string };
+type SelectChangeEvent = Event & { target: HTMLSelectElement };
+type SelectProps = {
+    value: string | number;
+    onChange: (event: SelectChangeEvent) => void;
+    options: SelectOption[];
+    disabled?: boolean;
+    required?: boolean;
+    className?: string;
+};
+
+export const Select = ({ value, onChange, options, disabled, required = false, className = '' }: SelectProps) => Native.createElement(
     'div',
     { className: 'relative w-full' },
     Native.createElement(

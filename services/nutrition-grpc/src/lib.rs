@@ -74,7 +74,7 @@ fn z_score(
     method: &str,
     standards: &WhoStandards,
 ) -> Option<f64> {
-    if value <= 0.0 || !(0..=59).contains(&age_months) || !matches!(sex, "L" | "P") {
+    if value <= 0.0 || !(0..=60).contains(&age_months) || !matches!(sex, "L" | "P") {
         return None;
     }
     let age = age_months as usize;
@@ -158,9 +158,9 @@ fn validate_item(item: &NutritionItem, index: usize) -> Result<(), Status> {
             "items[{index}].height_cm harus antara 10 dan 220 cm."
         )));
     }
-    if !(0..=59).contains(&item.age_months) {
+    if !(0..=60).contains(&item.age_months) {
         return Err(Status::invalid_argument(format!(
-            "items[{index}].age_months harus antara 0 dan 59."
+            "items[{index}].age_months harus antara 0 dan 60."
         )));
     }
     if !matches!(item.sex.as_str(), "L" | "P") {
@@ -1145,6 +1145,19 @@ mod tests {
         assert_eq!(result.stunting, 0);
         assert_eq!(result.wasting, 0);
         assert_eq!(result.items.len(), 1);
+    }
+
+    #[test]
+    fn matches_who_lms_golden_medians_and_accepts_sixty_months() {
+        let standards = standards().expect("WHO standards");
+        assert!(lms_z_score(3.3464, [0.3487, 3.3464, 0.14602]).abs() < 1e-10);
+        assert!(lms_z_score(49.1477, [1.0, 49.1477, 0.0379]).abs() < 1e-10);
+        assert!(lms_z_score(13.0284, [-0.1733, 13.0284, 0.08263]).abs() < 1e-10);
+        assert!(lms_z_score(34.4618, [1.0, 34.4618, 0.03686]).abs() < 1e-10);
+
+        let sixty_month_score = z_score(18.3366, "BBU", 60, "L", None, "", standards);
+        assert!(sixty_month_score.is_some_and(|score| score.abs() < 1e-10));
+        assert_eq!(nutrition_status(sixty_month_score, "BBU"), "Berat Normal");
     }
 
     #[test]

@@ -1,8 +1,18 @@
 // Shared modal shell. Feature dialogs can add their own form and data logic.
-// @ts-nocheck
-import Native from '../runtime/dom';
+import Native, { type DomChild } from '../runtime/dom';
 
-export const Modal = ({ children, onClose, title = '', className = '', backdropClassName = '', panelClassName = '', bodyClassName = 'p-4', footer = null }) => Native.createElement(
+type ModalProps = {
+    children?: DomChild;
+    onClose: (event: Event) => void | Promise<void>;
+    title?: string;
+    className?: string;
+    backdropClassName?: string;
+    panelClassName?: string;
+    bodyClassName?: string;
+    footer?: DomChild;
+};
+
+export const Modal = ({ children, onClose, title = '', className = '', backdropClassName = '', panelClassName = '', bodyClassName = 'p-4', footer = null }: ModalProps) => Native.createElement(
     'div',
     { className: `fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-md overflow-y-auto ${backdropClassName}`, role: 'dialog', 'aria-modal': 'true', 'aria-label': title || 'Dialog' },
     Native.createElement('div', { className: `app-card w-full max-w-3xl max-h-[90vh] overflow-y-auto ${panelClassName} ${className}` },

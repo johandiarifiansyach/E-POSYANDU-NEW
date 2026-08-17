@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build",
-    "check": "npm run frontend:check && npm run frontend:test && npm run replica:check && npm run integration:test && npm run worker:test && npm run grpc:test",
+    "check": "npm run standards:verify && npm run frontend:check && npm run frontend:test && npm run replica:check && npm run integration:test && npm run worker:test && npm run grpc:test",
+    "standards:verify": "node scripts/verify-who-standards.mjs",
     "frontend:check": "npm --prefix frontend run typecheck",
     "integration:test": "node --test tests/integration/*.test.mjs",
     "frontend:test": "npm --prefix frontend exec -- playwright test --config=frontend/playwright.unit.config.ts",
@@ -41,8 +42,8 @@
     "grpc:install:macos": "./scripts/services/install-nutrition-grpc-macos.sh",
     "worker:deploy": "npx --yes wrangler --cwd backend deploy --env=",
     "worker:deploy:staging": "npx --yes wrangler --cwd backend deploy --env staging",
-    "pages:build": "VITE_API_URL=https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev npm --prefix frontend run build",
-    "pages:build:staging": "VITE_APP_ENV=staging VITE_API_URL=https://e-posyandu-api-staging.eposyandu-puskesmas-gumukmas.workers.dev npm --prefix frontend run build -- --mode staging",
+    "pages:build": "VITE_API_URL= npm --prefix frontend run build",
+    "pages:build:staging": "VITE_APP_ENV=staging VITE_API_URL= npm --prefix frontend run build -- --mode staging",
     "pages:deploy": "npm run pages:build && npx --yes wrangler pages deploy frontend/dist --project-name e-posyandu --branch main",
     "pages:deploy:staging": "npm run pages:build:staging && npx --yes wrangler pages deploy frontend/dist --project-name e-posyandu-staging --branch staging",
     "preview": "npm --prefix frontend run preview"

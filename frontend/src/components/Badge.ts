@@ -1,9 +1,12 @@
 // Shared status badges. Keep status styling in one place so tables stay consistent.
-// @ts-nocheck
-import Native from '../runtime/dom';
+import Native, { type DomChild } from '../runtime/dom';
 
-export const Badge = ({ children, color = 'emerald' }) => {
-    const colors = {
+type BadgeColor = 'emerald' | 'blue' | 'pink' | 'slate' | 'amber';
+type BadgeProps = { children?: DomChild; color?: BadgeColor };
+type StatusProps = { status?: string | null };
+
+export const Badge = ({ children, color = 'emerald' }: BadgeProps) => {
+    const colors: Record<BadgeColor, string> = {
         emerald: 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200',
         blue: 'bg-blue-100 text-blue-700 ring-1 ring-blue-200',
         pink: 'bg-pink-100 text-pink-700 ring-1 ring-pink-200',
@@ -13,7 +16,7 @@ export const Badge = ({ children, color = 'emerald' }) => {
     return Native.createElement('span', { className: `inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold ${colors[color]}` }, children);
 };
 
-export const KenaikanBadge = ({ status }) => {
+export const KenaikanBadge = ({ status }: StatusProps) => {
     if (!status) return Native.createElement('span', { className: 'text-slate-300' }, '-');
     let color = 'bg-slate-100 text-slate-700';
     let label = status;
@@ -27,7 +30,7 @@ export const KenaikanBadge = ({ status }) => {
     return Native.createElement('span', { className: `ios-status-pill px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap ${color}` }, label);
 };
 
-export const StatusBadge = ({ status }) => {
+export const StatusBadge = ({ status }: StatusProps) => {
     if (status === '-' || !status) return Native.createElement('span', { className: 'text-slate-300' }, '-');
     let color = 'bg-slate-100 text-slate-700';
     if (['Berat Normal', 'Normal', 'Gizi Baik', 'LILA Normal'].includes(status)) color = 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200';

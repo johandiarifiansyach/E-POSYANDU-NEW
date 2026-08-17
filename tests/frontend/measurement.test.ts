@@ -1,10 +1,16 @@
 import { test, expect } from '../../frontend/node_modules/@playwright/test/index.mjs';
 import {
+  calculateWhoLmsValue,
   calculateCircumferenceZScore,
   calculateWeightGainStatus,
+  getCircumferenceStatus,
   getMeasurementStatuses,
   validateMeasurementForm
 } from '../../frontend/src/features/measurements/measurementRules';
+import {
+  calculateGiziStatus,
+  calculateZScore
+} from '../../frontend/src/shared/dashboardUtils';
 import { getGrowthChartModels } from '../../frontend/src/features/measurements/growthCharts';
 import {
   buildAnonymousGrowthSummaryPayload,
@@ -132,6 +138,41 @@ test.describe('measurement feature', () => {
     expect(statuses.statusLku).toBe('Normal');
     expect(calculateCircumferenceZScore(13.4817, 'lila', 3, 'L')).toBeCloseTo(0, 5);
     expect(calculateCircumferenceZScore(40.5135, 'lk', 3, 'L')).toBeCloseTo(0, 5);
+  });
+
+  test('matches WHO LMS golden medians for all six indicators', () => {
+    expect(calculateZScore(3.3464, 'BBU', 0, 'L')).toBeCloseTo(0, 10);
+    expect(calculateZScore(49.1477, 'TBU', 0, 'P')).toBeCloseTo(0, 10);
+    expect(calculateZScore(3.3278, 'BBTB', 3, 'L', 50, 'Terlentang')).toBeCloseTo(0, 10);
+
+    const bmiMedianWeight = 16.8987 * Math.pow(61.4292 / 100, 2);
+    expect(calculateZScore(bmiMedianWeight, 'IMTU', 3, 'L', 61.4292, 'Terlentang')).toBeCloseTo(0, 10);
+    expect(calculateCircumferenceZScore(13.0284, 'lila', 3, 'P')).toBeCloseTo(0, 10);
+    expect(calculateCircumferenceZScore(34.4618, 'lk', 0, 'L')).toBeCloseTo(0, 10);
+  });
+
+  test('keeps WHO age boundaries and length-height conversion auditable', () => {
+    expect(calculateCircumferenceZScore(13, 'lila', 2, 'L')).toBeNull();
+    expect(calculateCircumferenceZScore(13.4817, 'lila', 3, 'L')).toBeCloseTo(0, 10);
+    expect(calculateCircumferenceZScore(16.5191, 'lila', 60, 'L')).toBeCloseTo(0, 10);
+    expect(calculateCircumferenceZScore(49.9229, 'lk', 60, 'P')).toBeCloseTo(0, 10);
+
+    expect(calculateZScore(87.1161, 'TBU', 24, 'L', null, 'Berdiri')).toBeCloseTo(0, 10);
+    expect(calculateZScore(88.672, 'TBU', 25, 'L', null, 'Terlentang')).toBeCloseTo(0, 10);
+  });
+
+  test('uses documented z-score status boundaries', () => {
+    const lilaLms = [0.3928, 13.4817, 0.07475];
+    const belowMinusThree = calculateWhoLmsValue(-3.01, lilaLms);
+    const betweenMinusThreeAndMinusTwo = calculateWhoLmsValue(-2.5, lilaLms);
+    const abovePlusTwo = calculateWhoLmsValue(2.01, lilaLms);
+
+    expect(getCircumferenceStatus(belowMinusThree, 'lila', 3, 'L')).toBe('LILA Sangat Rendah');
+    expect(getCircumferenceStatus(betweenMinusThreeAndMinusTwo, 'lila', 3, 'L')).toBe('LILA Rendah');
+    expect(getCircumferenceStatus(abovePlusTwo, 'lila', 3, 'L')).toBe('LILA Tinggi');
+    const weightForAgeLms = [0.3487, 3.3464, 0.14602];
+    expect(calculateGiziStatus(calculateWhoLmsValue(-3.01, weightForAgeLms), 'BBU', 0, 'L')).toBe('Berat Sangat Kurang');
+    expect(calculateGiziStatus(calculateWhoLmsValue(-2.5, weightForAgeLms), 'BBU', 0, 'L')).toBe('Berat Kurang');
   });
 
   test('builds six WHO chart models and omits LILA points below three months', () => {

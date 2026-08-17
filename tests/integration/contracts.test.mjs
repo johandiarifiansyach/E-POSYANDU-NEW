@@ -39,7 +39,7 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '026_allow_infant_lila_null.sql');
+  assert.equal(files.at(-1), '027_require_mfa_aal2.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
@@ -59,30 +59,40 @@ test('RPC profil lama tetap terkunci meskipun tidak lagi dipakai untuk melewati 
   assert.match(migration, /grant execute on function public\.eposyandu_current_access_profile\(\) to authenticated, service_role/);
 });
 
-test('fallback baca darurat tetap dibatasi role dan wilayah akun aktif', async () => {
+test('RPC browser lama ditutup setelah proxy HttpOnly tersedia', async () => {
   const migration = await readFile(
     resolve(root, 'database/migrations/017_authenticated_read_fallback.sql'),
     'utf8'
   );
   const client = await readApiClient();
+  const mfaMigration = await readFile(
+    resolve(root, 'database/migrations/027_require_mfa_aal2.sql'),
+    'utf8'
+  );
 
   assert.match(migration, /security definer/g);
   assert.match(migration, /profile\.user_id = auth\.uid\(\) and profile\.active/g);
   assert.match(migration, /public\.eposyandu_scope_match/);
   assert.match(migration, /revoke all on function public\.eposyandu_self_children_page[\s\S]+from public, anon/);
   assert.match(migration, /grant execute on function public\.eposyandu_self_children_page[\s\S]+to authenticated, service_role/);
-  assert.match(client, /eposyandu_self_children_page/);
-  assert.match(client, /eposyandu_self_problem_children_page/);
-  assert.match(client, /eposyandu_self_exclusive_breastfeeding_page/);
-  assert.match(client, /eposyandu_self_dashboard_stats/);
+  assert.match(mfaMigration, /revoke execute on function public\.eposyandu_self_children_page[\s\S]+from authenticated/);
+  assert.match(mfaMigration, /authenticated_aal2_only/);
+  assert.doesNotMatch(client, /eposyandu_self_children_page/);
+  assert.doesNotMatch(client, /eposyandu_self_problem_children_page/);
+  assert.doesNotMatch(client, /eposyandu_self_exclusive_breastfeeding_page/);
+  assert.doesNotMatch(client, /eposyandu_self_dashboard_stats/);
 });
 
-test('fallback tulis penimbangan bersifat atomik dan hanya menerima kolom ringkasan aman', async () => {
+test('RPC tulis browser lama dicabut dan sinkronisasi kembali melalui API', async () => {
   const migration = await readFile(
     resolve(root, 'database/migrations/018_authenticated_measurement_write_fallback.sql'),
     'utf8'
   );
   const client = await readApiClient();
+  const mfaMigration = await readFile(
+    resolve(root, 'database/migrations/027_require_mfa_aal2.sql'),
+    'utf8'
+  );
 
   assert.match(migration, /security definer/);
   assert.match(migration, /users\.user_id = auth\.uid\(\)/);
@@ -91,9 +101,10 @@ test('fallback tulis penimbangan bersifat atomik dan hanya menerima kolom ringka
   assert.match(migration, /on conflict \(idempotency_key, action, resource, document_id\) do nothing/g);
   assert.match(migration, /revoke all on function public\.eposyandu_self_sync_measurement_batch\(jsonb\) from public, anon/);
   assert.match(migration, /grant execute on function public\.eposyandu_self_sync_measurement_batch\(jsonb\) to authenticated, service_role/);
-  assert.match(client, /supportsAuthenticatedMeasurementFallback/);
-  assert.match(client, /eposyandu_self_sync_measurement_batch/);
-  assert.match(client, /if \(!isNetworkError\(error\)\) throw error/);
+  assert.match(client, /supportsMeasurementMutation/);
+  assert.match(client, /apiRequest<SyncResponse>\('\/sync'/);
+  assert.doesNotMatch(client, /eposyandu_self_sync_measurement_batch/);
+  assert.match(mfaMigration, /revoke execute on function public\.eposyandu_self_sync_measurement_batch\(jsonb\) from authenticated/);
 });
 
 test('fallback penimbangan menyimpan LILA kosong untuk bayi di bawah tiga bulan', async () => {
@@ -251,11 +262,16 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
     '/api/v1/health',
     '/api/v1/health/ready',
     '/api/v1/auth/login',
+    '/api/v1/auth/logout',
+    '/api/v1/auth/session',
+    '/api/v1/auth/mfa/enroll',
+    '/api/v1/auth/mfa/verify',
     '/api/v1/graphql',
     '/api/v1/sync',
     '/api/v1/features',
     '/api/v1/monitoring/status',
     '/api/v1/client-errors',
+    '/api/v1/security/csp-report',
     '/api/v1/ai/growth-summary',
     '/api/v1/jobs',
     '/api/v1/jobs/{jobId}',
@@ -267,6 +283,9 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
     document.paths['/api/v1/auth/login'].post.responses['200'].content['application/json'].schema.$ref,
     '#/components/schemas/LoginResponse'
   );
+  assert.ok(document.components.securitySchemes.sessionCookie);
+  assert.ok(!('access_token' in document.components.schemas.LoginResponse.properties));
+  assert.ok(!('refresh_token' in document.components.schemas.LoginResponse.properties));
   assert.equal(
     document.components.schemas.LoginResponse.properties.profile.$ref,
     '#/components/schemas/AccessProfile'
@@ -395,6 +414,11 @@ test('pekerjaan berat memakai migration privat, Queue, dan kontrak frontend', as
   assert.match(migration, /revoke all on table public\.background_jobs from anon, authenticated/);
   assert.match(wrangler, /binding = "E_POSYANDU_JOBS"/);
   assert.match(wrangler, /queue = "e-posyandu-jobs"/);
+  assert.match(wrangler, /queue = "e-posyandu-jobs-development"/);
+  assert.match(wrangler, /queue = "e-posyandu-jobs-staging"/);
+  assert.match(wrangler, /bucket_name = "e-posyandu-files-development"/);
+  assert.match(wrangler, /bucket_name = "e-posyandu-files-staging"/);
+  assert.match(wrangler, /id = "79568f3667f04838b1c005b4ebacef15"/);
   assert.match(client, /export async function createBackgroundJob/);
   assert.match(client, /export async function waitForBackgroundJob/);
   assert.match(client, /export async function downloadBackgroundJobFile/);
@@ -445,6 +469,9 @@ test('header keamanan frontend mencakup kebijakan utama', async () => {
   assert.match(headers, /frame-ancestors 'none'/);
   assert.match(headers, /object-src 'none'/);
   assert.match(headers, /base-uri 'none'/);
+  assert.match(headers, /Reporting-Endpoints: csp-endpoint="\/api\/v1\/security\/csp-report"/);
+  assert.match(headers, /report-uri \/api\/v1\/security\/csp-report/);
+  assert.match(headers, /report-to csp-endpoint/);
   assert.doesNotMatch(headers, /cdnjs\.cloudflare\.com|xlsx\.full\.min\.js/);
   assert.equal(
     frontendPackage.dependencies.xlsx,
@@ -487,6 +514,9 @@ test('deployment diperiksa berkala dan backup hanya disimpan dalam bentuk terenk
   const ciWorkflow = await readFile(resolve(root, '.github/workflows/ci.yml'), 'utf8');
 
   assert.match(smokeScript, /SMOKE_REQUIRE_SECURITY_HEADERS/);
+  assert.match(smokeScript, /SMOKE_SESSION_COOKIE/);
+  assert.match(smokeScript, /authenticated-aal2-session/);
+  assert.match(smokeScript, /unauthenticated-session-rejected/);
   assert.match(smokeScript, /history\.items\.length <= 10/);
   assert.match(smokeWorkflow, /17 \*\/6 \* \* \*/);
   assert.match(backupWorkflow, /aes-256-cbc/);
@@ -521,6 +551,8 @@ test('sinkronisasi offline mendeteksi konflik dan tidak menimpa perubahan diam-d
 test('cache sensitif dienkripsi per akun dan login tidak melewati gerbang keamanan', async () => {
   const store = await readFile(resolve(root, 'frontend/src/services/offlineStore.ts'), 'utf8');
   const client = await readApiClient();
+  const worker = await readFile(resolve(root, 'backend/src/lib.rs'), 'utf8');
+  const pagesProxy = await readFile(resolve(root, 'frontend/public/_worker.js'), 'utf8');
 
   assert.match(store, /AES-GCM/);
   assert.match(store, /OFFLINE_ENCRYPTION_SESSION_KEY/);
@@ -531,6 +563,41 @@ test('cache sensitif dienkripsi per akun dan login tidak melewati gerbang keaman
   assert.match(client, /response = await usernameLoginRequest/);
   assert.doesNotMatch(client, /directSupabaseUsernameLogin/);
   assert.doesNotMatch(client, /localStorage\.getItem\(AUTH_SESSION_KEY\)/);
+  assert.doesNotMatch(client, /accessToken|refreshToken|VITE_SUPABASE/);
+  assert.match(client, /credentials: 'include'/);
+  assert.match(worker, /__Host-e-posyandu-session/);
+  assert.match(worker, /HttpOnly; Secure; SameSite=Strict/);
+  assert.match(worker, /MFA_ENFORCEMENT/);
+  assert.match(worker, /jwt_assurance_level[\s\S]+aal2/);
+  assert.match(pagesProxy, /isApiPath/);
+  assert.match(pagesProxy, /env\.ASSETS\.fetch/);
+});
+
+test('laporan CSP diminimalkan, dibatasi ukuran, dan dibatasi laju', async () => {
+  const worker = await readFile(resolve(root, 'backend/src/lib.rs'), 'utf8');
+
+  assert.match(worker, /CSP_REPORT_MAX_BODY_BYTES: usize = 16 \* 1024/);
+  assert.match(worker, /CSP_REPORT_MAX_ATTEMPTS: u8 = 60/);
+  assert.match(worker, /safe_csp_document_url/);
+  assert.match(worker, /url\.set_query\(None\)/);
+  assert.match(worker, /url\.set_fragment\(None\)/);
+  assert.match(worker, /safe_csp_blocked_url/);
+  assert.match(worker, /"event": "csp_violation"/);
+  assert.doesNotMatch(
+    worker.slice(worker.indexOf('fn normalized_csp_report'), worker.indexOf('async fn csp_report')),
+    /script-sample|scriptSample|original-policy|originalPolicy|referrer/
+  );
+});
+
+test('kebijakan privasi mencatat klasifikasi, retensi, dan respons insiden', async () => {
+  const privacy = await readFile(resolve(root, 'docs/PRIVACY.md'), 'utf8');
+
+  assert.match(privacy, /UU Nomor 27 Tahun 2022/);
+  assert.match(privacy, /Permenkes Nomor 24 Tahun 2022/);
+  assert.match(privacy, /Paling singkat 25 tahun sejak kunjungan terakhir/);
+  assert.match(privacy, /3 x 24 jam/);
+  assert.match(privacy, /wajib disahkan Kepala UPTD Puskesmas Gumukmas/);
+  assert.match(privacy, /Fitur AI tetap nonaktif/);
 });
 
 test('skeleton awal mengikuti struktur aplikasi tanpa teks persiapan', async () => {

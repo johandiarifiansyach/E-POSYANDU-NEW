@@ -49,6 +49,7 @@ PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
 # Ubah menjadi `primary-only` untuk mematikan replica tanpa deploy ulang kode.
 READ_REPLICA_MODE = "prefer-replica"
 OPENAI_MODEL = "gpt-5.6-luna"
+MFA_ENFORCEMENT = "required"
 
 [env.development]
 name = "e-posyandu-api-development"
@@ -62,12 +63,23 @@ LOCAL_TURNSTILE_BYPASS = "true"
 PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
 READ_REPLICA_MODE = "primary-only"
 OPENAI_MODEL = "gpt-5.6-luna"
+MFA_ENFORCEMENT = "required"
 
 [env.development.observability]
 enabled = false
 
 [[env.development.kv_namespaces]]
 binding = "E_POSYANDU_CACHE"
+
+# Binding development hanya dipakai oleh emulator lokal. Jangan arahkan nama
+# berikut ke Queue atau bucket production ketika environment ini dideploy.
+[[env.development.queues.producers]]
+binding = "E_POSYANDU_JOBS"
+queue = "e-posyandu-jobs-development"
+
+[[env.development.r2_buckets]]
+binding = "E_POSYANDU_FILES"
+bucket_name = "e-posyandu-files-development"
 
 [env.development.secrets]
 required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY", "OPENAI_API_KEY"]
@@ -81,8 +93,11 @@ ENVIRONMENT = "staging"
 CORS_ORIGINS = "https://e-posyandu-staging.pages.dev"
 TURNSTILE_HOSTNAMES = "e-posyandu-staging.pages.dev"
 PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
-READ_REPLICA_MODE = "prefer-replica"
+# Staging mulai dari primary-only. Aktifkan service binding replika staging
+# hanya setelah database Neon staging dan seluruh secret-nya tersedia.
+READ_REPLICA_MODE = "primary-only"
 OPENAI_MODEL = "gpt-5.6-luna"
+MFA_ENFORCEMENT = "required"
 
 [env.staging.observability]
 enabled = true
@@ -90,7 +105,18 @@ head_sampling_rate = 1.0
 
 [[env.staging.kv_namespaces]]
 binding = "E_POSYANDU_CACHE"
+id = "79568f3667f04838b1c005b4ebacef15"
 
+[[env.staging.queues.producers]]
+binding = "E_POSYANDU_JOBS"
+queue = "e-posyandu-jobs-staging"
+
+[[env.staging.r2_buckets]]
+binding = "E_POSYANDU_FILES"
+bucket_name = "e-posyandu-files-staging"
+
+# Worker private ini tersedia sebagai target binding, tetapi tidak digunakan
+# selama READ_REPLICA_MODE masih primary-only.
 [[env.staging.services]]
 binding = "NEON_READ_SERVICE"
 service = "e-posyandu-neon-read-staging"

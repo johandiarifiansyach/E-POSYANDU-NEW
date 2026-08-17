@@ -108,29 +108,28 @@ test('halaman login tidak melebar di layar ponsel', async ({ page }, testInfo) =
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
 });
 
-test('login memakai profil dari respons yang sama tanpa meminta endpoint me', async ({ page }) => {
+test('login mewajibkan MFA dan memakai profil terverifikasi tanpa meminta endpoint me', async ({ page }) => {
   let profileRequests = 0;
-  await page.addInitScript(() => {
-    sessionStorage.setItem('e-posyandu:api-unavailable-until', String(Date.now() + 10 * 60 * 1000));
-  });
-  await page.route('http://127.0.0.1:9/api/v1/**', async (route) => {
+  await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const headers = {
       'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Request-ID',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Origin': 'http://127.0.0.1:4174',
       'Content-Type': 'application/json'
     };
     if (request.method() === 'OPTIONS') {
       await route.fulfill({ status: 204, headers });
       return;
     }
+    if (path.endsWith('/auth/session')) {
+      await route.fulfill({ status: 401, headers, json: { detail: 'Sesi belum tersedia.' } });
+      return;
+    }
     if (path.endsWith('/auth/login')) {
       await route.fulfill({ status: 200, headers, json: {
-        access_token: 'access-token-login',
-        refresh_token: 'refresh-token-login',
-        expires_in: 3600,
         user: { id: 'user-login', email: 'salak1@posyandu.com' },
         profile: {
           userId: 'user-login',
@@ -138,7 +137,23 @@ test('login memakai profil dari respons yang sama tanpa meminta endpoint me', as
           role: 'Kader Posyandu',
           desa: 'Desa Gumukmas',
           posyandu: 'SALAK 1'
-        }
+        },
+        mfa: { required: true, state: 'challenge' }
+      } });
+      return;
+    }
+    if (path.endsWith('/auth/mfa/verify')) {
+      expect(request.postDataJSON()).toEqual({ code: '123456' });
+      await route.fulfill({ status: 200, headers, json: {
+        user: { id: 'user-login', email: 'salak1@posyandu.com' },
+        profile: {
+          userId: 'user-login',
+          email: 'salak1@posyandu.com',
+          role: 'Kader Posyandu',
+          desa: 'Desa Gumukmas',
+          posyandu: 'SALAK 1'
+        },
+        mfa: { required: true, state: 'verified' }
       } });
       return;
     }
@@ -166,6 +181,10 @@ test('login memakai profil dari respons yang sama tanpa meminta endpoint me', as
   await page.getByRole('textbox', { name: 'Kata Sandi', exact: true }).fill('kata-sandi-uji');
   await page.getByRole('button', { name: 'Masuk' }).click();
 
+  await expect(page.getByRole('heading', { name: 'Verifikasi Dua Langkah' })).toBeVisible();
+  await page.getByLabel('Kode autentikator 6 digit').fill('123456');
+  await page.getByRole('button', { name: 'Verifikasi' }).click();
+
   await expect(page.locator('[data-nav-id="dashboard"]')).toBeVisible();
   expect(profileRequests).toBe(0);
 });
@@ -173,7 +192,7 @@ test('login memakai profil dari respons yang sama tanpa meminta endpoint me', as
 test('login tidak melewati Turnstile dan rate limiter saat Worker mencapai batas kapasitas', async ({ page }) => {
   let directAuthRequests = 0;
   let directProfileRequests = 0;
-  await page.route('http://127.0.0.1:9/api/v1/**', async (route) => {
+  await page.route('**/api/v1/**', async (route) => {
     await route.fulfill({
       status: 429,
       headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'text/plain' },
@@ -227,6 +246,7 @@ test('login tidak melewati Turnstile dan rate limiter saat Worker mencapai batas
 
 test('cache offline dienkripsi dan dipisahkan sebelum akun lain dapat membaca', async ({ page }) => {
   await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'E-Posyandu' })).toBeVisible();
 
   const result = await page.evaluate(async () => {
     const offlineStore = await import('/src/services/offlineStore.ts');
@@ -300,6 +320,7 @@ test('cache offline dienkripsi dan dipisahkan sebelum akun lain dapat membaca', 
 
 test('startup tanpa sesi menghapus cache terenkripsi dan kunci akun sebelumnya', async ({ page }) => {
   await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'E-Posyandu' })).toBeVisible();
 
   await page.evaluate(async () => {
     const offlineStore = await import('/src/services/offlineStore.ts');

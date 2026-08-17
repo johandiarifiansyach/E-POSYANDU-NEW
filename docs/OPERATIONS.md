@@ -31,6 +31,16 @@ npx wrangler secret put SUPABASE_SECRET_KEY --env staging
 npx wrangler secret put TURNSTILE_SECRET_KEY --env staging
 ```
 
+Resource Cloudflare staging juga wajib terpisah. Konfigurasi saat ini memakai
+KV `staging-E_POSYANDU_CACHE`, Queue `e-posyandu-jobs-staging`, bucket R2
+`e-posyandu-files-staging`, dan Pages `e-posyandu-staging`. Staging dimulai
+dengan `READ_REPLICA_MODE=primary-only`; jangan menambahkan service binding
+Neon staging sebelum replika staging dan secret-nya benar-benar tersedia.
+
+Jangan deploy frontend atau Worker staging sebelum `npm run env:check`
+berhasil. Perintah itu harus menerima tiga URL Supabase yang berbeda. Project
+development dan staging tidak boleh diisi data identitas atau kesehatan nyata.
+
 Salin template frontend yang sesuai menjadi file lokal tanpa akhiran `.example`. Nilai `VITE_*` bersifat publik; secret service-role tidak boleh berada di frontend.
 
 ## Urutan rilis
@@ -43,7 +53,15 @@ Salin template frontend yang sesuai menjadi file lokal tanpa akhiran `.example`.
 6. Terapkan migrasi di production.
 7. Deploy private Neon Read Worker production sebelum menjalankan `npm run worker:deploy`, lalu deploy Pages.
 
-Workflow [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) menjalankan TypeScript check, contract test, unit test Rust, build, dan E2E desktop/ponsel. Deploy production baru aktif setelah repository variable `AUTO_DEPLOY=true` dan secret `DATABASE_URL`, `CLOUDFLARE_API_TOKEN`, serta `CLOUDFLARE_ACCOUNT_ID` tersedia pada GitHub Environment `production`. Setelah deploy, smoke test memeriksa frontend, security headers, health API, dan OpenAPI.
+Worker dan migration `027` mengaktifkan TOTP MFA wajib. Uji pendaftaran QR,
+kode salah, login ulang, refresh sesi, logout, dan pemulihan akun di staging.
+Jangan menjalankan pengujian pendaftaran dari localhost selama localhost masih
+menunjuk Supabase production karena tindakan tersebut menambahkan faktor pada
+akun nyata. Frontend production memanggil `/api` di domain Pages; `_worker.js`
+meneruskannya ke API sehingga cookie `__Host-e-posyandu-session` tetap
+first-party di Safari/mobile.
+
+Workflow [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) menjalankan TypeScript check, contract test, unit test Rust, build, dan E2E Chrome/Safari desktop serta ponsel. Deploy production baru aktif setelah repository variable `AUTO_DEPLOY=true` dan secret `DATABASE_URL`, `CLOUDFLARE_API_TOKEN`, serta `CLOUDFLARE_ACCOUNT_ID` tersedia pada GitHub Environment `production`. Setelah deploy, smoke test memeriksa frontend, security headers termasuk endpoint laporan CSP, health API, OpenAPI, dan penolakan akses tanpa sesi.
 
 Smoke test production juga berjalan setiap enam jam melalui `deployment-smoke.yml`. Pemeriksaan manual dapat dijalankan tanpa kredensial:
 
@@ -53,7 +71,7 @@ SMOKE_API_URL='https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev' 
 npm run deployment:smoke
 ```
 
-Untuk staging, `SMOKE_ACCESS_TOKEN` opsional dapat diisi sesaat saat menjalankan manual. Token tersebut menambahkan pemeriksaan endpoint riwayat berautentikasi dan memastikan API tidak mengembalikan lebih dari 10 data per halaman. Jangan simpan access token sebagai file atau secret jangka panjang.
+Untuk staging, `SMOKE_SESSION_COOKIE` opsional dapat diisi sesaat dengan pasangan nama/nilai cookie sesi AAL2, misalnya `__Host-e-posyandu-session=...`. Alternatif kompatibilitasnya adalah `SMOKE_ACCESS_TOKEN` yang wajib memiliki klaim `aal2`. Keduanya menambahkan pemeriksaan endpoint sesi serta riwayat terautentikasi dan memastikan token tidak muncul di respons. Kredensial ini berumur pendek: jangan simpan sebagai file, log, atau secret jangka panjang. Workflow terjadwal tetap menguji penolakan sesi anonim ketika secret tidak tersedia.
 
 ## Audit dan dokumentasi API
 
@@ -136,7 +154,7 @@ Setelah mutasi berhasil, user terkait dipaksa membaca Supabase selama 6 menit. C
 
 Setiap sesi yang berhasil diverifikasi oleh Supabase menyimpan salinan scope akses ke KV menggunakan hash SHA-256 token, bukan token mentah. Salinan hanya berisi user ID, role, desa, dan posyandu yang diperlukan untuk pembatasan data. Masa berlakunya mengikuti waktu kedaluwarsa JWT dengan batas maksimum satu jam dan terus diperbarui selama Supabase sehat.
 
-Saat Supabase gagal dijangkau, mengembalikan `429`, atau `5xx`, backend boleh memakai scope tersebut hanya untuk `GET` dan query GraphQL baca. Data tetap dibatasi sesuai role serta wilayah lalu dibaca dari Neon. Status `401` atau `403` tidak pernah memakai fallback karena dapat menunjukkan token atau izin yang tidak sah. Login baru, refresh token, CRUD, sinkronisasi tulis, audit, dan seluruh perubahan data tetap bergantung pada Supabase serta tidak pernah dialihkan ke Neon.
+Saat Supabase gagal dijangkau, mengembalikan `429`, atau `5xx`, backend boleh memakai scope tersebut hanya untuk `GET` dan query GraphQL baca. Data tetap dibatasi sesuai role serta wilayah lalu dibaca dari Neon. Scope hanya dibuat dari sesi AAL2. Status `401` atau `403` tidak pernah memakai fallback karena dapat menunjukkan token atau izin yang tidak sah. Login baru, refresh token, CRUD, sinkronisasi tulis, audit, dan seluruh perubahan data tetap bergantung pada Supabase serta tidak pernah dialihkan ke Neon.
 
 Mode ini menjaga daftar dan dashboard tetap dapat dibuka dalam gangguan singkat, bukan menjadikan Neon primary kedua. Bila sesi belum pernah diverifikasi, JWT sudah kedaluwarsa, KV tidak tersedia, replika belum siap, atau gangguan berlangsung lebih dari satu jam, pengguna harus menunggu Supabase pulih. Pantau event `emergency_read_session`; setiap event harus mencantumkan `writes: blocked` dan tidak boleh berisi token atau data balita.
 
@@ -153,6 +171,8 @@ npm run monitor:system
 Laporan JSON dapat disimpan dengan `MONITOR_OUTPUT_PATH=/lokasi/laporan.json`. Hasil terjadwal disimpan sebagai artifact GitHub selama 14 hari agar tren kegagalan dapat ditelusuri.
 
 Error JavaScript setelah pengguna login dikirim ke `POST /api/v1/client-errors`. Payload hanya berisi jenis error, route tanpa query, sumber, dan frame stack; pesan error serta data formulir tidak dikirim.
+
+Pelanggaran Content Security Policy dikirim browser ke `POST /api/v1/security/csp-report`. Endpoint publik ini membatasi isi 16 KiB dan 60 laporan per IP per jam. Log hanya menyimpan directive, disposition, status HTTP, URL dokumen tanpa kredensial/query/fragment, serta origin sumber yang diblokir. IP mentah, `script-sample`, policy lengkap, referrer, NIK, dan isi form tidak dicatat.
 
 Cron memeriksa `RUST_WORKER_HEALTH_URL` setiap 10 menit pada Senin-Jumat pukul 07.00-16.00 WIB. Di luar jam tersebut Render dibiarkan sleep. Status disimpan di KV dan dibaca dashboard hanya oleh Admin Gizi. Untuk alarm di luar aplikasi, isi secret HTTPS `MONITORING_ALERT_WEBHOOK_URL`, atau isi `RESEND_API_KEY`, `MONITORING_ALERT_EMAIL_TO`, dan `ERROR_REPORT_EMAIL_FROM`. Alarm dikirim saat kegagalan ketiga dan sekali lagi saat layanan pulih, tanpa membawa data balita.
 

@@ -1,11 +1,15 @@
 import Native, { createRoot } from './runtime/dom';
 import {
+  enrollMfa,
   getAuth,
   getCurrentAccessProfile,
   initializeApp,
   restoreAuthSession,
   signInWithPassword,
-  signOut
+  signOut,
+  verifyMfa,
+  type MfaStatus,
+  type SignInResult
 } from './api/authApi';
 import { AppLoadingSkeleton } from './ui/skeleton';
 
@@ -167,6 +171,10 @@ export function mountApp(container: HTMLElement): Cleanup {
       onLogin: async (username, password, turnstileToken) => {
         const dashboardModule = import('./pages/DashboardApp');
         const login = await signInWithPassword(auth, username, password, turnstileToken);
+        if (login.mfa?.required && login.mfa.state !== 'verified') {
+          await renderMfa(login.mfa);
+          return;
+        }
         const profile = login.profile || await getCurrentAccessProfile();
         const user = { role: profile.role, desa: profile.desa, posyandu: profile.posyandu };
         saveStoredUser(user);
@@ -179,6 +187,30 @@ export function mountApp(container: HTMLElement): Cleanup {
     await signOut(auth);
     clearStoredUser();
     window.sessionStorage.removeItem(IDLE_ACTIVITY_KEY);
+  };
+
+  const completeMfaLogin = async (result: SignInResult) => {
+    const profile = result.profile || await getCurrentAccessProfile();
+    const user = { role: profile.role, desa: profile.desa, posyandu: profile.posyandu };
+    saveStoredUser(user);
+    await renderDashboard(user);
+  };
+
+  const renderMfa = async (initial: MfaStatus) => {
+    if (disposed) return;
+    showLoading(container);
+    const { mountMfaPage } = await import('./pages/MfaPage');
+    if (disposed) return;
+    replaceView(() => mountMfaPage(container, {
+      initial,
+      onEnroll: enrollMfa,
+      onVerify: (code) => verifyMfa(auth, code),
+      onSuccess: completeMfaLogin,
+      onCancel: async () => {
+        await clearSession();
+        await renderLogin();
+      }
+    }));
   };
 
   const renderDashboard = async (user: UserRole, preload?: Promise<DashboardModule>) => {

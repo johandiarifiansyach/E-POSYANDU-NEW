@@ -17,7 +17,7 @@ Dokumen ini membedakan komponen yang sudah aktif, fondasi yang sudah tersedia, d
 | 11 | Health check | Aktif | `/api/v1/health` ringan dan tidak membaca data balita. |
 | 12 | Security headers | Aktif | CSP, HSTS, Referrer Policy, CORS terbatas, dan header browser lain. |
 | 13 | PWA installable | Aktif | Manifest, standalone mode, icon, service worker, dan offline shell. |
-| 14 | Accessibility | Berjalan | Bahasa dokumen, label form, keyboard, skip link, fokus, dan live region tersedia; audit WCAG penuh tetap berkala. |
+| 14 | Accessibility | Aktif dan diuji | Bahasa dokumen, label form, keyboard, skip link, fokus, live region, serta audit otomatis WCAG AA pada Chrome/Safari desktop dan ponsel tersedia; audit manual tetap berkala. |
 | 15 | Error tracking | Aktif | Error frontend terautentikasi masuk structured log backend tanpa data formulir. |
 | 16 | Background job/queue | Aktif | Cloudflare Queue dan worker gRPC menangani validasi impor, laporan, ekspor, dan sinkronisasi berat. |
 | 17 | Cloudflare R2 | Aktif | Upload/download privat, retensi 7 hari, dan pengaman kapasitas 9 GiB ke 8 GiB aktif. |
@@ -26,5 +26,8 @@ Dokumen ini membedakan komponen yang sudah aktif, fondasi yang sudah tersedia, d
 | 20 | Multi-language | Ditunda | Bahasa Indonesia tetap bahasa tunggal sampai kebutuhan pengguna terkonfirmasi. |
 | 21 | Data export | Aktif | XLS/XLSX dan CSV aktif; permintaan data ekspornya diaudit serta tetap dibatasi cakupan wilayah akun. |
 | 22 | User feedback | Ditunda | Form bug/saran akan dibuat setelah tujuan penerima dan retensi laporan ditetapkan. |
+| 23 | Sesi HttpOnly dan MFA | Siap diuji staging | BFF same-origin, cookie HttpOnly, TOTP AAL2, dan RLS restriktif tersedia; aktivasi production menunggu Supabase staging serta uji pemulihan akun. |
+| 24 | Tata kelola privasi | Baseline siap disahkan | Inventaris data, akses, retensi 25 tahun RME, ekspor, hak subjek, dan respons insiden terdokumentasi; pengesahan Puskesmas/Dinas tetap wajib. |
+| 25 | Pelaporan CSP | Siap diuji staging | Endpoint same-origin membatasi ukuran/laju dan membuang query, referrer, script sample, serta IP mentah. |
 
 Prioritas berikutnya adalah mengisi secret backup/restore dan token akun uji pada GitHub Environment, menuntaskan project Supabase development dan staging yang terpisah, serta memperluas strict TypeScript secara bertahap. MQTT tetap ditunda sampai tersedia perangkat IoT nyata.

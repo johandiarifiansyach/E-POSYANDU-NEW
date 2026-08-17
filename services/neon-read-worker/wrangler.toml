@@ -35,4 +35,6 @@ enabled = true
 head_sampling_rate = 1.0
 
 [env.staging.triggers]
-crons = ["*/10 * * * *"]
+# Aktifkan jadwal hanya setelah database dan seluruh secret replika staging
+# tersedia. Worker tetap private sebagai target Service Binding API staging.
+crons = []

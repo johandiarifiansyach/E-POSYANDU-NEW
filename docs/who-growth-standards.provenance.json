@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "standard": "WHO Child Growth Standards 2006/2007",
+  "publisher": "World Health Organization",
+  "verifiedAt": "2026-08-17",
+  "method": "LMS/Box-Cox",
+  "ageScope": {
+    "generalMonths": [0, 60],
+    "armCircumferenceMonths": [3, 60],
+    "headCircumferenceMonths": [0, 60]
+  },
+  "landingPages": {
+    "methods2006": "https://www.who.int/publications/i/item/924154693X",
+    "methods2007": "https://iris.who.int/bitstream/handle/10665/43706/9789241547185_eng.pdf?sequence=1",
+    "weightForAge": "https://www.who.int/tools/child-growth-standards/standards/weight-for-age",
+    "lengthHeightForAge": "https://www.who.int/tools/child-growth-standards/standards/length-height-for-age",
+    "weightForLengthHeight": "https://www.who.int/tools/child-growth-standards/standards/weight-for-length-height",
+    "bmiForAge": "https://www.who.int/toolkits/child-growth-standards/standards/body-mass-index-for-age-bmi-for-age",
+    "armCircumferenceForAge": "https://www.who.int/tools/child-growth-standards/standards/arm-circumference-for-age",
+    "headCircumferenceForAge": "https://www.who.int/tools/child-growth-standards/standards/head-circumference-for-age"
+  },
+  "sourceArtifacts": [
+    {
+      "id": "wfa-girls-0-5",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/weight-for-age/wfa_girls_0-to-5-years_zscores.xlsx?sfvrsn=4c03b8db_7",
+      "sha256": "01e9a6fda2f3723dbc74d3c86bfbfcb9f6d474367d1d7b4a804501a2debd2ef1"
+    },
+    {
+      "id": "wfa-boys-0-5",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/weight-for-age/wfa_boys_0-to-5-years_zscores.xlsx?sfvrsn=97a05331_9",
+      "sha256": "f8f5a77b944ff7a8c1524e76f9d33f8a93cc423d23c2e7f2b10ba6b96a428e69"
+    },
+    {
+      "id": "lhfa-girls-0-2",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/length-height-for-age/lhfa_girls_0-to-2-years_zscores.xlsx?sfvrsn=e9e66a95_11",
+      "sha256": "6757f5eb96b51ab5cdb4828105929c78b1fb3d73b0fd8fa65682ad9f60f8c083"
+    },
+    {
+      "id": "lhfa-girls-2-5",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/length-height-for-age/lhfa_girls_2-to-5-years_zscores.xlsx?sfvrsn=2ec187b9_11",
+      "sha256": "a976c56a6d36885cc32bf77c5539ca066e396ef2adad06011cd71d9eb0f0eb5c"
+    },
+    {
+      "id": "lhfa-boys-0-2",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/length-height-for-age/lhfa_boys_0-to-2-years_zscores.xlsx?sfvrsn=30e044c_9",
+      "sha256": "ccfd8e455141c9a39dd728d99b7d7e080a925b06ea4a4d7592229665713dba54"
+    },
+    {
+      "id": "lhfa-boys-2-5",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/length-height-for-age/lhfa_boys_2-to-5-years_zscores.xlsx?sfvrsn=17e5ad91_9",
+      "sha256": "a44ed06039e0a9dd6920e4a4d928395c541c9732662e49eacd489d2194ccc80d"
+    },
+    {
+      "id": "bmi-girls-0-2",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/body-mass-index-for-age/bmi_girls_0-to-2-years_zscores.xlsx?sfvrsn=2be9859c_7",
+      "sha256": "daf06e553ef31c7100cbb7f27fa9ddc8a9e9326167865b07ee8c1268931e1eb6"
+    },
+    {
+      "id": "bmi-girls-2-5",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/body-mass-index-for-age/bmi_girls_2-to-5-years_zscores.xlsx?sfvrsn=452aca36_7",
+      "sha256": "9e27264b319e9290fc32b7896894da6c5b41b4f471695f2e13016cae8f329973"
+    },
+    {
+      "id": "bmi-boys-0-2",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/body-mass-index-for-age/bmi_boys_0-to-2-years_zcores.xlsx?sfvrsn=df725cc9_7",
+      "sha256": "1d5e9e0062795ec5e7b06f1e36c23bea32d6f554840bef5a755cc0b47858e1b0"
+    },
+    {
+      "id": "bmi-boys-2-5",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/body-mass-index-for-age/bmi_boys_2-to-5-years_zscores.xlsx?sfvrsn=73010c9b_5",
+      "sha256": "874063e82b4592e4d2dc8b7534861d759541548abe38269fba50ba3861e9aff1"
+    },
+    {
+      "id": "wfl-girls",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/weight-for-length-height/wfl_girls_0-to-2-years_zscores.xlsx?sfvrsn=288bc4e4_7",
+      "sha256": "689ec4e19b9112de14f1715aa85e583f0a466fea3adc9ad966e32d87254f8084"
+    },
+    {
+      "id": "wfl-boys",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/weight-for-length-height/wfl_boys_0-to-2-years_zscores.xlsx?sfvrsn=e27a9da3_7",
+      "sha256": "10158fa492315ae26d8ac993dbdb12e7b79cedf56e872ec6ba424644e5e29ad0"
+    },
+    {
+      "id": "wfh-girls",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/weight-for-length-height/wfh_girls_2-to-5-years_zscores.xlsx?sfvrsn=4d66af6a_7",
+      "sha256": "5d1263d799e6a4fb1292d8ff83fed9e6d686e85353db441c18d9f4c36856a3f7"
+    },
+    {
+      "id": "wfh-boys",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/weight-for-length-height/wfh_boys_2-to-5-years_zscores.xlsx?sfvrsn=202c0545_7",
+      "sha256": "e838f4678547ba76399e6f57f0cfcceebb3894eb2b213003b43c014692cc76e8"
+    },
+    {
+      "id": "acfa-girls",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/arm-circumference-for-age/acfa-girls-3-5-zscores.xlsx?sfvrsn=df311d8b_13",
+      "sha256": "98168bd31da5c2e661fe286760f1332161d757f3d7293f13a9dd942358083900"
+    },
+    {
+      "id": "acfa-boys",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/arm-circumference-for-age/acfa-boys-3-5-zscores.xlsx?sfvrsn=13c24647_8",
+      "sha256": "5a0d7f5345068935efc5e0042de69363e9f268d099b43362f5f4710e2fa8a8da"
+    },
+    {
+      "id": "hcfa-girls",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/head-circumference-for-age/hcfa-girls-0-5-zscores.xlsx?sfvrsn=8f959f88_6",
+      "sha256": "134cd53ca39f0f55b0b3c2bc6c94278c83d9945842bc64088464f73effcd12e7"
+    },
+    {
+      "id": "hcfa-boys",
+      "url": "https://cdn.who.int/media/docs/default-source/child-growth/child-growth-standards/indicators/head-circumference-for-age/hcfa-boys-0-5-zscores.xlsx?sfvrsn=adf57aa4_8",
+      "sha256": "296038a15de807ee74940627bd1ddc638e68b223b410b4ca3ccf1ff4a8b5770a"
+    }
+  ],
+  "localArtifacts": [
+    {
+      "path": "backend/data/anthropometry.json",
+      "sha256": "9973fec065b08cda78130faaff4cc7a7f31baeab75443a0596dd7d417cc6655a"
+    },
+    {
+      "path": "services/nutrition-grpc/data/anthropometry.json",
+      "sha256": "9973fec065b08cda78130faaff4cc7a7f31baeab75443a0596dd7d417cc6655a"
+    },
+    {
+      "path": "frontend/src/data/anthropometry.ts",
+      "sha256": "73e52f1654a026ebb4d4eb1bbafdebf7e2367a7f0d11568bae711e406208b5e8"
+    },
+    {
+      "path": "frontend/src/data/whoGrowthLms.ts",
+      "sha256": "055e49c514b33caf1fa056e47cfb4506d6b0529d933508e7863924a96f1ce107"
+    }
+  ],
+  "expectedRowsPerSex": {
+    "weightForAge": 61,
+    "lengthHeightForAge": 61,
+    "bmiForAge": 61,
+    "weightForLength": 131,
+    "weightForHeight": 111,
+    "armCircumferenceForAge": 58,
+    "headCircumferenceForAge": 61
+  }
+}

@@ -23,7 +23,7 @@ Alamat produksi:
 ## Kontrak API
 
 - REST `/api/v1/*`: autentikasi, CRUD, sinkronisasi offline, dan ekspor.
-- GraphQL `POST /api/v1/graphql`: query baca dashboard, halaman balita, dan ASI eksklusif. Endpoint ini memakai token serta pembatasan wilayah yang sama dengan REST.
+- GraphQL `POST /api/v1/graphql`: query baca dashboard, halaman balita, dan ASI eksklusif. Endpoint ini memakai sesi HttpOnly AAL2 serta pembatasan wilayah yang sama dengan REST. Bearer token tetap diterima hanya untuk smoke test/operasi terkontrol.
 - gRPC `services/nutrition-grpc`: validasi impor, kalkulasi laporan gizi, normalisasi sinkronisasi, dan pembuatan XLSX/PDF pada jaringan privat. Service ini tidak dipanggil langsung oleh browser dan tidak dijalankan di runtime Cloudflare Worker.
 - Cloudflare Queue `e-posyandu-jobs`: antrean pekerjaan berat agar login dan CRUD tetap responsif. Status job dibaca melalui REST `/api/v1/jobs/{jobId}`.
 

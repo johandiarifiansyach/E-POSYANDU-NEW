@@ -14,6 +14,10 @@ mod api;
 mod graphql;
 
 const SCOPE_CACHE_TTL_MS: f64 = 90_000.0;
+const BROWSER_SESSION_PREFIX: &str = "auth:browser-session:v1";
+const BROWSER_SESSION_TTL_SECONDS: u64 = 8 * 60 * 60;
+const BROWSER_SESSION_COOKIE: &str = "__Host-e-posyandu-session";
+const DEVELOPMENT_SESSION_COOKIE: &str = "e-posyandu-session";
 const VERIFIED_SCOPE_CACHE_PREFIX: &str = "auth:verified-scope:v1";
 const VERIFIED_SCOPE_MAX_TTL_SECONDS: u64 = 3_600;
 const VERIFIED_SCOPE_MIN_TTL_SECONDS: u64 = 60;
@@ -23,6 +27,9 @@ const LOGIN_PAIR_WINDOW_SECONDS: u64 = 60;
 const LOGIN_IP_MAX_ATTEMPTS: u8 = 30;
 const LOGIN_ACCOUNT_MAX_ATTEMPTS: u8 = 10;
 const LOGIN_PAIR_MAX_ATTEMPTS: u8 = 5;
+const CSP_REPORT_WINDOW_SECONDS: u64 = 3_600;
+const CSP_REPORT_MAX_ATTEMPTS: u8 = 60;
+const CSP_REPORT_MAX_BODY_BYTES: usize = 16 * 1024;
 const SCOPE_CACHE_MAX_ENTRIES: usize = 256;
 const INTERNAL_REQUEST_MAX_AGE_SECONDS: f64 = 60.0;
 const NUTRITION_BATCH_MAX_ITEMS: usize = 10_000;
@@ -47,6 +54,16 @@ struct AccessScope {
 struct CachedScope {
     expires_at: f64,
     scope: AccessScope,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct BrowserSession {
+    access_token: String,
+    refresh_token: String,
+    user: SupabaseUser,
+    profile: AccessScope,
+    mfa_factor_id: Option<String>,
+    updated_at: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -148,18 +165,49 @@ struct LoginAccount {
     active: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct SupabaseUser {
     id: String,
     email: Option<String>,
+    #[serde(default)]
+    factors: Vec<MfaFactor>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct MfaFactor {
+    id: String,
+    status: String,
+    factor_type: String,
 }
 
 #[derive(Deserialize)]
 struct SupabaseSession {
     access_token: String,
     refresh_token: String,
-    expires_in: i64,
     user: SupabaseUser,
+}
+
+#[derive(Deserialize)]
+struct MfaChallenge {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct MfaEnrollment {
+    id: String,
+    totp: MfaTotpEnrollment,
+}
+
+#[derive(Deserialize)]
+struct MfaTotpEnrollment {
+    qr_code: String,
+    secret: String,
+    uri: String,
+}
+
+#[derive(Deserialize)]
+struct MfaVerifyBody {
+    code: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -288,8 +336,12 @@ fn is_allowed_nonproduction_post(path: &str) -> bool {
     matches!(
         path,
         "/api/v1/auth/login"
+            | "/api/v1/auth/logout"
+            | "/api/v1/auth/mfa/enroll"
+            | "/api/v1/auth/mfa/verify"
             | "/api/v1/graphql"
             | "/api/v1/client-errors"
+            | "/api/v1/security/csp-report"
             | "/api/v1/ai/growth-summary"
     )
 }
@@ -370,9 +422,10 @@ fn with_api_headers(
         "Permissions-Policy",
         "accelerometer=(), autoplay=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()",
     )?;
-    headers.set("Vary", "Origin, Authorization, Accept-Encoding")?;
+    headers.set("Vary", "Origin, Cookie, Authorization, Accept-Encoding")?;
     if let Some(origin) = origin {
         headers.set("Access-Control-Allow-Origin", origin)?;
+        headers.set("Access-Control-Allow-Credentials", "true")?;
         headers.set(
             "Access-Control-Allow-Methods",
             "GET, POST, PATCH, DELETE, OPTIONS",
@@ -1264,6 +1317,168 @@ async fn clear_login_attempt(env: &Env, ip: &str, username: &str) {
     clear_redis_login_attempt(env, ip, username).await;
 }
 
+async fn allow_csp_report(env: &Env, ip: &str) -> ApiResult<()> {
+    let key = hashed_key("csp-report:ip:v1", ip);
+    if let Some(payload) = redis_commands(
+        env,
+        json!([["INCR", key], ["EXPIRE", key, CSP_REPORT_WINDOW_SECONDS]]),
+    )
+    .await
+    {
+        let count = payload
+            .as_array()
+            .and_then(|results| results.first())
+            .and_then(|result| result.get("result"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(CSP_REPORT_MAX_ATTEMPTS.into());
+        if count > CSP_REPORT_MAX_ATTEMPTS.into() {
+            return Err(ApiFailure::new(
+                429,
+                "Terlalu banyak laporan keamanan. Coba lagi nanti.",
+            ));
+        }
+        return Ok(());
+    }
+
+    allow_local_login_attempt(key, CSP_REPORT_MAX_ATTEMPTS, CSP_REPORT_WINDOW_SECONDS)
+        .map_err(|_| ApiFailure::new(429, "Terlalu banyak laporan keamanan. Coba lagi nanti."))
+}
+
+fn safe_csp_token(value: Option<&serde_json::Value>, max_chars: usize) -> String {
+    value
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | ':' | '/' | '.')
+        })
+        .take(max_chars)
+        .collect()
+}
+
+fn safe_csp_document_url(value: Option<&serde_json::Value>) -> String {
+    let Some(value) = value.and_then(serde_json::Value::as_str) else {
+        return String::new();
+    };
+    let Ok(mut url) = url::Url::parse(value) else {
+        return String::new();
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return String::new();
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    url.set_username("").ok();
+    url.set_password(None).ok();
+    url.to_string().chars().take(300).collect()
+}
+
+fn safe_csp_blocked_url(value: Option<&serde_json::Value>) -> String {
+    let Some(value) = value.and_then(serde_json::Value::as_str) else {
+        return String::new();
+    };
+    if let Ok(url) = url::Url::parse(value) {
+        if matches!(url.scheme(), "http" | "https") {
+            return url.origin().ascii_serialization();
+        }
+        return format!("{}:", url.scheme());
+    }
+    safe_csp_token(Some(&serde_json::Value::String(value.into())), 64)
+}
+
+fn normalized_csp_report(payload: &serde_json::Value) -> ApiResult<serde_json::Value> {
+    let payload = payload
+        .as_array()
+        .and_then(|reports| {
+            reports
+                .iter()
+                .find(|report| {
+                    report.get("type").and_then(serde_json::Value::as_str) == Some("csp-violation")
+                })
+                .or_else(|| reports.first())
+        })
+        .unwrap_or(payload);
+    let report = payload
+        .get("csp-report")
+        .or_else(|| payload.get("body"))
+        .unwrap_or(payload);
+    if !report.is_object() {
+        return Err(ApiFailure::new(422, "Laporan CSP tidak valid."));
+    }
+    let effective_directive = safe_csp_token(
+        report
+            .get("effective-directive")
+            .or_else(|| report.get("effectiveDirective"))
+            .or_else(|| report.get("violated-directive")),
+        64,
+    );
+    if effective_directive.is_empty() {
+        return Err(ApiFailure::new(422, "Laporan CSP tidak valid."));
+    }
+    let status_code = report
+        .get("status-code")
+        .or_else(|| report.get("statusCode"))
+        .and_then(serde_json::Value::as_u64)
+        .filter(|status| (100..=599).contains(status));
+    Ok(json!({
+        "effective_directive": effective_directive,
+        "disposition": safe_csp_token(report.get("disposition"), 16),
+        "document_url": safe_csp_document_url(
+            report.get("document-uri").or_else(|| report.get("documentURL"))
+        ),
+        "blocked_origin": safe_csp_blocked_url(
+            report.get("blocked-uri").or_else(|| report.get("blockedURL"))
+        ),
+        "status_code": status_code,
+    }))
+}
+
+async fn csp_report(mut request: Request, env: &Env) -> ApiResult<serde_json::Value> {
+    let content_type = request
+        .headers()
+        .get("Content-Type")
+        .map_err(|_| ApiFailure::new(422, "Laporan CSP tidak valid."))?
+        .unwrap_or_default();
+    let media_type = content_type.split(';').next().unwrap_or_default().trim();
+    if !matches!(
+        media_type,
+        "application/csp-report" | "application/reports+json" | "application/json"
+    ) {
+        return Err(ApiFailure::new(422, "Tipe laporan CSP tidak didukung."));
+    }
+    let content_length = request
+        .headers()
+        .get("Content-Length")
+        .ok()
+        .flatten()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    if content_length > CSP_REPORT_MAX_BODY_BYTES {
+        return Err(ApiFailure::new(413, "Laporan CSP terlalu besar."));
+    }
+    allow_csp_report(env, &client_ip(&request)).await?;
+    let body = request
+        .text()
+        .await
+        .map_err(|_| ApiFailure::new(422, "Laporan CSP tidak valid."))?;
+    if body.len() > CSP_REPORT_MAX_BODY_BYTES {
+        return Err(ApiFailure::new(413, "Laporan CSP terlalu besar."));
+    }
+    let payload = serde_json::from_str::<serde_json::Value>(&body)
+        .map_err(|_| ApiFailure::new(422, "Laporan CSP tidak valid."))?;
+    let report = normalized_csp_report(&payload)?;
+    worker::console_log!(
+        "{}",
+        json!({
+            "level": "warn",
+            "event": "csp_violation",
+            "report": report,
+            "environment": environment_name(env),
+        })
+    );
+    Ok(json!({ "accepted": true }))
+}
+
 fn cached_scope(token: &str) -> Option<AccessScope> {
     let now = now_ms();
     SCOPE_CACHE.with(|cache| {
@@ -1288,13 +1503,34 @@ fn now_seconds() -> u64 {
     (now_ms() / 1_000.0).floor().max(0.0) as u64
 }
 
-fn jwt_expiration_seconds(token: &str) -> Option<u64> {
+fn jwt_payload(token: &str) -> Option<serde_json::Value> {
     let encoded_payload = token.split('.').nth(1)?;
     let payload = URL_SAFE_NO_PAD.decode(encoded_payload).ok()?;
-    serde_json::from_slice::<serde_json::Value>(&payload)
-        .ok()?
-        .get("exp")?
-        .as_u64()
+    serde_json::from_slice(&payload).ok()
+}
+
+fn jwt_expiration_seconds(token: &str) -> Option<u64> {
+    jwt_payload(token)?.get("exp")?.as_u64()
+}
+
+fn jwt_assurance_level(token: &str) -> &str {
+    match jwt_payload(token)
+        .and_then(|payload| {
+            payload
+                .get("aal")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .as_deref()
+    {
+        Some("aal2") => "aal2",
+        _ => "aal1",
+    }
+}
+
+fn mfa_is_required(env: &Env) -> bool {
+    optional_secret(env, "MFA_ENFORCEMENT")
+        .is_some_and(|value| value.eq_ignore_ascii_case("required"))
 }
 
 fn verified_scope_is_valid(scope: &AccessScope) -> bool {
@@ -1468,6 +1704,163 @@ async fn request_value(
     Ok((status, data))
 }
 
+fn browser_session_cookie_name(env: &Env) -> &'static str {
+    if environment_name(env) == "development" {
+        DEVELOPMENT_SESSION_COOKIE
+    } else {
+        BROWSER_SESSION_COOKIE
+    }
+}
+
+fn browser_session_cookie(request: &Request, env: &Env) -> Option<String> {
+    let cookie_name = browser_session_cookie_name(env);
+    request
+        .headers()
+        .get("Cookie")
+        .ok()
+        .flatten()?
+        .split(';')
+        .filter_map(|part| part.trim().split_once('='))
+        .find_map(|(name, value)| {
+            (name == cookie_name
+                && (32..=128).contains(&value.len())
+                && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then(|| value.to_ascii_lowercase())
+        })
+}
+
+fn browser_session_key(identifier: &str) -> String {
+    hashed_key(BROWSER_SESSION_PREFIX, identifier)
+}
+
+fn new_browser_session_identifier(refresh_token: &str, request_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(refresh_token.as_bytes());
+    digest.update(b"\0");
+    digest.update(request_id.as_bytes());
+    digest.update(b"\0");
+    digest.update(now_iso().as_bytes());
+    hex::encode(digest.finalize())
+}
+
+fn set_browser_session_cookie(env: &Env, identifier: &str) -> String {
+    let name = browser_session_cookie_name(env);
+    if environment_name(env) == "development" {
+        format!("{name}={identifier}; Path=/; HttpOnly; SameSite=Lax")
+    } else {
+        format!("{name}={identifier}; Path=/; HttpOnly; Secure; SameSite=Strict")
+    }
+}
+
+fn clear_browser_session_cookie(env: &Env) -> String {
+    let name = browser_session_cookie_name(env);
+    if environment_name(env) == "development" {
+        format!("{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+    } else {
+        format!("{name}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0")
+    }
+}
+
+async fn write_browser_session(
+    env: &Env,
+    identifier: &str,
+    session: &BrowserSession,
+) -> ApiResult<()> {
+    let cache = env
+        .kv("E_POSYANDU_CACHE")
+        .map_err(|_| ApiFailure::new(503, "Penyimpanan sesi aman belum tersedia."))?;
+    let payload = serde_json::to_string(session)
+        .map_err(|_| ApiFailure::new(500, "Sesi aman tidak dapat disimpan."))?;
+    cache
+        .put(&browser_session_key(identifier), payload)
+        .map_err(|_| ApiFailure::new(503, "Penyimpanan sesi aman belum tersedia."))?
+        .expiration_ttl(BROWSER_SESSION_TTL_SECONDS)
+        .execute()
+        .await
+        .map_err(|_| ApiFailure::new(503, "Sesi aman tidak dapat disimpan."))
+}
+
+async fn read_browser_session(env: &Env, identifier: &str) -> Option<BrowserSession> {
+    let cache = env.kv("E_POSYANDU_CACHE").ok()?;
+    let payload = cache
+        .get(&browser_session_key(identifier))
+        .text()
+        .await
+        .ok()??;
+    serde_json::from_str(&payload).ok()
+}
+
+async fn delete_browser_session(env: &Env, identifier: &str) {
+    let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
+        return;
+    };
+    let _ = cache.delete(&browser_session_key(identifier)).await;
+}
+
+async fn refresh_browser_session(
+    env: &Env,
+    identifier: &str,
+    current: &BrowserSession,
+) -> ApiResult<BrowserSession> {
+    let supabase_url = secret(env, "SUPABASE_URL")?
+        .trim_end_matches('/')
+        .to_owned();
+    let publishable_key = secret(env, "SUPABASE_PUBLISHABLE_KEY")?;
+    let (status, payload) = request_value(
+        format!("{supabase_url}/auth/v1/token?grant_type=refresh_token"),
+        Method::Post,
+        supabase_headers(&publishable_key, None)
+            .map_err(|_| ApiFailure::new(503, "Konfigurasi Supabase belum tersedia."))?,
+        Some(json!({ "refresh_token": current.refresh_token })),
+    )
+    .await?;
+    if status >= 300 {
+        delete_browser_session(env, identifier).await;
+        return Err(ApiFailure::new(401, "Sesi masuk tidak lagi valid."));
+    }
+    let refreshed: SupabaseSession = response_data(payload)?;
+    let session = BrowserSession {
+        access_token: refreshed.access_token,
+        refresh_token: refreshed.refresh_token,
+        user: refreshed.user,
+        profile: current.profile.clone(),
+        mfa_factor_id: current.mfa_factor_id.clone(),
+        updated_at: now_iso(),
+    };
+    write_browser_session(env, identifier, &session).await?;
+    cache_scope(session.access_token.clone(), session.profile.clone());
+    Ok(session)
+}
+
+async fn inject_browser_session_authorization(request: &mut Request, env: &Env) {
+    if request
+        .headers()
+        .get("Authorization")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    let Some(identifier) = browser_session_cookie(request, env) else {
+        return;
+    };
+    let Some(mut session) = read_browser_session(env, &identifier).await else {
+        return;
+    };
+    let expires_soon = jwt_expiration_seconds(&session.access_token)
+        .is_none_or(|expires_at| expires_at <= now_seconds().saturating_add(90));
+    if expires_soon {
+        let Ok(refreshed) = refresh_browser_session(env, &identifier, &session).await else {
+            return;
+        };
+        session = refreshed;
+    }
+    let _ = request.headers_mut().and_then(|headers| {
+        headers.set("Authorization", &format!("Bearer {}", session.access_token))
+    });
+}
+
 fn response_data<T: for<'a> Deserialize<'a>>(payload: serde_json::Value) -> ApiResult<T> {
     serde_json::from_value(payload)
         .map_err(|_| ApiFailure::new(503, "Respons layanan tidak dapat dibaca."))
@@ -1585,7 +1978,11 @@ fn schedule_login_attempt_clear(context: &Context, env: &Env, ip: &str, username
     });
 }
 
-async fn login(mut request: Request, env: &Env, context: &Context) -> ApiResult<serde_json::Value> {
+async fn login(
+    mut request: Request,
+    env: &Env,
+    context: &Context,
+) -> ApiResult<(serde_json::Value, String)> {
     let audit_request_id = request_id(&request);
     let remote_ip = client_ip(&request);
     let body = request
@@ -1710,8 +2107,18 @@ async fn login(mut request: Request, env: &Env, context: &Context) -> ApiResult<
         desa: account.village.clone(),
         posyandu: account.posyandu.clone(),
     };
-    cache_scope(session.access_token.clone(), profile.clone());
-    schedule_verified_scope_cache(context, env, &session.access_token, &profile);
+    let assurance_level = jwt_assurance_level(&session.access_token);
+    let mfa_pending = mfa_is_required(env) && assurance_level != "aal2";
+    let verified_factor_id = session
+        .user
+        .factors
+        .iter()
+        .find(|factor| factor.factor_type == "totp" && factor.status == "verified")
+        .map(|factor| factor.id.clone());
+    if !mfa_pending {
+        cache_scope(session.access_token.clone(), profile.clone());
+        schedule_verified_scope_cache(context, env, &session.access_token, &profile);
+    }
     schedule_login_attempt_clear(context, env, &remote_ip, &username);
     schedule_login_audit(
         context,
@@ -1720,20 +2127,236 @@ async fn login(mut request: Request, env: &Env, context: &Context) -> ApiResult<
         &username,
         Some(&account),
         "login_success",
-        "authenticated",
+        if mfa_pending {
+            "mfa_pending"
+        } else {
+            "authenticated"
+        },
+    );
+    let session_identifier =
+        new_browser_session_identifier(&session.refresh_token, &audit_request_id);
+    let browser_session = BrowserSession {
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+        user: session.user.clone(),
+        profile: profile.clone(),
+        mfa_factor_id: verified_factor_id.clone(),
+        updated_at: now_iso(),
+    };
+    write_browser_session(env, &session_identifier, &browser_session).await?;
+    Ok((
+        json!({
+            "user": { "id": session.user.id, "email": session.user.email },
+            "profile": {
+                "userId": profile.user_id,
+                "email": profile.email,
+                "role": profile.role,
+                "desa": profile.desa,
+                "posyandu": profile.posyandu
+            },
+            "mfa": if mfa_pending {
+                Some(json!({
+                    "required": true,
+                    "state": if verified_factor_id.is_some() { "challenge" } else { "enroll" }
+                }))
+            } else {
+                None
+            }
+        }),
+        session_identifier,
+    ))
+}
+
+async fn logout(request: &Request, env: &Env) -> serde_json::Value {
+    let Some(identifier) = browser_session_cookie(request, env) else {
+        return json!({ "signedOut": true });
+    };
+    if let Some(session) = read_browser_session(env, &identifier).await {
+        if let (Ok(supabase_url), Ok(publishable_key)) = (
+            secret(env, "SUPABASE_URL"),
+            secret(env, "SUPABASE_PUBLISHABLE_KEY"),
+        ) {
+            if let Ok(headers) = supabase_headers(&publishable_key, Some(&session.access_token)) {
+                let _ = request_value(
+                    format!("{}/auth/v1/logout", supabase_url.trim_end_matches('/')),
+                    Method::Post,
+                    headers,
+                    None,
+                )
+                .await;
+            }
+        }
+    }
+    delete_browser_session(env, &identifier).await;
+    json!({ "signedOut": true })
+}
+
+fn mfa_auth_headers(env: &Env, access_token: &str) -> ApiResult<(String, Headers)> {
+    let supabase_url = secret(env, "SUPABASE_URL")?
+        .trim_end_matches('/')
+        .to_owned();
+    let publishable_key = secret(env, "SUPABASE_PUBLISHABLE_KEY")?;
+    let headers = supabase_headers(&publishable_key, Some(access_token))
+        .map_err(|_| ApiFailure::new(503, "Konfigurasi MFA belum tersedia."))?;
+    Ok((supabase_url, headers))
+}
+
+async fn enroll_mfa(request: &Request, env: &Env) -> ApiResult<serde_json::Value> {
+    let identifier = browser_session_cookie(request, env)
+        .ok_or_else(|| ApiFailure::new(401, "Sesi masuk diperlukan."))?;
+    let mut session = read_browser_session(env, &identifier)
+        .await
+        .ok_or_else(|| ApiFailure::new(401, "Sesi masuk tidak lagi valid."))?;
+    if jwt_assurance_level(&session.access_token) == "aal2" {
+        return Ok(json!({ "state": "verified" }));
+    }
+    if let Some(factor_id) = session
+        .user
+        .factors
+        .iter()
+        .find(|factor| factor.factor_type == "totp" && factor.status == "verified")
+        .map(|factor| factor.id.clone())
+    {
+        session.mfa_factor_id = Some(factor_id);
+        write_browser_session(env, &identifier, &session).await?;
+        return Ok(json!({ "state": "challenge" }));
+    }
+
+    let (supabase_url, headers) = mfa_auth_headers(env, &session.access_token)?;
+    if let Some(previous_factor_id) = session.mfa_factor_id.take() {
+        let _ = request_value(
+            format!("{supabase_url}/auth/v1/factors/{previous_factor_id}"),
+            Method::Delete,
+            headers.clone(),
+            None,
+        )
+        .await;
+    }
+    let (status, payload) = request_value(
+        format!("{supabase_url}/auth/v1/factors"),
+        Method::Post,
+        headers,
+        Some(json!({
+            "factor_type": "totp",
+            "friendly_name": "E-Posyandu Gumukmas"
+        })),
+    )
+    .await?;
+    if status >= 300 {
+        return Err(ApiFailure::new(
+            503,
+            "Pendaftaran autentikator belum dapat dimulai.",
+        ));
+    }
+    let enrollment: MfaEnrollment = response_data(payload)?;
+    if enrollment.id.is_empty()
+        || enrollment.totp.qr_code.len() > 100_000
+        || !(enrollment.totp.qr_code.starts_with("data:image/svg+xml")
+            || enrollment.totp.qr_code.trim_start().starts_with("<svg"))
+        || !(16..=256).contains(&enrollment.totp.secret.len())
+        || !enrollment.totp.uri.starts_with("otpauth://")
+    {
+        return Err(ApiFailure::new(503, "Respons pendaftaran MFA tidak valid."));
+    }
+    session.mfa_factor_id = Some(enrollment.id);
+    session.updated_at = now_iso();
+    write_browser_session(env, &identifier, &session).await?;
+    Ok(json!({
+        "state": "enroll",
+        "qrCode": enrollment.totp.qr_code,
+        "secret": enrollment.totp.secret,
+        "uri": enrollment.totp.uri
+    }))
+}
+
+async fn verify_mfa(
+    mut request: Request,
+    env: &Env,
+    context: &Context,
+) -> ApiResult<serde_json::Value> {
+    let identifier = browser_session_cookie(&request, env)
+        .ok_or_else(|| ApiFailure::new(401, "Sesi masuk diperlukan."))?;
+    let session = read_browser_session(env, &identifier)
+        .await
+        .ok_or_else(|| ApiFailure::new(401, "Sesi masuk tidak lagi valid."))?;
+    let payload = request
+        .json::<MfaVerifyBody>()
+        .await
+        .map_err(|_| ApiFailure::new(422, "Kode autentikator tidak valid."))?;
+    let code = payload.code.unwrap_or_default();
+    if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(ApiFailure::new(422, "Masukkan 6 digit kode autentikator."));
+    }
+    let factor_id = session
+        .mfa_factor_id
+        .clone()
+        .ok_or_else(|| ApiFailure::new(409, "Pendaftaran MFA belum dimulai."))?;
+    let (supabase_url, headers) = mfa_auth_headers(env, &session.access_token)?;
+    let (status, challenge_payload) = request_value(
+        format!("{supabase_url}/auth/v1/factors/{factor_id}/challenge"),
+        Method::Post,
+        headers.clone(),
+        Some(json!({})),
+    )
+    .await?;
+    if status >= 300 {
+        return Err(ApiFailure::new(
+            429,
+            "Kode terlalu sering dicoba. Tunggu lalu coba lagi.",
+        ));
+    }
+    let challenge: MfaChallenge = response_data(challenge_payload)?;
+    let (status, verified_payload) = request_value(
+        format!("{supabase_url}/auth/v1/factors/{factor_id}/verify"),
+        Method::Post,
+        headers,
+        Some(json!({ "challenge_id": challenge.id, "code": code })),
+    )
+    .await?;
+    if status >= 300 {
+        return Err(ApiFailure::new(
+            401,
+            "Kode autentikator tidak benar atau sudah kedaluwarsa.",
+        ));
+    }
+    let verified: SupabaseSession = response_data(verified_payload)?;
+    if verified.user.id != session.profile.user_id
+        || jwt_assurance_level(&verified.access_token) != "aal2"
+    {
+        return Err(ApiFailure::new(403, "Verifikasi MFA belum mencapai AAL2."));
+    }
+    let browser_session = BrowserSession {
+        access_token: verified.access_token,
+        refresh_token: verified.refresh_token,
+        user: verified.user.clone(),
+        profile: session.profile.clone(),
+        mfa_factor_id: Some(factor_id),
+        updated_at: now_iso(),
+    };
+    write_browser_session(env, &identifier, &browser_session).await?;
+    cache_scope(
+        browser_session.access_token.clone(),
+        browser_session.profile.clone(),
+    );
+    schedule_verified_scope_cache(
+        context,
+        env,
+        &browser_session.access_token,
+        &browser_session.profile,
     );
     Ok(json!({
-        "access_token": session.access_token,
-        "refresh_token": session.refresh_token,
-        "expires_in": session.expires_in,
-        "user": { "id": session.user.id, "email": session.user.email },
+        "user": {
+            "id": browser_session.user.id,
+            "email": browser_session.user.email
+        },
         "profile": {
-            "userId": profile.user_id,
-            "email": profile.email,
-            "role": profile.role,
-            "desa": profile.desa,
-            "posyandu": profile.posyandu
-        }
+            "userId": browser_session.profile.user_id,
+            "email": browser_session.profile.email,
+            "role": browser_session.profile.role,
+            "desa": browser_session.profile.desa,
+            "posyandu": browser_session.profile.posyandu
+        },
+        "mfa": { "required": true, "state": "verified" }
     }))
 }
 
@@ -1782,6 +2405,12 @@ async fn record_login_audit(
 
 async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
     let token = bearer_token(request)?;
+    if mfa_is_required(env) && jwt_assurance_level(&token) != "aal2" {
+        return Err(ApiFailure::new(
+            403,
+            "Verifikasi autentikator diperlukan untuk melanjutkan.",
+        ));
+    }
     if let Some(scope) = cached_scope(&token) {
         return Ok(scope);
     }
@@ -1872,18 +2501,31 @@ async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
     Ok(scope)
 }
 
-async fn dispatch(request: Request, env: &Env, context: &Context) -> ApiResult<serde_json::Value> {
+async fn dispatch(request: Request, env: &Env, _context: &Context) -> ApiResult<serde_json::Value> {
     match (request.method(), request.path().as_str()) {
         (Method::Get, "/api/v1/openapi.json") => openapi_document(),
         (Method::Get, "/api/v1/health/ready") => readiness_status(env).await,
         (Method::Post, "/api/v1/graphql") => graphql::execute(request, env).await,
         (Method::Get, "/api/v1/graphql/schema") => Ok(graphql::schema_document()),
+        (Method::Post, "/api/v1/security/csp-report") => csp_report(request, env).await,
         (Method::Get, "/api/v1/monitoring/status") => monitoring_status(request, env).await,
         (Method::Post, "/internal/v1/nutrition/batch") => nutrition_batch(request, env).await,
         _ if request.path().starts_with("/internal/v1/jobs/") => {
             internal_background_job(request, env).await
         }
-        (Method::Post, "/api/v1/auth/login") => login(request, env, context).await,
+        (Method::Get, "/api/v1/auth/session") => {
+            let scope = require_scope(&request, env).await?;
+            Ok(json!({
+                "user": { "id": scope.user_id, "email": scope.email },
+                "profile": {
+                    "userId": scope.user_id,
+                    "email": scope.email,
+                    "role": scope.role,
+                    "desa": scope.desa,
+                    "posyandu": scope.posyandu
+                }
+            }))
+        }
         (Method::Post, "/api/v1/ai/growth-summary") => ai::growth_summary(request, env).await,
         (Method::Get, "/api/v1/me") => {
             let scope = require_scope(&request, env).await?;
@@ -1923,6 +2565,17 @@ mod tests {
     }
 
     #[test]
+    fn nutrition_matches_who_lms_golden_medians() {
+        let standards = standards().expect("standards must load");
+        assert!(lms_z_score(3.3464, [0.3487, 3.3464, 0.14602]).abs() < 1e-10);
+        assert!(lms_z_score(49.1477, [1.0, 49.1477, 0.0379]).abs() < 1e-10);
+        assert_eq!(
+            nutrition_status(18.3366, "BBU", 60, "L", None, "", &standards),
+            "Berat Normal"
+        );
+    }
+
+    #[test]
     fn nutrition_status_rejects_invalid_age() {
         let standards = standards().expect("standards must load");
         assert_eq!(
@@ -1956,8 +2609,12 @@ mod tests {
     #[test]
     fn nonproduction_write_allowlist_contains_only_safe_posts() {
         assert!(is_allowed_nonproduction_post("/api/v1/auth/login"));
+        assert!(is_allowed_nonproduction_post("/api/v1/auth/logout"));
+        assert!(is_allowed_nonproduction_post("/api/v1/auth/mfa/enroll"));
+        assert!(is_allowed_nonproduction_post("/api/v1/auth/mfa/verify"));
         assert!(is_allowed_nonproduction_post("/api/v1/graphql"));
         assert!(is_allowed_nonproduction_post("/api/v1/client-errors"));
+        assert!(is_allowed_nonproduction_post("/api/v1/security/csp-report"));
         assert!(is_allowed_nonproduction_post("/api/v1/ai/growth-summary"));
         assert!(!is_allowed_nonproduction_post("/api/v1/sync"));
         assert!(!is_allowed_nonproduction_post("/api/v1/jobs"));
@@ -1969,6 +2626,33 @@ mod tests {
         let token = format!("header.{payload}.signature");
         assert_eq!(jwt_expiration_seconds(&token), Some(1_893_456_000));
         assert_eq!(jwt_expiration_seconds("invalid"), None);
+    }
+
+    #[test]
+    fn jwt_assurance_defaults_to_aal1_and_accepts_aal2() {
+        let aal2_payload = URL_SAFE_NO_PAD.encode(br#"{"aal":"aal2"}"#);
+        let aal1_payload = URL_SAFE_NO_PAD.encode(br#"{"aal":"aal1"}"#);
+        assert_eq!(
+            jwt_assurance_level(&format!("header.{aal2_payload}.signature")),
+            "aal2"
+        );
+        assert_eq!(
+            jwt_assurance_level(&format!("header.{aal1_payload}.signature")),
+            "aal1"
+        );
+        assert_eq!(jwt_assurance_level("invalid"), "aal1");
+    }
+
+    #[test]
+    fn browser_session_cookie_only_accepts_hex_identifiers() {
+        let valid = "a".repeat(64);
+        assert_eq!(valid.len(), 64);
+        assert!(valid.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(
+            !"not-a-session-cookie"
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        );
     }
 
     #[test]
@@ -2009,6 +2693,26 @@ mod tests {
         assert!(upstream_is_unavailable(503));
         assert!(!upstream_is_unavailable(401));
         assert!(!upstream_is_unavailable(403));
+    }
+
+    #[test]
+    fn csp_report_removes_queries_credentials_and_script_samples() {
+        let report = normalized_csp_report(&json!({
+            "csp-report": {
+                "document-uri": "https://user:secret@example.test/form?nik=secret#child",
+                "effective-directive": "script-src-elem",
+                "blocked-uri": "https://evil.test/tracker.js?token=secret",
+                "status-code": 200,
+                "script-sample": "alert(document.cookie)",
+                "original-policy": "default-src 'none'"
+            }
+        }))
+        .expect("valid report");
+        assert_eq!(report["document_url"], "https://example.test/form");
+        assert_eq!(report["blocked_origin"], "https://evil.test");
+        assert_eq!(report["effective_directive"], "script-src-elem");
+        assert!(report.get("script-sample").is_none());
+        assert!(report.get("original-policy").is_none());
     }
 }
 
@@ -2057,6 +2761,73 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
         log_request(&env, &request_id, &method, &path, status, started_at);
         return Ok(response);
     }
+    if request.method() == Method::Post && path == "/api/v1/auth/login" {
+        let (status, response) = match login(request, &env, &context).await {
+            Ok((payload, identifier)) => {
+                let (status, mut response) =
+                    success_response(&payload, origin.as_deref(), &request_id, "no-store", None)?;
+                response
+                    .headers_mut()
+                    .append("Set-Cookie", &set_browser_session_cookie(&env, &identifier))?;
+                (status, response)
+            }
+            Err(error) => {
+                let status = error.status;
+                (
+                    status,
+                    failure_response(error, origin.as_deref(), &request_id)?,
+                )
+            }
+        };
+        log_request(&env, &request_id, &method, &path, status, started_at);
+        return Ok(response);
+    }
+    if request.method() == Method::Post && path == "/api/v1/auth/logout" {
+        let payload = logout(&request, &env).await;
+        let (status, mut response) =
+            success_response(&payload, origin.as_deref(), &request_id, "no-store", None)?;
+        response
+            .headers_mut()
+            .append("Set-Cookie", &clear_browser_session_cookie(&env))?;
+        response
+            .headers_mut()
+            .set("Clear-Site-Data", "\"cache\", \"cookies\", \"storage\"")?;
+        log_request(&env, &request_id, &method, &path, status, started_at);
+        return Ok(response);
+    }
+    if request.method() == Method::Post && path == "/api/v1/auth/mfa/enroll" {
+        let (status, response) = match enroll_mfa(&request, &env).await {
+            Ok(payload) => {
+                success_response(&payload, origin.as_deref(), &request_id, "no-store", None)?
+            }
+            Err(error) => {
+                let status = error.status;
+                (
+                    status,
+                    failure_response(error, origin.as_deref(), &request_id)?,
+                )
+            }
+        };
+        log_request(&env, &request_id, &method, &path, status, started_at);
+        return Ok(response);
+    }
+    if request.method() == Method::Post && path == "/api/v1/auth/mfa/verify" {
+        let (status, response) = match verify_mfa(request, &env, &context).await {
+            Ok(payload) => {
+                success_response(&payload, origin.as_deref(), &request_id, "no-store", None)?
+            }
+            Err(error) => {
+                let status = error.status;
+                (
+                    status,
+                    failure_response(error, origin.as_deref(), &request_id)?,
+                )
+            }
+        };
+        log_request(&env, &request_id, &method, &path, status, started_at);
+        return Ok(response);
+    }
+    inject_browser_session_authorization(&mut request, &env).await;
     if request.method() == Method::Get
         && path.starts_with("/api/v1/jobs/")
         && path.ends_with("/file")

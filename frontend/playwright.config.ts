@@ -16,8 +16,16 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] }
     },
     {
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'] }
+    },
+    {
       name: 'mobile-chrome',
       use: { ...devices['Pixel 7'] }
+    },
+    {
+      name: 'mobile-webkit',
+      use: { ...devices['iPhone 13'] }
     }
   ],
   webServer: {
@@ -26,9 +34,7 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     env: {
       ...process.env,
-      VITE_API_URL: 'http://127.0.0.1:9',
-      VITE_SUPABASE_URL: 'http://127.0.0.1:54321',
-      VITE_SUPABASE_ANON_KEY: 'publishable-key-e2e',
+      VITE_API_URL: '',
       VITE_TURNSTILE_SITE_KEY: ''
     }
   }

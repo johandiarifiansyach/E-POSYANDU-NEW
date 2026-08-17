@@ -24,9 +24,6 @@ import {
 export type AuthUser = {
   uid: string;
   email: string | null;
-  accessToken?: string;
-  refreshToken?: string;
-  expiresAt?: number;
 };
 
 export type Auth = {
@@ -340,23 +337,11 @@ export type BackgroundJob = {
   queueConfigured?: boolean;
 };
 
-type LegacyDocument = {
-  id: string;
-  data: DocumentData;
-  created_at: string;
-  updated_at: string;
-};
-
-// An empty value means "use this website's /api route". This keeps the same
-// frontend configuration working through Vite locally and Netlify in production.
-const viteEnv = (import.meta as ImportMeta & {
-  env?: Record<string, string | undefined>;
-}).env ?? {};
+// An empty value means "use this website's /api route". Access the one Vite
+// key directly so unrelated environment values are never serialized in JS.
 const API_BASE_URL = (
-  viteEnv.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : '')
+  import.meta.env?.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : '')
 ).replace(/\/$/, '');
-const LEGACY_SUPABASE_URL = (viteEnv.VITE_SUPABASE_URL || '').replace(/\/$/, '');
-const LEGACY_SUPABASE_ANON_KEY = viteEnv.VITE_SUPABASE_ANON_KEY || '';
 const FULL_SYNC_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const API_REQUEST_TIMEOUT_MS = 20_000;
 const DASHBOARD_RETRY_DELAY_MS = 250;
@@ -525,8 +510,7 @@ type QuerySyncState = {
 };
 
 function querySyncKey(ref: QueryRef) {
-  const backendVersion = usesFastApi() ? 'node-api-v1' : 'legacy-supabase-v1';
-  return `${SYNC_STATE_PREFIX}${backendVersion}:${ref.tableName}:${JSON.stringify(ref.constraints)}`;
+  return `${SYNC_STATE_PREFIX}edge-api-v2:${ref.tableName}:${JSON.stringify(ref.constraints)}`;
 }
 
 function readQuerySyncState(ref: QueryRef): QuerySyncState | null {
@@ -583,22 +567,14 @@ function readStoredSession(): AuthUser | null {
     window.localStorage.removeItem(AUTH_SESSION_KEY);
     if (!raw) return null;
     const session = JSON.parse(raw) as Partial<AuthUser>;
-    if (
-      typeof session.uid !== 'string' ||
-      typeof session.accessToken !== 'string' ||
-      typeof session.refreshToken !== 'string' ||
-      typeof session.expiresAt !== 'number'
-    ) {
+    if (typeof session.uid !== 'string' || !session.uid.trim()) {
       window.sessionStorage.removeItem(AUTH_SESSION_KEY);
       window.localStorage.removeItem(AUTH_SESSION_KEY);
       return null;
     }
     const restored = {
       uid: session.uid,
-      email: typeof session.email === 'string' ? session.email : null,
-      accessToken: session.accessToken,
-      refreshToken: session.refreshToken,
-      expiresAt: session.expiresAt
+      email: null
     };
     return restored;
   } catch {
@@ -609,12 +585,14 @@ function readStoredSession(): AuthUser | null {
 function saveSession(user: AuthUser | null) {
   if (typeof window === 'undefined') return;
   try {
-    if (!user?.accessToken || !user.refreshToken || !user.expiresAt) {
+    if (!user?.uid) {
       window.sessionStorage.removeItem(AUTH_SESSION_KEY);
       window.localStorage.removeItem(AUTH_SESSION_KEY);
       return;
     }
-    window.sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(user));
+    // Hanya ID akun non-rahasia yang disimpan untuk membuka cache terenkripsi
+    // saat offline. Token sesi berada di cookie HttpOnly dan tidak dapat dibaca JS.
+    window.sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({ uid: user.uid }));
     window.localStorage.removeItem(AUTH_SESSION_KEY);
   } catch {
     // The active session can still run until the page is closed.
@@ -625,76 +603,29 @@ function notifyAuthListeners() {
   authListeners.forEach((listener) => listener(authState.currentUser));
 }
 
-function authConfig() {
-  if (!LEGACY_SUPABASE_URL || !LEGACY_SUPABASE_ANON_KEY) {
-    throw new Error('Konfigurasi Supabase Auth belum tersedia.');
-  }
-  return { url: LEGACY_SUPABASE_URL, publishableKey: LEGACY_SUPABASE_ANON_KEY };
-}
-
 type SupabaseAuthResponse = {
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
   user: { id: string; email?: string | null };
   profile?: AccessProfile;
+  mfa?: MfaStatus | null;
 };
 
-async function supabaseAuthRequest(path: string, body: Record<string, string>): Promise<SupabaseAuthResponse> {
-  const { url, publishableKey } = authConfig();
-  let response: Response;
-  try {
-    response = await fetchWithTimeout(`${url}/auth/v1${path}`, {
-      method: 'POST',
-      headers: {
-        apikey: publishableKey,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    });
-  } catch (error) {
-    if (isNetworkError(error)) {
-      throw new Error('Layanan autentikasi belum dapat dijangkau. Periksa koneksi lalu coba lagi.');
-    }
-    throw error;
-  }
-  if (!response.ok) {
-    let detail = 'Email atau kata sandi tidak dapat diverifikasi.';
-    try {
-      const payload = await response.json();
-      if (typeof payload?.msg === 'string') detail = payload.msg;
-      else if (typeof payload?.message === 'string') detail = payload.message;
-    } catch {
-      // Keep the safe generic message when Auth cannot return JSON.
-    }
-    throw new Error(detail);
-  }
-  return response.json() as Promise<SupabaseAuthResponse>;
-}
+export type MfaStatus = {
+  required: boolean;
+  state: 'enroll' | 'challenge' | 'verified';
+};
 
-async function supabaseReadRpc<T>(name: string, body: Record<string, unknown>): Promise<T> {
-  const { url, publishableKey } = authConfig();
-  const request = async (accessToken: string) => fetchWithTimeout(`${url}/rest/v1/rpc/${name}`, {
-    method: 'POST',
-    headers: {
-      apikey: publishableKey,
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
+export type MfaEnrollment = {
+  state: 'enroll' | 'challenge' | 'verified';
+  qrCode?: string;
+  secret?: string;
+  uri?: string;
+};
 
-  let response = await request(await getAccessToken(authState));
-  if (response.status === 401 && authState.currentUser?.refreshToken) {
-    response = await request((await refreshAccessToken(authState)).accessToken as string);
-  }
-  if (!response.ok) {
-    throw new Error(await responseErrorDetail(response, `Data darurat tidak dapat dibaca (${response.status}).`));
-  }
-  const payload = await response.json() as T | null;
-  if (payload === null) throw new Error('Akun ini tidak memiliki akses ke data yang diminta.');
-  return payload;
-}
+export type SignInResult = {
+  session: AuthUser | null;
+  profile: AccessProfile | null;
+  mfa: MfaStatus | null;
+};
 
 async function usernameLoginRequest(username: string, password: string, turnstileToken?: string): Promise<SupabaseAuthResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
@@ -702,6 +633,7 @@ async function usernameLoginRequest(username: string, password: string, turnstil
   try {
     response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/auth/login`, {
       method: 'POST',
+      credentials: 'include',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
@@ -721,32 +653,34 @@ async function usernameLoginRequest(username: string, password: string, turnstil
   return response.json() as Promise<SupabaseAuthResponse>;
 }
 
+async function browserSessionRequest(): Promise<SupabaseAuthResponse | null> {
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/auth/session`, {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json',
+        'X-Request-ID': createRequestId()
+      }
+    });
+  } catch (error) {
+    if (isNetworkError(error)) throw new ApiUnavailableError();
+    throw error;
+  }
+  if (response.status === 401) return null;
+  if (response.status >= 500) throw new ApiUnavailableError();
+  if (!response.ok) {
+    throw new Error(await responseErrorDetail(response, `Sesi tidak dapat diperiksa (${response.status}).`));
+  }
+  return response.json() as Promise<SupabaseAuthResponse>;
+}
+
 function sessionFromResponse(response: SupabaseAuthResponse): AuthUser {
   return {
     uid: response.user.id,
-    email: response.user.email || null,
-    accessToken: response.access_token,
-    refreshToken: response.refresh_token,
-    expiresAt: Date.now() + response.expires_in * 1000
+    email: response.user.email || null
   };
-}
-
-async function refreshAccessToken(auth: Auth): Promise<AuthUser> {
-  const session = auth.currentUser;
-  if (!session?.refreshToken) throw new Error('Sesi masuk diperlukan.');
-  const response = await supabaseAuthRequest('/token?grant_type=refresh_token', { refresh_token: session.refreshToken });
-  const refreshed = sessionFromResponse(response);
-  auth.currentUser = refreshed;
-  saveSession(refreshed);
-  notifyAuthListeners();
-  return refreshed;
-}
-
-async function getAccessToken(auth: Auth): Promise<string> {
-  const session = auth.currentUser;
-  if (!session?.accessToken) throw new Error('Sesi masuk diperlukan.');
-  if ((session.expiresAt || 0) > Date.now() + 60_000) return session.accessToken;
-  return (await refreshAccessToken(auth)).accessToken as string;
 }
 
 function createRequestId() {
@@ -784,14 +718,13 @@ async function fetchWithTimeout(
 
 async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   ensureApiRequestAllowed();
-  const accessToken = await getAccessToken(authState);
   let response: Response;
   try {
     response = await fetchWithTimeout(apiUrl(path), {
       ...init,
+      credentials: 'include',
       headers: {
         Accept: 'application/json',
-        Authorization: `Bearer ${accessToken}`,
         'X-Request-ID': createRequestId(),
         ...(init.body ? { 'Content-Type': 'application/json' } : {}),
         ...init.headers
@@ -815,14 +748,13 @@ async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 async function graphQlRequest<T>(query: string, variables: Record<string, unknown>): Promise<T> {
   ensureApiRequestAllowed();
-  const accessToken = await getAccessToken(authState);
   let response: Response;
   try {
     response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/graphql`, {
       method: 'POST',
+      credentials: 'include',
       headers: {
         Accept: 'application/json',
-        Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         'X-Request-ID': createRequestId()
       },
@@ -927,10 +859,9 @@ export async function waitForBackgroundJob(
 
 export async function downloadBackgroundJobFile(job: BackgroundJob): Promise<Blob> {
   if (!job.downloadUrl) throw new Error('Berkas hasil pekerjaan belum tersedia.');
-  const accessToken = await getAccessToken(authState);
   const response = await fetch(`${API_BASE_URL}${job.downloadUrl}`, {
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${accessToken}`,
       'X-Request-ID': createRequestId()
     }
   });
@@ -964,7 +895,7 @@ export async function reportClientError(
   options: { suppressErrors?: boolean } = {}
 ): Promise<void> {
   const suppressErrors = options.suppressErrors ?? true;
-  if (!usesFastApi() || !isOnline() || !authState.currentUser?.accessToken) return;
+  if (!usesFastApi() || !isOnline() || !authState.currentUser) return;
   const name = error instanceof Error ? error.name : 'UnknownError';
   try {
     await apiRequest<{ accepted: boolean }>('/client-errors', {
@@ -1028,33 +959,7 @@ export async function getChildrenPage(request: ChildrenPageRequest): Promise<Chi
     response = result.childrenPage;
   } catch (error) {
     if (!isNetworkError(error)) throw error;
-    const view = request.view || 'data';
-    if (view.startsWith('problem_')) {
-      response = await supabaseReadRpc<ChildrenPageResponse>('eposyandu_self_problem_children_page', {
-        p_month_start: request.measurementStart,
-        p_month_end: request.measurementEnd,
-        p_problem: view,
-        p_page: request.page,
-        p_size: request.size || 10,
-        p_search: request.search?.trim() || null,
-        p_sort: request.sort,
-        p_village: request.village?.trim() || null,
-        p_posyandu: request.posyandu?.trim() || null
-      });
-    } else {
-      response = await supabaseReadRpc<ChildrenPageResponse>('eposyandu_self_children_page', {
-        p_as_of: request.asOf,
-        p_measurement_start: request.measurementStart,
-        p_measurement_end: request.measurementEnd,
-        p_page: request.page,
-        p_size: request.size || 10,
-        p_sort: request.sort,
-        p_view: view,
-        p_search: request.search?.trim() || null,
-        p_village: request.village?.trim() || null,
-        p_posyandu: request.posyandu?.trim() || null
-      });
-    }
+    response = await getCachedChildrenPage(request);
   }
   const now = new Date().toISOString();
   await Promise.all([
@@ -1137,16 +1042,7 @@ export async function getExclusiveBreastfeedingPage(
     });
     return result.exclusiveBreastfeedingPage;
   } catch (error) {
-    if (!isNetworkError(error)) throw error;
-    return supabaseReadRpc<ExclusiveBreastfeedingPageResponse>('eposyandu_self_exclusive_breastfeeding_page', {
-      p_measurement_start: request.measurementStart,
-      p_measurement_end: request.measurementEnd,
-      p_age_group: request.ageGroup,
-      p_page: request.page,
-      p_size: request.size || 10,
-      p_village: request.village?.trim() || null,
-      p_posyandu: request.posyandu?.trim() || null
-    });
+    throw error;
   }
 }
 
@@ -1157,7 +1053,9 @@ export async function getChildDetail(id: string): Promise<ApiDocument> {
     document = await apiRequest<ApiDocument>(`/collections/children/${encodeURIComponent(id)}`);
   } catch (error) {
     if (!isNetworkError(error)) throw error;
-    document = await supabaseReadRpc<ApiDocument>('eposyandu_self_child_detail', { p_child_id: id });
+    const cached = await getCachedDocument('children', id);
+    if (!cached || cached.deleted) throw error;
+    document = { id: cached.id, data: cached.data };
   }
   return { ...document, data: hydrateForRead(document.data) };
 }
@@ -1174,15 +1072,6 @@ export async function getDashboardStats(request: DashboardStatsRequest): Promise
   if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
   const requestDashboard = () =>
     apiRequest<DashboardStatsResponse>(`/dashboard/stats?${parameters.toString()}`);
-  const readFallback = () =>
-    supabaseReadRpc<DashboardStatsResponse>('eposyandu_self_dashboard_stats', {
-      p_month_start: request.monthStart,
-      p_month_end: request.monthEnd,
-      p_previous_month_start: request.previousMonthStart,
-      p_previous_month_end: request.previousMonthEnd,
-      p_village: request.village?.trim() || null,
-      p_posyandu: request.posyandu?.trim() || null
-    });
   try {
     return await requestDashboard();
   } catch (error) {
@@ -1191,12 +1080,10 @@ export async function getDashboardStats(request: DashboardStatsRequest): Promise
       try {
         return await requestDashboard();
       } catch (retryError) {
-        if (!isDashboardTimeoutError(retryError) && !isNetworkError(retryError)) throw retryError;
-        return readFallback();
+        throw retryError;
       }
     }
-    if (!isNetworkError(error)) throw error;
-    return readFallback();
+    throw error;
   }
 }
 
@@ -1279,37 +1166,6 @@ export async function getCachedChildrenPage(request: ChildrenPageRequest): Promi
   });
 
   return { items, measurements: Array.from(latestMeasurements.values()), total };
-}
-
-async function legacySupabaseRequest<T>(url: URL, init: RequestInit = {}): Promise<T> {
-  if (!LEGACY_SUPABASE_URL || !LEGACY_SUPABASE_ANON_KEY) {
-    throw new Error('VITE_API_URL atau konfigurasi Supabase lama belum tersedia.');
-  }
-
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      apikey: LEGACY_SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${LEGACY_SUPABASE_ANON_KEY}`,
-      Accept: 'application/json',
-      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init.headers
-    }
-  });
-
-  if (!response.ok) {
-    let detail = `Permintaan Supabase gagal (${response.status}).`;
-    try {
-      const body = await response.json();
-      if (typeof body?.message === 'string') detail = body.message;
-    } catch {
-      // Keep the HTTP status message when the server cannot return JSON.
-    }
-    throw new Error(detail);
-  }
-
-  const body = await response.text();
-  return (body ? JSON.parse(body) : undefined) as T;
 }
 
 function matchesQuery(data: DocumentData, ref: QueryRef) {
@@ -1413,70 +1269,8 @@ async function executeFastApiQuery(ref: QueryRef): Promise<QuerySnapshot<Documen
   return readCachedQuery(ref);
 }
 
-async function executeLegacySupabaseQuery(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
-  const cacheEntries: Array<{ id: string; data: DocumentData; createdAt: string; updatedAt: string }> = [];
-  const syncState = readQuerySyncState(ref);
-  const fullSync = needsFullSync(syncState);
-  const syncStartedAt = new Date().toISOString();
-  let offset = 0;
-
-  while (true) {
-    const url = new URL(`${LEGACY_SUPABASE_URL}/rest/v1/documents`);
-    url.searchParams.set('select', 'id,data,created_at,updated_at');
-    url.searchParams.append('table_name', `eq.${ref.tableName}`);
-    if (!fullSync && syncState) url.searchParams.append('updated_at', `gt.${syncState.lastSyncedAt}`);
-
-    for (const constraint of ref.constraints) {
-      if (constraint.kind === 'where') {
-        const operator = constraint.op === '==' ? 'eq' : constraint.op === '>=' ? 'gte' : 'lte';
-        url.searchParams.append(`data->>${constraint.field}`, `${operator}.${String(constraint.value)}`);
-      }
-    }
-
-    const orderConstraints = ref.constraints.filter((constraint): constraint is OrderByConstraint => constraint.kind === 'orderBy');
-    if (orderConstraints.length > 0) {
-      url.searchParams.set(
-        'order',
-        orderConstraints.map((constraint) => `data->>${constraint.field}.${constraint.direction}`).join(',')
-      );
-    }
-
-    const rows = await legacySupabaseRequest<LegacyDocument[]>(url, {
-      headers: { Range: `${offset}-${offset + 999}` }
-    });
-    for (const row of rows) {
-      cacheEntries.push({
-        id: row.id,
-        data: row.data || {},
-        createdAt: row.created_at,
-        updatedAt: row.updated_at
-      });
-    }
-
-    if (rows.length < 1000) break;
-    offset += 1000;
-  }
-
-  await cacheRemoteDocuments(ref.tableName, cacheEntries);
-  if (fullSync) {
-    const remoteIds = new Set(cacheEntries.map((document) => document.id));
-    const cachedDocuments = await getCachedDocuments(ref.tableName);
-    await Promise.all(
-      cachedDocuments
-        .filter((document) => !document.pending && matchesQuery(document.data, ref) && !remoteIds.has(document.id))
-        .map((document) => removeCachedDocument(ref.tableName, document.id))
-    );
-  }
-
-  saveQuerySyncState(ref, {
-    lastSyncedAt: syncStartedAt,
-    lastFullSyncAt: fullSync ? syncStartedAt : syncState?.lastFullSyncAt || syncStartedAt
-  });
-  return readCachedQuery(ref);
-}
-
 async function executeRemoteQuery(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
-  return usesFastApi() ? executeFastApiQuery(ref) : executeLegacySupabaseQuery(ref);
+  return executeFastApiQuery(ref);
 }
 
 async function executeRemoteQueryWithFallback(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
@@ -1521,36 +1315,12 @@ async function fetchFastApiExport(ref: QueryRef): Promise<QuerySnapshot<Document
   return mergePendingDocuments(ref, documents);
 }
 
-async function fetchLegacyExport(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
-  const documents: Array<QueryDocumentSnapshot<DocumentData>> = [];
-  let offset = 0;
-
-  while (true) {
-    const url = new URL(`${LEGACY_SUPABASE_URL}/rest/v1/documents`);
-    url.searchParams.set('select', 'id,data');
-    url.searchParams.append('table_name', `eq.${ref.tableName}`);
-    ref.constraints.forEach((constraint) => {
-      if (constraint.kind !== 'where') return;
-      const operator = constraint.op === '==' ? 'eq' : constraint.op === '>=' ? 'gte' : 'lte';
-      url.searchParams.append(`data->>${constraint.field}`, `${operator}.${String(constraint.value)}`);
-    });
-    const rows = await legacySupabaseRequest<Array<Pick<LegacyDocument, 'id' | 'data'>>>(url, {
-      headers: { Range: `${offset}-${offset + 999}` }
-    });
-    rows.forEach((row) => documents.push(makeDocSnapshot(row.id, hydrateForRead(row.data || {}))));
-    if (rows.length < 1000) break;
-    offset += 1000;
-  }
-
-  return mergePendingDocuments(ref, documents);
-}
-
 // Exports are the deliberate exception to the light page-loading policy: they
 // fetch every matching record only after the user asks to generate a file.
 export async function getDocsForExport(ref: QueryRef): Promise<QuerySnapshot<DocumentData>> {
   if (!isOnline()) return readCachedQuery(ref);
   try {
-    return usesFastApi() ? await fetchFastApiExport(ref) : await fetchLegacyExport(ref);
+    return await fetchFastApiExport(ref);
   } catch (error) {
     if (isNetworkError(error)) return readCachedQuery(ref);
     throw error;
@@ -1592,14 +1362,47 @@ export function getAuth(_app?: FirebaseAppCompat): Auth {
 }
 
 export async function restoreAuthSession(auth: Auth): Promise<AuthUser | null> {
-  const session = readStoredSession();
-  if (!session) {
+  const storedSession = readStoredSession();
+  if (!isOnline()) {
+    if (!storedSession) {
+      auth.currentUser = null;
+      await resetOfflineStoreWithoutSession();
+      return null;
+    }
+    await initializeOfflineStoreSession(storedSession.uid, { allowLegacyMigration: true });
+    auth.currentUser = storedSession;
+    notifyAuthListeners();
+    return storedSession;
+  }
+
+  let response: SupabaseAuthResponse | null;
+  try {
+    response = await browserSessionRequest();
+  } catch (error) {
+    if (!(error instanceof ApiUnavailableError)) throw error;
+    if (!storedSession) {
+      auth.currentUser = null;
+      await resetOfflineStoreWithoutSession();
+      return null;
+    }
+    await initializeOfflineStoreSession(storedSession.uid, { allowLegacyMigration: true });
+    auth.currentUser = storedSession;
+    notifyAuthListeners();
+    return storedSession;
+  }
+  if (!response) {
     auth.currentUser = null;
+    saveSession(null);
     await resetOfflineStoreWithoutSession();
     return null;
   }
-  await initializeOfflineStoreSession(session.uid, { allowLegacyMigration: true });
+  const session = sessionFromResponse(response);
+  await initializeOfflineStoreSession(session.uid, {
+    allowLegacyMigration: true,
+    forceReset: Boolean(storedSession && storedSession.uid !== session.uid)
+  });
   auth.currentUser = session;
+  saveSession(session);
   notifyAuthListeners();
   return session;
 }
@@ -1609,7 +1412,7 @@ export async function signInWithPassword(
   username: string,
   password: string,
   turnstileToken?: string
-): Promise<{ session: AuthUser; profile: AccessProfile | null }> {
+): Promise<SignInResult> {
   let response: SupabaseAuthResponse;
   try {
     response = await usernameLoginRequest(username, password, turnstileToken);
@@ -1619,6 +1422,12 @@ export async function signInWithPassword(
     }
     throw error;
   }
+  if (response.mfa?.required && response.mfa.state !== 'verified') {
+    auth.currentUser = null;
+    saveSession(null);
+    notifyAuthListeners();
+    return { session: null, profile: null, mfa: response.mfa };
+  }
   const nextSession = sessionFromResponse(response);
   const changesAccount = !auth.currentUser || auth.currentUser.uid !== nextSession.uid;
   await initializeOfflineStoreSession(nextSession.uid, { forceReset: changesAccount });
@@ -1626,7 +1435,34 @@ export async function signInWithPassword(
   auth.currentUser = nextSession;
   saveSession(nextSession);
   notifyAuthListeners();
-  return { session: nextSession, profile: response.profile || null };
+  return { session: nextSession, profile: response.profile || null, mfa: response.mfa || null };
+}
+
+export async function enrollMfa(): Promise<MfaEnrollment> {
+  return apiRequest<MfaEnrollment>('/auth/mfa/enroll', {
+    method: 'POST',
+    body: '{}'
+  });
+}
+
+export async function verifyMfa(auth: Auth, code: string): Promise<SignInResult> {
+  const response = await apiRequest<SupabaseAuthResponse>('/auth/mfa/verify', {
+    method: 'POST',
+    body: JSON.stringify({ code })
+  });
+  if (!response.mfa || response.mfa.state !== 'verified' || !response.profile) {
+    throw new Error('Verifikasi MFA belum selesai.');
+  }
+  const nextSession = sessionFromResponse(response);
+  const storedSession = readStoredSession();
+  await initializeOfflineStoreSession(nextSession.uid, {
+    forceReset: Boolean(storedSession && storedSession.uid !== nextSession.uid)
+  });
+  if (storedSession && storedSession.uid !== nextSession.uid) clearSyncState();
+  auth.currentUser = nextSession;
+  saveSession(nextSession);
+  notifyAuthListeners();
+  return { session: nextSession, profile: response.profile, mfa: response.mfa };
 }
 
 export async function getCurrentAccessProfile(): Promise<AccessProfile> {
@@ -1653,19 +1489,21 @@ export async function signOut(auth: Auth): Promise<void> {
   const pending = await getPendingMutations();
   if (pending.length > 0) throw new Error('Masih ada data offline yang belum tersinkron. Sambungkan internet sebelum keluar.');
 
-  const accessToken = auth.currentUser?.accessToken;
-  if (accessToken && isOnline() && LEGACY_SUPABASE_URL && LEGACY_SUPABASE_ANON_KEY) {
-    try {
-      await fetch(`${LEGACY_SUPABASE_URL}/auth/v1/logout`, {
-        method: 'POST',
-        headers: {
-          apikey: LEGACY_SUPABASE_ANON_KEY,
-          Authorization: `Bearer ${accessToken}`
-        }
-      });
-    } catch {
-      // Local logout still protects this device when Auth cannot be reached.
-    }
+  if (!isOnline()) {
+    throw new Error('Sambungkan internet untuk menghapus sesi aman, lalu coba keluar kembali.');
+  }
+  const response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/auth/logout`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-Request-ID': createRequestId()
+    },
+    body: '{}'
+  });
+  if (!response.ok) {
+    throw new Error(await responseErrorDetail(response, 'Sesi aman belum dapat dihapus.'));
   }
   auth.currentUser = null;
   saveSession(null);
@@ -1704,11 +1542,6 @@ export function serverTimestamp(): { __serverTimestamp: true } {
 }
 
 async function applyPendingMutation(mutation: PendingMutation): Promise<void> {
-  if (!usesFastApi()) {
-    await applyLegacySupabaseMutation(mutation);
-    return;
-  }
-
   const collectionPath = `/collections/${encodeURIComponent(mutation.tableName)}`;
   const mutationHeaders = { 'Idempotency-Key': mutation.id };
   if (mutation.type === 'add') {
@@ -1753,46 +1586,6 @@ async function applyPendingMutation(mutation: PendingMutation): Promise<void> {
     body: JSON.stringify({
       expectedVersion: mutation.payload?.expectedVersion,
       expectedUpdatedAt: mutation.payload?.expectedUpdatedAt
-    })
-  });
-}
-
-async function applyLegacySupabaseMutation(mutation: PendingMutation): Promise<void> {
-  const endpoint = new URL(`${LEGACY_SUPABASE_URL}/rest/v1/documents`);
-
-  if (mutation.type === 'delete') {
-    endpoint.searchParams.append('table_name', `eq.${mutation.tableName}`);
-    endpoint.searchParams.append('id', `eq.${mutation.documentId}`);
-    await legacySupabaseRequest(endpoint, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
-    return;
-  }
-
-  let data: DocumentData;
-  let createdAt: string;
-  if (mutation.type === 'add') {
-    data = mutation.payload?.data || {};
-    createdAt = mutation.payload?.createdAt || mutation.queuedAt;
-  } else {
-    const existingUrl = new URL(endpoint);
-    existingUrl.searchParams.set('select', 'data,created_at');
-    existingUrl.searchParams.append('table_name', `eq.${mutation.tableName}`);
-    existingUrl.searchParams.append('id', `eq.${mutation.documentId}`);
-    existingUrl.searchParams.set('limit', '1');
-    const [existing] = await legacySupabaseRequest<Array<{ data: DocumentData; created_at: string }>>(existingUrl);
-    data = { ...(existing?.data || {}), ...(mutation.payload || {}) };
-    createdAt = existing?.created_at || mutation.queuedAt;
-  }
-
-  endpoint.searchParams.set('on_conflict', 'table_name,id');
-  await legacySupabaseRequest(endpoint, {
-    method: 'POST',
-    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-    body: JSON.stringify({
-      table_name: mutation.tableName,
-      id: mutation.documentId,
-      data,
-      created_at: createdAt,
-      updated_at: new Date().toISOString()
     })
   });
 }
@@ -2050,40 +1843,20 @@ const MEASUREMENT_SUMMARY_FIELDS = new Set([
   'updatedAt'
 ]);
 
-function supportsAuthenticatedMeasurementFallback(mutation: PendingMutation): boolean {
+function supportsMeasurementMutation(mutation: PendingMutation): boolean {
   if (mutation.tableName === 'measurements') return true;
   if (mutation.tableName !== 'children' || mutation.type !== 'update') return false;
   const patch = mutation.payload?.data || {};
   return Object.keys(patch).every((field) => MEASUREMENT_SUMMARY_FIELDS.has(field));
 }
 
-async function authenticatedMeasurementFallback(batch: PendingMutation[]): Promise<SyncResponse> {
-  const supported = batch.filter(supportsAuthenticatedMeasurementFallback);
+async function syncMeasurementBatchViaApi(batch: PendingMutation[]): Promise<SyncResponse> {
+  const supported = batch.filter(supportsMeasurementMutation);
   if (supported.length === 0) throw new ApiUnavailableError();
-
-  const response = await supabaseReadRpc<SyncResponse>('eposyandu_self_sync_measurement_batch', {
-    p_mutations: supported.map(syncMutationPayload)
+  return apiRequest<SyncResponse>('/sync', {
+    method: 'POST',
+    body: JSON.stringify({ mutations: supported.map(syncMutationPayload), pull: [] })
   });
-  const supportedIds = new Set(supported.map((mutation) => mutation.id));
-  const deferredResults: SyncMutationResult[] = batch
-    .filter((mutation) => !supportedIds.has(mutation.id))
-    .map((mutation) => ({
-      id: mutation.id,
-      resource: mutation.tableName,
-      documentId: mutation.documentId,
-      operation: mutation.type,
-      error: {
-        status: 503,
-        code: 'EDGE_API_UNAVAILABLE',
-        detail: 'Perubahan ini tetap tersimpan di perangkat dan akan disinkronkan saat layanan API kembali tersedia.'
-      }
-    }));
-
-  return {
-    results: [...response.results, ...deferredResults],
-    changes: response.changes || {},
-    cursor: response.cursor || new Date().toISOString()
-  };
 }
 
 async function applySyncResponse(batch: PendingMutation[], response: SyncResponse): Promise<SyncRunResult> {
@@ -2124,16 +1897,10 @@ async function applySyncResponse(batch: PendingMutation[], response: SyncRespons
 }
 
 async function syncFastApiBatch(batch: PendingMutation[]): Promise<SyncRunResult> {
-  let response: SyncResponse;
-  try {
-    response = await apiRequest<SyncResponse>('/sync', {
-      method: 'POST',
-      body: JSON.stringify({ mutations: batch.map(syncMutationPayload), pull: [] })
-    });
-  } catch (error) {
-    if (!isNetworkError(error)) throw error;
-    response = await authenticatedMeasurementFallback(batch);
-  }
+  const response = await apiRequest<SyncResponse>('/sync', {
+    method: 'POST',
+    body: JSON.stringify({ mutations: batch.map(syncMutationPayload), pull: [] })
+  });
   return applySyncResponse(batch, response);
 }
 
@@ -2143,43 +1910,21 @@ async function runPendingMutationSync(): Promise<SyncRunResult> {
   const attempted = new Set<string>();
 
   await runOnlineOperation(async () => {
-    if (usesFastApi()) {
-      while (true) {
-        const pending = orderedPendingMutations(await getPendingMutations())
-          .filter((mutation) => !attempted.has(mutation.id) && !deferredSyncMutationIds.has(mutation.id));
-        if (pending.length === 0) break;
-        const batch = nextSyncBatch(pending);
-        batch.forEach((mutation) => attempted.add(mutation.id));
-        try {
-          const outcome = await syncFastApiBatch(batch);
-          syncedCount += outcome.syncedCount;
-          outcome.errors.forEach((error, id) => errors.set(id, error));
-        } catch (error) {
-          const normalizedError = error instanceof Error ? error : new Error(String(error));
-          await Promise.all(batch.map((mutation) => markMutationError(mutation, normalizedError)));
-          batch.forEach((mutation) => errors.set(mutation.id, normalizedError));
-          break;
-        }
-      }
-      return;
-    }
-
     while (true) {
-      const mutation = nextPendingMutation(
-        (await getPendingMutations()).filter(
-          (entry) => !attempted.has(entry.id) && !deferredSyncMutationIds.has(entry.id)
-        )
-      );
-      if (!mutation) break;
-      attempted.add(mutation.id);
+      const pending = orderedPendingMutations(await getPendingMutations())
+        .filter((mutation) => !attempted.has(mutation.id) && !deferredSyncMutationIds.has(mutation.id));
+      if (pending.length === 0) break;
+      const batch = nextSyncBatch(pending);
+      batch.forEach((mutation) => attempted.add(mutation.id));
       try {
-        await applyPendingMutation(mutation);
-        await completeMutation(mutation);
-        syncedCount += 1;
+        const outcome = await syncFastApiBatch(batch);
+        syncedCount += outcome.syncedCount;
+        outcome.errors.forEach((error, id) => errors.set(id, error));
       } catch (error) {
         const normalizedError = error instanceof Error ? error : new Error(String(error));
-        await markMutationError(mutation, normalizedError);
-        errors.set(mutation.id, normalizedError);
+        await Promise.all(batch.map((mutation) => markMutationError(mutation, normalizedError)));
+        batch.forEach((mutation) => errors.set(mutation.id, normalizedError));
+        break;
       }
     }
   });
@@ -2216,7 +1961,7 @@ export async function syncPendingMutations(focusMutationIds: string[] = []): Pro
   if (relevantErrors.length > 0) throw relevantErrors[0][1];
 }
 
-export async function syncMeasurementMutationsNow(focusMutationIds: string[]): Promise<void> {
+async function performMeasurementMutationSync(focusMutationIds: string[]): Promise<void> {
   const focusedIds = new Set(focusMutationIds.filter(Boolean));
   if (focusedIds.size === 0) return;
   const releaseFocusedMutations = () => focusedIds.forEach((id) => deferredSyncMutationIds.delete(id));
@@ -2238,12 +1983,12 @@ export async function syncMeasurementMutationsNow(focusMutationIds: string[]): P
 
         const batch = nextSyncBatch(focused);
         batch.forEach((mutation) => attempted.add(mutation.id));
-        if (batch.some((mutation) => !supportsAuthenticatedMeasurementFallback(mutation))) {
+        if (batch.some((mutation) => !supportsMeasurementMutation(mutation))) {
           throw new Error('Paket perubahan penimbangan berisi data yang tidak diizinkan.');
         }
 
         try {
-          const response = await authenticatedMeasurementFallback(batch);
+          const response = await syncMeasurementBatchViaApi(batch);
           const outcome = await applySyncResponse(batch, response);
           syncedCount += outcome.syncedCount;
           outcome.errors.forEach((error, id) => errors.set(id, error));
@@ -2262,6 +2007,28 @@ export async function syncMeasurementMutationsNow(focusMutationIds: string[]): P
     releaseFocusedMutations();
     requestSync();
   }
+}
+
+export function syncMeasurementMutationsNow(focusMutationIds: string[]): Promise<void> {
+  const synchronization = performMeasurementMutationSync(focusMutationIds);
+  return new Promise((resolve, reject) => {
+    let waiting = true;
+    const timeout = window.setTimeout(() => {
+      waiting = false;
+      resolve();
+    }, 2_000);
+    synchronization.then(() => {
+      if (!waiting) return;
+      window.clearTimeout(timeout);
+      waiting = false;
+      resolve();
+    }).catch((error) => {
+      if (!waiting) return;
+      window.clearTimeout(timeout);
+      waiting = false;
+      reject(error);
+    });
+  });
 }
 
 function requestSync() {
