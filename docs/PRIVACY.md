@@ -14,12 +14,12 @@ Fitur AI tetap nonaktif. Jika kelak diaktifkan, backend hanya boleh menerima umu
 
 | Kelas | Contoh | Perlindungan minimum |
 | --- | --- | --- |
-| Sangat terbatas | NIK/KK, identitas anak/orang tua, tanggal lahir, alamat, nomor telepon, pengukuran, status gizi, ASI/MPASI, PMT | AAL2, pembatasan role/wilayah, enkripsi saat transit dan backup, audit akses/perubahan, dilarang masuk log teknis |
+| Sangat terbatas | NIK/KK, identitas anak/orang tua, tanggal lahir, alamat, nomor telepon, pengukuran, status gizi, ASI/MPASI, PMT | Sesi HttpOnly, pembatasan role/wilayah, enkripsi saat transit dan backup, audit akses/perubahan, dilarang masuk log teknis |
 | Terbatas | ID akun, role, desa/Posyandu, audit event, request ID | Akses berdasarkan tugas, retensi terbatas, tidak dipublikasikan |
 | Internal | konfigurasi operasional tanpa secret, statistik agregat yang tidak dapat mengidentifikasi anak | Hanya personel berwenang |
 | Publik | aset aplikasi, dokumentasi umum, standar WHO yang tidak memuat data pasien | Dapat didistribusikan |
 
-Kata sandi, access/refresh token Supabase, secret TOTP, kunci enkripsi, dan service-role key tidak boleh disimpan di database aplikasi, log, source code, artifact build, atau browser JavaScript. Token Supabase hanya berada di sesi KV backend; browser menerima cookie sesi `HttpOnly`.
+Kata sandi, access/refresh token Supabase, kunci enkripsi, dan service-role key tidak boleh disimpan di database aplikasi, log, source code, artifact build, atau browser JavaScript. Token Supabase hanya berada di sesi KV backend; browser menerima cookie sesi `HttpOnly`.
 
 ## Cakupan akses
 
@@ -74,7 +74,7 @@ Perangkat bersama wajib memakai akun OS terpisah, kunci layar, enkripsi disk, pe
 - [ ] Konfirmasi lokasi pemrosesan dan perjanjian dengan Supabase, Cloudflare, GitHub, Neon/Render bila dipakai.
 - [ ] Tetapkan retensi log Cloudflare maksimal 30 hari dan buktikan penghapusannya.
 - [ ] Pisahkan database development, staging, dan production; data production tidak boleh disalin ke pengujian.
-- [ ] Jalankan uji restore terenkripsi, uji akses role/wilayah, uji pemulihan MFA, dan simulasi insiden.
+- [ ] Jalankan uji restore terenkripsi, uji akses role/wilayah, uji pemulihan akun, pembatasan login, dan simulasi insiden.
 - [ ] Lakukan penilaian dampak pelindungan data dan tinjau ulang sedikitnya tahunan atau setiap perubahan besar.
 
 Pemilik persetujuan: Kepala UPTD Puskesmas Gumukmas. Tanggal, nomor dokumen, pejabat pelindungan data, dan tanda tangan harus diisi pada salinan kebijakan yang disahkan; repository tidak dianggap sebagai bukti persetujuan organisasi.

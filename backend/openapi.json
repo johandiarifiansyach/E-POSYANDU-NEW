@@ -144,51 +144,13 @@
     },
     "/api/v1/auth/session": {
       "get": {
-        "summary": "Memeriksa sesi HttpOnly aktif pada AAL2",
+        "summary": "Memeriksa sesi HttpOnly aktif",
         "operationId": "currentSession",
         "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
         "responses": {
           "200": { "description": "Sesi dan profil aktif" },
           "401": { "$ref": "#/components/responses/ApiError" },
           "403": { "$ref": "#/components/responses/ApiError" }
-        }
-      }
-    },
-    "/api/v1/auth/mfa/enroll": {
-      "post": {
-        "summary": "Memulai pendaftaran faktor TOTP",
-        "operationId": "enrollMfa",
-        "security": [{ "sessionCookie": [] }],
-        "responses": {
-          "200": { "description": "QR dan secret TOTP sekali tampil" },
-          "401": { "$ref": "#/components/responses/ApiError" }
-        }
-      }
-    },
-    "/api/v1/auth/mfa/verify": {
-      "post": {
-        "summary": "Memverifikasi kode TOTP dan menaikkan sesi ke AAL2",
-        "operationId": "verifyMfa",
-        "security": [{ "sessionCookie": [] }],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["code"],
-                "additionalProperties": false,
-                "properties": {
-                  "code": { "type": "string", "pattern": "^[0-9]{6}$" }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": { "description": "Sesi AAL2 aktif" },
-          "401": { "$ref": "#/components/responses/ApiError" },
-          "429": { "$ref": "#/components/responses/ApiError" }
         }
       }
     },
@@ -1020,16 +982,6 @@
           },
           "profile": {
             "$ref": "#/components/schemas/AccessProfile"
-          },
-          "mfa": {
-            "type": ["object", "null"],
-            "properties": {
-              "required": { "type": "boolean" },
-              "state": {
-                "type": "string",
-                "enum": ["enroll", "challenge", "verified"]
-              }
-            }
           }
         }
       },

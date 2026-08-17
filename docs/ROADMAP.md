@@ -26,7 +26,7 @@ Dokumen ini membedakan komponen yang sudah aktif, fondasi yang sudah tersedia, d
 | 20 | Multi-language | Ditunda | Bahasa Indonesia tetap bahasa tunggal sampai kebutuhan pengguna terkonfirmasi. |
 | 21 | Data export | Aktif | XLS/XLSX dan CSV aktif; permintaan data ekspornya diaudit serta tetap dibatasi cakupan wilayah akun. |
 | 22 | User feedback | Ditunda | Form bug/saran akan dibuat setelah tujuan penerima dan retensi laporan ditetapkan. |
-| 23 | Sesi HttpOnly dan MFA | Siap diuji staging | BFF same-origin, cookie HttpOnly, TOTP AAL2, dan RLS restriktif tersedia; aktivasi production menunggu Supabase staging serta uji pemulihan akun. |
+| 23 | Sesi HttpOnly | Siap diuji staging | BFF same-origin, cookie HttpOnly, Turnstile, rate limiter, dan penutupan RPC browser tersedia; verifikasi dua langkah tidak digunakan. |
 | 24 | Tata kelola privasi | Baseline siap disahkan | Inventaris data, akses, retensi 25 tahun RME, ekspor, hak subjek, dan respons insiden terdokumentasi; pengesahan Puskesmas/Dinas tetap wajib. |
 | 25 | Pelaporan CSP | Siap diuji staging | Endpoint same-origin membatasi ukuran/laju dan membuang query, referrer, script sample, serta IP mentah. |
 

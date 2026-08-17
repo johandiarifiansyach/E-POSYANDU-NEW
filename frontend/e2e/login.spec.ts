@@ -108,7 +108,7 @@ test('halaman login tidak melebar di layar ponsel', async ({ page }, testInfo) =
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
 });
 
-test('login mewajibkan MFA dan memakai profil terverifikasi tanpa meminta endpoint me', async ({ page }) => {
+test('login memakai profil terverifikasi tanpa meminta endpoint me atau langkah kedua', async ({ page }) => {
   let profileRequests = 0;
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
@@ -137,23 +137,7 @@ test('login mewajibkan MFA dan memakai profil terverifikasi tanpa meminta endpoi
           role: 'Kader Posyandu',
           desa: 'Desa Gumukmas',
           posyandu: 'SALAK 1'
-        },
-        mfa: { required: true, state: 'challenge' }
-      } });
-      return;
-    }
-    if (path.endsWith('/auth/mfa/verify')) {
-      expect(request.postDataJSON()).toEqual({ code: '123456' });
-      await route.fulfill({ status: 200, headers, json: {
-        user: { id: 'user-login', email: 'salak1@posyandu.com' },
-        profile: {
-          userId: 'user-login',
-          email: 'salak1@posyandu.com',
-          role: 'Kader Posyandu',
-          desa: 'Desa Gumukmas',
-          posyandu: 'SALAK 1'
-        },
-        mfa: { required: true, state: 'verified' }
+        }
       } });
       return;
     }
@@ -181,11 +165,8 @@ test('login mewajibkan MFA dan memakai profil terverifikasi tanpa meminta endpoi
   await page.getByRole('textbox', { name: 'Kata Sandi', exact: true }).fill('kata-sandi-uji');
   await page.getByRole('button', { name: 'Masuk' }).click();
 
-  await expect(page.getByRole('heading', { name: 'Verifikasi Dua Langkah' })).toBeVisible();
-  await page.getByLabel('Kode autentikator 6 digit').fill('123456');
-  await page.getByRole('button', { name: 'Verifikasi' }).click();
-
   await expect(page.locator('[data-nav-id="dashboard"]')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Verifikasi Dua Langkah' })).toHaveCount(0);
   expect(profileRequests).toBe(0);
 });
 

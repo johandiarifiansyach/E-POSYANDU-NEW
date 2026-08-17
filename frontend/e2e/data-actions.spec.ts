@@ -175,8 +175,7 @@ async function configureAuthenticatedPage(
           role: 'Kader Posyandu',
           desa: 'Desa Gumukmas',
           posyandu: 'SALAK 1'
-        },
-        mfa: { required: true, state: 'verified' }
+        }
       } });
       return;
     }

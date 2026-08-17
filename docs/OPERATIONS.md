@@ -53,11 +53,9 @@ Salin template frontend yang sesuai menjadi file lokal tanpa akhiran `.example`.
 6. Terapkan migrasi di production.
 7. Deploy private Neon Read Worker production sebelum menjalankan `npm run worker:deploy`, lalu deploy Pages.
 
-Worker dan migration `027` mengaktifkan TOTP MFA wajib. Uji pendaftaran QR,
-kode salah, login ulang, refresh sesi, logout, dan pemulihan akun di staging.
-Jangan menjalankan pengujian pendaftaran dari localhost selama localhost masih
-menunjuk Supabase production karena tindakan tersebut menambahkan faktor pada
-akun nyata. Frontend production memanggil `/api` di domain Pages; `_worker.js`
+Worker dan migration `027` menutup akses RPC browser langsung. Uji login,
+kata sandi salah, refresh sesi, pembatasan percobaan, logout, dan pemulihan akun
+di staging. Frontend production memanggil `/api` di domain Pages; `_worker.js`
 meneruskannya ke API sehingga cookie `__Host-e-posyandu-session` tetap
 first-party di Safari/mobile.
 
@@ -71,7 +69,7 @@ SMOKE_API_URL='https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev' 
 npm run deployment:smoke
 ```
 
-Untuk staging, `SMOKE_SESSION_COOKIE` opsional dapat diisi sesaat dengan pasangan nama/nilai cookie sesi AAL2, misalnya `__Host-e-posyandu-session=...`. Alternatif kompatibilitasnya adalah `SMOKE_ACCESS_TOKEN` yang wajib memiliki klaim `aal2`. Keduanya menambahkan pemeriksaan endpoint sesi serta riwayat terautentikasi dan memastikan token tidak muncul di respons. Kredensial ini berumur pendek: jangan simpan sebagai file, log, atau secret jangka panjang. Workflow terjadwal tetap menguji penolakan sesi anonim ketika secret tidak tersedia.
+Untuk staging, `SMOKE_SESSION_COOKIE` opsional dapat diisi sesaat dengan pasangan nama/nilai cookie sesi, misalnya `__Host-e-posyandu-session=...`. Alternatif kompatibilitasnya adalah `SMOKE_ACCESS_TOKEN`. Keduanya menambahkan pemeriksaan endpoint sesi serta riwayat terautentikasi dan memastikan token tidak muncul di respons. Kredensial ini berumur pendek: jangan simpan sebagai file, log, atau secret jangka panjang. Workflow terjadwal tetap menguji penolakan sesi anonim ketika secret tidak tersedia.
 
 ## Audit dan dokumentasi API
 
@@ -154,7 +152,7 @@ Setelah mutasi berhasil, user terkait dipaksa membaca Supabase selama 6 menit. C
 
 Setiap sesi yang berhasil diverifikasi oleh Supabase menyimpan salinan scope akses ke KV menggunakan hash SHA-256 token, bukan token mentah. Salinan hanya berisi user ID, role, desa, dan posyandu yang diperlukan untuk pembatasan data. Masa berlakunya mengikuti waktu kedaluwarsa JWT dengan batas maksimum satu jam dan terus diperbarui selama Supabase sehat.
 
-Saat Supabase gagal dijangkau, mengembalikan `429`, atau `5xx`, backend boleh memakai scope tersebut hanya untuk `GET` dan query GraphQL baca. Data tetap dibatasi sesuai role serta wilayah lalu dibaca dari Neon. Scope hanya dibuat dari sesi AAL2. Status `401` atau `403` tidak pernah memakai fallback karena dapat menunjukkan token atau izin yang tidak sah. Login baru, refresh token, CRUD, sinkronisasi tulis, audit, dan seluruh perubahan data tetap bergantung pada Supabase serta tidak pernah dialihkan ke Neon.
+Saat Supabase gagal dijangkau, mengembalikan `429`, atau `5xx`, backend boleh memakai scope tersebut hanya untuk `GET` dan query GraphQL baca. Data tetap dibatasi sesuai role serta wilayah lalu dibaca dari Neon. Scope hanya dibuat dari sesi yang sebelumnya berhasil diverifikasi Supabase. Status `401` atau `403` tidak pernah memakai fallback karena dapat menunjukkan token atau izin yang tidak sah. Login baru, refresh token, CRUD, sinkronisasi tulis, audit, dan seluruh perubahan data tetap bergantung pada Supabase serta tidak pernah dialihkan ke Neon.
 
 Mode ini menjaga daftar dan dashboard tetap dapat dibuka dalam gangguan singkat, bukan menjadikan Neon primary kedua. Bila sesi belum pernah diverifikasi, JWT sudah kedaluwarsa, KV tidak tersedia, replika belum siap, atau gangguan berlangsung lebih dari satu jam, pengguna harus menunggu Supabase pulih. Pantau event `emergency_read_session`; setiap event harus mencantumkan `writes: blocked` dan tidak boleh berisi token atau data balita.
 

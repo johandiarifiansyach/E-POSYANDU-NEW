@@ -49,7 +49,6 @@ PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
 # Ubah menjadi `primary-only` untuk mematikan replica tanpa deploy ulang kode.
 READ_REPLICA_MODE = "prefer-replica"
 OPENAI_MODEL = "gpt-5.6-luna"
-MFA_ENFORCEMENT = "required"
 
 [env.development]
 name = "e-posyandu-api-development"
@@ -63,7 +62,6 @@ LOCAL_TURNSTILE_BYPASS = "true"
 PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
 READ_REPLICA_MODE = "primary-only"
 OPENAI_MODEL = "gpt-5.6-luna"
-MFA_ENFORCEMENT = "required"
 
 [env.development.observability]
 enabled = false
@@ -97,7 +95,6 @@ PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
 # hanya setelah database Neon staging dan seluruh secret-nya tersedia.
 READ_REPLICA_MODE = "primary-only"
 OPENAI_MODEL = "gpt-5.6-luna"
-MFA_ENFORCEMENT = "required"
 
 [env.staging.observability]
 enabled = true

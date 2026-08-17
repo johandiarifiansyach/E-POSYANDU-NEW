@@ -39,7 +39,7 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '027_require_mfa_aal2.sql');
+  assert.equal(files.at(-1), '028_remove_second_step_policies.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
@@ -65,8 +65,8 @@ test('RPC browser lama ditutup setelah proxy HttpOnly tersedia', async () => {
     'utf8'
   );
   const client = await readApiClient();
-  const mfaMigration = await readFile(
-    resolve(root, 'database/migrations/027_require_mfa_aal2.sql'),
+  const securityMigration = await readFile(
+    resolve(root, 'database/migrations/027_close_direct_browser_fallback.sql'),
     'utf8'
   );
 
@@ -75,8 +75,8 @@ test('RPC browser lama ditutup setelah proxy HttpOnly tersedia', async () => {
   assert.match(migration, /public\.eposyandu_scope_match/);
   assert.match(migration, /revoke all on function public\.eposyandu_self_children_page[\s\S]+from public, anon/);
   assert.match(migration, /grant execute on function public\.eposyandu_self_children_page[\s\S]+to authenticated, service_role/);
-  assert.match(mfaMigration, /revoke execute on function public\.eposyandu_self_children_page[\s\S]+from authenticated/);
-  assert.match(mfaMigration, /authenticated_aal2_only/);
+  assert.match(securityMigration, /revoke execute on function public\.eposyandu_self_children_page[\s\S]+from authenticated/);
+  assert.doesNotMatch(securityMigration, /authenticated_aal2_only|auth\.jwt\(\)->>'aal'/);
   assert.doesNotMatch(client, /eposyandu_self_children_page/);
   assert.doesNotMatch(client, /eposyandu_self_problem_children_page/);
   assert.doesNotMatch(client, /eposyandu_self_exclusive_breastfeeding_page/);
@@ -89,8 +89,8 @@ test('RPC tulis browser lama dicabut dan sinkronisasi kembali melalui API', asyn
     'utf8'
   );
   const client = await readApiClient();
-  const mfaMigration = await readFile(
-    resolve(root, 'database/migrations/027_require_mfa_aal2.sql'),
+  const securityMigration = await readFile(
+    resolve(root, 'database/migrations/027_close_direct_browser_fallback.sql'),
     'utf8'
   );
 
@@ -104,7 +104,7 @@ test('RPC tulis browser lama dicabut dan sinkronisasi kembali melalui API', asyn
   assert.match(client, /supportsMeasurementMutation/);
   assert.match(client, /apiRequest<SyncResponse>\('\/sync'/);
   assert.doesNotMatch(client, /eposyandu_self_sync_measurement_batch/);
-  assert.match(mfaMigration, /revoke execute on function public\.eposyandu_self_sync_measurement_batch\(jsonb\) from authenticated/);
+  assert.match(securityMigration, /revoke execute on function public\.eposyandu_self_sync_measurement_batch\(jsonb\) from authenticated/);
 });
 
 test('fallback penimbangan menyimpan LILA kosong untuk bayi di bawah tiga bulan', async () => {
@@ -264,8 +264,6 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
     '/api/v1/auth/login',
     '/api/v1/auth/logout',
     '/api/v1/auth/session',
-    '/api/v1/auth/mfa/enroll',
-    '/api/v1/auth/mfa/verify',
     '/api/v1/graphql',
     '/api/v1/sync',
     '/api/v1/features',
@@ -286,6 +284,7 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
   assert.ok(document.components.securitySchemes.sessionCookie);
   assert.ok(!('access_token' in document.components.schemas.LoginResponse.properties));
   assert.ok(!('refresh_token' in document.components.schemas.LoginResponse.properties));
+  assert.ok(!('mfa' in document.components.schemas.LoginResponse.properties));
   assert.equal(
     document.components.schemas.LoginResponse.properties.profile.$ref,
     '#/components/schemas/AccessProfile'
@@ -515,7 +514,7 @@ test('deployment diperiksa berkala dan backup hanya disimpan dalam bentuk terenk
 
   assert.match(smokeScript, /SMOKE_REQUIRE_SECURITY_HEADERS/);
   assert.match(smokeScript, /SMOKE_SESSION_COOKIE/);
-  assert.match(smokeScript, /authenticated-aal2-session/);
+  assert.match(smokeScript, /authenticated-session/);
   assert.match(smokeScript, /unauthenticated-session-rejected/);
   assert.match(smokeScript, /history\.items\.length <= 10/);
   assert.match(smokeWorkflow, /17 \*\/6 \* \* \*/);
@@ -567,8 +566,8 @@ test('cache sensitif dienkripsi per akun dan login tidak melewati gerbang keaman
   assert.match(client, /credentials: 'include'/);
   assert.match(worker, /__Host-e-posyandu-session/);
   assert.match(worker, /HttpOnly; Secure; SameSite=Strict/);
-  assert.match(worker, /MFA_ENFORCEMENT/);
-  assert.match(worker, /jwt_assurance_level[\s\S]+aal2/);
+  assert.doesNotMatch(worker, /MFA_ENFORCEMENT|mfa_is_required|jwt_assurance_level/);
+  assert.doesNotMatch(client, /auth\/mfa|enrollMfa|verifyMfa|MfaStatus/);
   assert.match(pagesProxy, /isApiPath/);
   assert.match(pagesProxy, /env\.ASSETS\.fetch/);
 });

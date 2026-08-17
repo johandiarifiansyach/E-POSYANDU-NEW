@@ -24,7 +24,9 @@ Migrasi `015_background_grpc_jobs.sql` menambahkan tabel status pekerjaan berat 
 
 Migrasi `020_read_replica_children_page.sql` menambahkan fungsi baca terpaginasikan untuk replika Neon. Fungsi ini hanya menerima konteks role dan wilayah yang sudah divalidasi Rust Worker; fungsi tidak dapat menulis data. Supabase tetap menjadi primary dan satu-satunya tujuan autentikasi, CRUD, audit, serta sinkronisasi offline.
 
-Migrasi `027_require_mfa_aal2.sql` menambahkan kebijakan RLS restriktif AAL2 dan mencabut RPC fallback browser lama. Setelah migrasi ini, browser wajib memakai cookie HttpOnly melalui Pages/Worker; token Supabase tidak disimpan atau dikirim oleh JavaScript aplikasi.
+Migrasi `027_close_direct_browser_fallback.sql` mencabut RPC fallback browser lama. Setelah migrasi ini, browser wajib memakai cookie HttpOnly melalui Pages/Worker; token Supabase tidak disimpan atau dikirim oleh JavaScript aplikasi.
+
+Migrasi `028_remove_second_step_policies.sql` membersihkan kebijakan autentikasi dua langkah lama bila versi awal migrasi 027 sempat diterapkan pada suatu environment. Migration ini tidak membuka kembali RPC browser.
 
 ## Supabase primary dan Neon read replica
 

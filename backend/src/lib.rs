@@ -62,7 +62,6 @@ struct BrowserSession {
     refresh_token: String,
     user: SupabaseUser,
     profile: AccessScope,
-    mfa_factor_id: Option<String>,
     updated_at: String,
 }
 
@@ -169,15 +168,6 @@ struct LoginAccount {
 struct SupabaseUser {
     id: String,
     email: Option<String>,
-    #[serde(default)]
-    factors: Vec<MfaFactor>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct MfaFactor {
-    id: String,
-    status: String,
-    factor_type: String,
 }
 
 #[derive(Deserialize)]
@@ -185,29 +175,6 @@ struct SupabaseSession {
     access_token: String,
     refresh_token: String,
     user: SupabaseUser,
-}
-
-#[derive(Deserialize)]
-struct MfaChallenge {
-    id: String,
-}
-
-#[derive(Deserialize)]
-struct MfaEnrollment {
-    id: String,
-    totp: MfaTotpEnrollment,
-}
-
-#[derive(Deserialize)]
-struct MfaTotpEnrollment {
-    qr_code: String,
-    secret: String,
-    uri: String,
-}
-
-#[derive(Deserialize)]
-struct MfaVerifyBody {
-    code: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -337,8 +304,6 @@ fn is_allowed_nonproduction_post(path: &str) -> bool {
         path,
         "/api/v1/auth/login"
             | "/api/v1/auth/logout"
-            | "/api/v1/auth/mfa/enroll"
-            | "/api/v1/auth/mfa/verify"
             | "/api/v1/graphql"
             | "/api/v1/client-errors"
             | "/api/v1/security/csp-report"
@@ -1513,26 +1478,6 @@ fn jwt_expiration_seconds(token: &str) -> Option<u64> {
     jwt_payload(token)?.get("exp")?.as_u64()
 }
 
-fn jwt_assurance_level(token: &str) -> &str {
-    match jwt_payload(token)
-        .and_then(|payload| {
-            payload
-                .get("aal")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .as_deref()
-    {
-        Some("aal2") => "aal2",
-        _ => "aal1",
-    }
-}
-
-fn mfa_is_required(env: &Env) -> bool {
-    optional_secret(env, "MFA_ENFORCEMENT")
-        .is_some_and(|value| value.eq_ignore_ascii_case("required"))
-}
-
 fn verified_scope_is_valid(scope: &AccessScope) -> bool {
     if scope.user_id.trim().is_empty() {
         return false;
@@ -1824,7 +1769,6 @@ async fn refresh_browser_session(
         refresh_token: refreshed.refresh_token,
         user: refreshed.user,
         profile: current.profile.clone(),
-        mfa_factor_id: current.mfa_factor_id.clone(),
         updated_at: now_iso(),
     };
     write_browser_session(env, identifier, &session).await?;
@@ -2107,18 +2051,8 @@ async fn login(
         desa: account.village.clone(),
         posyandu: account.posyandu.clone(),
     };
-    let assurance_level = jwt_assurance_level(&session.access_token);
-    let mfa_pending = mfa_is_required(env) && assurance_level != "aal2";
-    let verified_factor_id = session
-        .user
-        .factors
-        .iter()
-        .find(|factor| factor.factor_type == "totp" && factor.status == "verified")
-        .map(|factor| factor.id.clone());
-    if !mfa_pending {
-        cache_scope(session.access_token.clone(), profile.clone());
-        schedule_verified_scope_cache(context, env, &session.access_token, &profile);
-    }
+    cache_scope(session.access_token.clone(), profile.clone());
+    schedule_verified_scope_cache(context, env, &session.access_token, &profile);
     schedule_login_attempt_clear(context, env, &remote_ip, &username);
     schedule_login_audit(
         context,
@@ -2127,11 +2061,7 @@ async fn login(
         &username,
         Some(&account),
         "login_success",
-        if mfa_pending {
-            "mfa_pending"
-        } else {
-            "authenticated"
-        },
+        "authenticated",
     );
     let session_identifier =
         new_browser_session_identifier(&session.refresh_token, &audit_request_id);
@@ -2140,7 +2070,6 @@ async fn login(
         refresh_token: session.refresh_token,
         user: session.user.clone(),
         profile: profile.clone(),
-        mfa_factor_id: verified_factor_id.clone(),
         updated_at: now_iso(),
     };
     write_browser_session(env, &session_identifier, &browser_session).await?;
@@ -2153,14 +2082,6 @@ async fn login(
                 "role": profile.role,
                 "desa": profile.desa,
                 "posyandu": profile.posyandu
-            },
-            "mfa": if mfa_pending {
-                Some(json!({
-                    "required": true,
-                    "state": if verified_factor_id.is_some() { "challenge" } else { "enroll" }
-                }))
-            } else {
-                None
             }
         }),
         session_identifier,
@@ -2189,175 +2110,6 @@ async fn logout(request: &Request, env: &Env) -> serde_json::Value {
     }
     delete_browser_session(env, &identifier).await;
     json!({ "signedOut": true })
-}
-
-fn mfa_auth_headers(env: &Env, access_token: &str) -> ApiResult<(String, Headers)> {
-    let supabase_url = secret(env, "SUPABASE_URL")?
-        .trim_end_matches('/')
-        .to_owned();
-    let publishable_key = secret(env, "SUPABASE_PUBLISHABLE_KEY")?;
-    let headers = supabase_headers(&publishable_key, Some(access_token))
-        .map_err(|_| ApiFailure::new(503, "Konfigurasi MFA belum tersedia."))?;
-    Ok((supabase_url, headers))
-}
-
-async fn enroll_mfa(request: &Request, env: &Env) -> ApiResult<serde_json::Value> {
-    let identifier = browser_session_cookie(request, env)
-        .ok_or_else(|| ApiFailure::new(401, "Sesi masuk diperlukan."))?;
-    let mut session = read_browser_session(env, &identifier)
-        .await
-        .ok_or_else(|| ApiFailure::new(401, "Sesi masuk tidak lagi valid."))?;
-    if jwt_assurance_level(&session.access_token) == "aal2" {
-        return Ok(json!({ "state": "verified" }));
-    }
-    if let Some(factor_id) = session
-        .user
-        .factors
-        .iter()
-        .find(|factor| factor.factor_type == "totp" && factor.status == "verified")
-        .map(|factor| factor.id.clone())
-    {
-        session.mfa_factor_id = Some(factor_id);
-        write_browser_session(env, &identifier, &session).await?;
-        return Ok(json!({ "state": "challenge" }));
-    }
-
-    let (supabase_url, headers) = mfa_auth_headers(env, &session.access_token)?;
-    if let Some(previous_factor_id) = session.mfa_factor_id.take() {
-        let _ = request_value(
-            format!("{supabase_url}/auth/v1/factors/{previous_factor_id}"),
-            Method::Delete,
-            headers.clone(),
-            None,
-        )
-        .await;
-    }
-    let (status, payload) = request_value(
-        format!("{supabase_url}/auth/v1/factors"),
-        Method::Post,
-        headers,
-        Some(json!({
-            "factor_type": "totp",
-            "friendly_name": "E-Posyandu Gumukmas"
-        })),
-    )
-    .await?;
-    if status >= 300 {
-        return Err(ApiFailure::new(
-            503,
-            "Pendaftaran autentikator belum dapat dimulai.",
-        ));
-    }
-    let enrollment: MfaEnrollment = response_data(payload)?;
-    if enrollment.id.is_empty()
-        || enrollment.totp.qr_code.len() > 100_000
-        || !(enrollment.totp.qr_code.starts_with("data:image/svg+xml")
-            || enrollment.totp.qr_code.trim_start().starts_with("<svg"))
-        || !(16..=256).contains(&enrollment.totp.secret.len())
-        || !enrollment.totp.uri.starts_with("otpauth://")
-    {
-        return Err(ApiFailure::new(503, "Respons pendaftaran MFA tidak valid."));
-    }
-    session.mfa_factor_id = Some(enrollment.id);
-    session.updated_at = now_iso();
-    write_browser_session(env, &identifier, &session).await?;
-    Ok(json!({
-        "state": "enroll",
-        "qrCode": enrollment.totp.qr_code,
-        "secret": enrollment.totp.secret,
-        "uri": enrollment.totp.uri
-    }))
-}
-
-async fn verify_mfa(
-    mut request: Request,
-    env: &Env,
-    context: &Context,
-) -> ApiResult<serde_json::Value> {
-    let identifier = browser_session_cookie(&request, env)
-        .ok_or_else(|| ApiFailure::new(401, "Sesi masuk diperlukan."))?;
-    let session = read_browser_session(env, &identifier)
-        .await
-        .ok_or_else(|| ApiFailure::new(401, "Sesi masuk tidak lagi valid."))?;
-    let payload = request
-        .json::<MfaVerifyBody>()
-        .await
-        .map_err(|_| ApiFailure::new(422, "Kode autentikator tidak valid."))?;
-    let code = payload.code.unwrap_or_default();
-    if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(ApiFailure::new(422, "Masukkan 6 digit kode autentikator."));
-    }
-    let factor_id = session
-        .mfa_factor_id
-        .clone()
-        .ok_or_else(|| ApiFailure::new(409, "Pendaftaran MFA belum dimulai."))?;
-    let (supabase_url, headers) = mfa_auth_headers(env, &session.access_token)?;
-    let (status, challenge_payload) = request_value(
-        format!("{supabase_url}/auth/v1/factors/{factor_id}/challenge"),
-        Method::Post,
-        headers.clone(),
-        Some(json!({})),
-    )
-    .await?;
-    if status >= 300 {
-        return Err(ApiFailure::new(
-            429,
-            "Kode terlalu sering dicoba. Tunggu lalu coba lagi.",
-        ));
-    }
-    let challenge: MfaChallenge = response_data(challenge_payload)?;
-    let (status, verified_payload) = request_value(
-        format!("{supabase_url}/auth/v1/factors/{factor_id}/verify"),
-        Method::Post,
-        headers,
-        Some(json!({ "challenge_id": challenge.id, "code": code })),
-    )
-    .await?;
-    if status >= 300 {
-        return Err(ApiFailure::new(
-            401,
-            "Kode autentikator tidak benar atau sudah kedaluwarsa.",
-        ));
-    }
-    let verified: SupabaseSession = response_data(verified_payload)?;
-    if verified.user.id != session.profile.user_id
-        || jwt_assurance_level(&verified.access_token) != "aal2"
-    {
-        return Err(ApiFailure::new(403, "Verifikasi MFA belum mencapai AAL2."));
-    }
-    let browser_session = BrowserSession {
-        access_token: verified.access_token,
-        refresh_token: verified.refresh_token,
-        user: verified.user.clone(),
-        profile: session.profile.clone(),
-        mfa_factor_id: Some(factor_id),
-        updated_at: now_iso(),
-    };
-    write_browser_session(env, &identifier, &browser_session).await?;
-    cache_scope(
-        browser_session.access_token.clone(),
-        browser_session.profile.clone(),
-    );
-    schedule_verified_scope_cache(
-        context,
-        env,
-        &browser_session.access_token,
-        &browser_session.profile,
-    );
-    Ok(json!({
-        "user": {
-            "id": browser_session.user.id,
-            "email": browser_session.user.email
-        },
-        "profile": {
-            "userId": browser_session.profile.user_id,
-            "email": browser_session.profile.email,
-            "role": browser_session.profile.role,
-            "desa": browser_session.profile.desa,
-            "posyandu": browser_session.profile.posyandu
-        },
-        "mfa": { "required": true, "state": "verified" }
-    }))
 }
 
 async fn record_login_audit(
@@ -2405,12 +2157,6 @@ async fn record_login_audit(
 
 async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
     let token = bearer_token(request)?;
-    if mfa_is_required(env) && jwt_assurance_level(&token) != "aal2" {
-        return Err(ApiFailure::new(
-            403,
-            "Verifikasi autentikator diperlukan untuk melanjutkan.",
-        ));
-    }
     if let Some(scope) = cached_scope(&token) {
         return Ok(scope);
     }
@@ -2610,8 +2356,6 @@ mod tests {
     fn nonproduction_write_allowlist_contains_only_safe_posts() {
         assert!(is_allowed_nonproduction_post("/api/v1/auth/login"));
         assert!(is_allowed_nonproduction_post("/api/v1/auth/logout"));
-        assert!(is_allowed_nonproduction_post("/api/v1/auth/mfa/enroll"));
-        assert!(is_allowed_nonproduction_post("/api/v1/auth/mfa/verify"));
         assert!(is_allowed_nonproduction_post("/api/v1/graphql"));
         assert!(is_allowed_nonproduction_post("/api/v1/client-errors"));
         assert!(is_allowed_nonproduction_post("/api/v1/security/csp-report"));
@@ -2626,21 +2370,6 @@ mod tests {
         let token = format!("header.{payload}.signature");
         assert_eq!(jwt_expiration_seconds(&token), Some(1_893_456_000));
         assert_eq!(jwt_expiration_seconds("invalid"), None);
-    }
-
-    #[test]
-    fn jwt_assurance_defaults_to_aal1_and_accepts_aal2() {
-        let aal2_payload = URL_SAFE_NO_PAD.encode(br#"{"aal":"aal2"}"#);
-        let aal1_payload = URL_SAFE_NO_PAD.encode(br#"{"aal":"aal1"}"#);
-        assert_eq!(
-            jwt_assurance_level(&format!("header.{aal2_payload}.signature")),
-            "aal2"
-        );
-        assert_eq!(
-            jwt_assurance_level(&format!("header.{aal1_payload}.signature")),
-            "aal1"
-        );
-        assert_eq!(jwt_assurance_level("invalid"), "aal1");
     }
 
     #[test]
@@ -2792,38 +2521,6 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
         response
             .headers_mut()
             .set("Clear-Site-Data", "\"cache\", \"cookies\", \"storage\"")?;
-        log_request(&env, &request_id, &method, &path, status, started_at);
-        return Ok(response);
-    }
-    if request.method() == Method::Post && path == "/api/v1/auth/mfa/enroll" {
-        let (status, response) = match enroll_mfa(&request, &env).await {
-            Ok(payload) => {
-                success_response(&payload, origin.as_deref(), &request_id, "no-store", None)?
-            }
-            Err(error) => {
-                let status = error.status;
-                (
-                    status,
-                    failure_response(error, origin.as_deref(), &request_id)?,
-                )
-            }
-        };
-        log_request(&env, &request_id, &method, &path, status, started_at);
-        return Ok(response);
-    }
-    if request.method() == Method::Post && path == "/api/v1/auth/mfa/verify" {
-        let (status, response) = match verify_mfa(request, &env, &context).await {
-            Ok(payload) => {
-                success_response(&payload, origin.as_deref(), &request_id, "no-store", None)?
-            }
-            Err(error) => {
-                let status = error.status;
-                (
-                    status,
-                    failure_response(error, origin.as_deref(), &request_id)?,
-                )
-            }
-        };
         log_request(&env, &request_id, &method, &path, status, started_at);
         return Ok(response);
     }

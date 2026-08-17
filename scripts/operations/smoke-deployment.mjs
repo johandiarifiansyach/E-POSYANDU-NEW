@@ -88,7 +88,7 @@ if (Object.keys(authHeaders).length > 0) {
   assert(session.profile?.role, 'Sesi terautentikasi tidak mengembalikan role.');
   assert(!('accessToken' in session), 'Endpoint sesi membocorkan access token.');
   assert(!('refreshToken' in session), 'Endpoint sesi membocorkan refresh token.');
-  checked.push('authenticated-aal2-session');
+  checked.push('authenticated-session');
 
   const historyResponse = await request(
     endpoint(apiBase, '/api/v1/collections/change_logs?order=timestamp%7Cdesc&page=1&size=10'),
@@ -113,7 +113,7 @@ if (Object.keys(authHeaders).length > 0) {
     'Respons penolakan sesi boleh tersimpan di cache.'
   );
   checked.push('unauthenticated-session-rejected');
-  checked.push('authenticated-check-skipped-no-ephemeral-aal2-credential');
+  checked.push('authenticated-check-skipped-no-ephemeral-credential');
 }
 
 console.log(JSON.stringify({ event: 'deployment_smoke', ok: true, checked }));

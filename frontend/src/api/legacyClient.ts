@@ -606,25 +606,11 @@ function notifyAuthListeners() {
 type SupabaseAuthResponse = {
   user: { id: string; email?: string | null };
   profile?: AccessProfile;
-  mfa?: MfaStatus | null;
-};
-
-export type MfaStatus = {
-  required: boolean;
-  state: 'enroll' | 'challenge' | 'verified';
-};
-
-export type MfaEnrollment = {
-  state: 'enroll' | 'challenge' | 'verified';
-  qrCode?: string;
-  secret?: string;
-  uri?: string;
 };
 
 export type SignInResult = {
   session: AuthUser | null;
   profile: AccessProfile | null;
-  mfa: MfaStatus | null;
 };
 
 async function usernameLoginRequest(username: string, password: string, turnstileToken?: string): Promise<SupabaseAuthResponse> {
@@ -1422,12 +1408,6 @@ export async function signInWithPassword(
     }
     throw error;
   }
-  if (response.mfa?.required && response.mfa.state !== 'verified') {
-    auth.currentUser = null;
-    saveSession(null);
-    notifyAuthListeners();
-    return { session: null, profile: null, mfa: response.mfa };
-  }
   const nextSession = sessionFromResponse(response);
   const changesAccount = !auth.currentUser || auth.currentUser.uid !== nextSession.uid;
   await initializeOfflineStoreSession(nextSession.uid, { forceReset: changesAccount });
@@ -1435,34 +1415,7 @@ export async function signInWithPassword(
   auth.currentUser = nextSession;
   saveSession(nextSession);
   notifyAuthListeners();
-  return { session: nextSession, profile: response.profile || null, mfa: response.mfa || null };
-}
-
-export async function enrollMfa(): Promise<MfaEnrollment> {
-  return apiRequest<MfaEnrollment>('/auth/mfa/enroll', {
-    method: 'POST',
-    body: '{}'
-  });
-}
-
-export async function verifyMfa(auth: Auth, code: string): Promise<SignInResult> {
-  const response = await apiRequest<SupabaseAuthResponse>('/auth/mfa/verify', {
-    method: 'POST',
-    body: JSON.stringify({ code })
-  });
-  if (!response.mfa || response.mfa.state !== 'verified' || !response.profile) {
-    throw new Error('Verifikasi MFA belum selesai.');
-  }
-  const nextSession = sessionFromResponse(response);
-  const storedSession = readStoredSession();
-  await initializeOfflineStoreSession(nextSession.uid, {
-    forceReset: Boolean(storedSession && storedSession.uid !== nextSession.uid)
-  });
-  if (storedSession && storedSession.uid !== nextSession.uid) clearSyncState();
-  auth.currentUser = nextSession;
-  saveSession(nextSession);
-  notifyAuthListeners();
-  return { session: nextSession, profile: response.profile, mfa: response.mfa };
+  return { session: nextSession, profile: response.profile || null };
 }
 
 export async function getCurrentAccessProfile(): Promise<AccessProfile> {
