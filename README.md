@@ -53,3 +53,4 @@ Status pengembangan fitur operasional ada di [docs/ROADMAP.md](docs/ROADMAP.md).
 Panduan kepemilikan folder dan penempatan file baru ada di [docs/STRUCTURE.md](docs/STRUCTURE.md).
 
 Seluruh antarmuka memakai HTML5, CSS, dan TypeScript dengan elemen DOM browser langsung. Tidak ada React, JSX/TSX, virtual DOM, atau runtime rekonsiliasi.
+# skills-copilot-codespaces-vscode
