@@ -408,14 +408,15 @@ test('pekerjaan berat memakai migration privat, Queue, dan kontrak frontend', as
 });
 
 test('deployment Oracle mengisolasi gRPC dan tidak menaruh secret dalam image', async () => {
-  const [compose, caddy, bootstrap, deploy, connector, envExample, dockerfile] = await Promise.all([
+  const [compose, caddy, bootstrap, deploy, connector, envExample, dockerfile, cloudWorker] = await Promise.all([
     readFile(resolve(root, 'deploy/oracle/compose.yaml'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/Caddyfile'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/bootstrap.sh'), 'utf8'),
     readFile(resolve(root, 'scripts/services/deploy-oracle-nutrition-worker.sh'), 'utf8'),
     readFile(resolve(root, 'scripts/services/connect-oracle-nutrition-worker.sh'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/nutrition-grpc.env.example'), 'utf8'),
-    readFile(resolve(root, 'services/nutrition-grpc/Dockerfile'), 'utf8')
+    readFile(resolve(root, 'services/nutrition-grpc/Dockerfile'), 'utf8'),
+    readFile(resolve(root, 'services/nutrition-grpc/src/bin/cloud.rs'), 'utf8')
   ]);
 
   assert.match(compose, /GRPC_ADDR: 127\.0\.0\.1:50051/);
@@ -440,11 +441,14 @@ test('deployment Oracle mengisolasi gRPC dan tidak menaruh secret dalam image', 
   assert.match(deploy, /COPYFILE_DISABLE=1 tar/);
   assert.match(deploy, /--no-xattrs/);
   assert.match(deploy, /--no-mac-metadata/);
+  assert.match(deploy, /--no-fflags/);
   assert.match(connector, /secret put RUST_WORKER_HEALTH_URL/);
   assert.match(envExample, /RUST_WORKER_SHARED_SECRET=replace-/);
   assert.match(dockerfile, /USER eposyandu/);
   assert.match(dockerfile, /FROM docker\.io\/library\/rust:1\.97-slim-bookworm/);
   assert.match(dockerfile, /FROM docker\.io\/library\/debian:bookworm-slim/);
+  assert.match(cloudWorker, /SignalKind::terminate\(\)/);
+  assert.match(cloudWorker, /nutrition worker menerima sinyal shutdown/);
   assert.doesNotMatch(`${compose}\n${dockerfile}`, /CLOUDFLARE_QUEUES_API_TOKEN=/);
 });
 

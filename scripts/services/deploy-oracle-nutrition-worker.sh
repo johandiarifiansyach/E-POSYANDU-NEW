@@ -64,6 +64,7 @@ archive_file="$task_temp/e-posyandu-oracle.tar.gz"
 COPYFILE_DISABLE=1 tar \
   --no-xattrs \
   --no-mac-metadata \
+  --no-fflags \
   --exclude='services/nutrition-grpc/target' \
   --exclude='services/nutrition-grpc/.env' \
   -czf "$archive_file" \

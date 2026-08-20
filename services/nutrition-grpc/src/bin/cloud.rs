@@ -28,6 +28,30 @@ async fn health() -> &'static str {
     "E-Posyandu nutrition worker aktif"
 }
 
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let terminate = async {
+            if let Ok(mut stream) = signal(SignalKind::terminate()) {
+                stream.recv().await;
+            }
+        };
+        tokio::select! {
+            () = ctrl_c => {},
+            () = terminate => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    ctrl_c.await;
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let grpc_address: SocketAddr = env::var("GRPC_ADDR")
@@ -38,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .set_serving::<NutritionWorkerServer<NutritionService>>()
         .await;
 
-    let grpc_task = tokio::spawn(async move {
+    let mut grpc_task = tokio::spawn(async move {
         println!("nutrition-grpc internal listening on {grpc_address}");
         Server::builder()
             .add_service(health_service)
@@ -59,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )
     .map_err(io::Error::other)?;
 
-    let queue_task = tokio::spawn(queue_consumer::run(queue_config));
+    let mut queue_task = tokio::spawn(queue_consumer::run(queue_config));
 
     let port = optional_number("PORT", 8_080_u16)?;
     let address = SocketAddr::from(([0, 0, 0, 0], port));
@@ -73,13 +97,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
 
     tokio::select! {
+        () = shutdown_signal() => {
+            println!("nutrition worker menerima sinyal shutdown");
+            grpc_task.abort();
+            queue_task.abort();
+            Ok(())
+        },
         result = http_server => result.map_err(Into::into),
-        result = grpc_task => match result {
+        result = &mut grpc_task => match result {
             Ok(Ok(())) => Err(io::Error::other("Server gRPC internal berhenti.").into()),
             Ok(Err(error)) => Err(error.into()),
             Err(error) => Err(error.into()),
         },
-        result = queue_task => match result {
+        result = &mut queue_task => match result {
             Ok(Ok(())) => Err(io::Error::other("Queue consumer berhenti.").into()),
             Ok(Err(error)) => Err(io::Error::other(error).into()),
             Err(error) => Err(error.into()),
