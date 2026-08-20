@@ -61,9 +61,12 @@ if [[ "$container_engine" == "podman" ]]; then
   dnf install --assumeyes podman-compose
   systemctl enable podman-restart.service
   if systemctl is-active --quiet firewalld; then
-    firewall-cmd --permanent --add-service=http
-    firewall-cmd --permanent --add-service=https
-    firewall-cmd --reload
+    firewall-cmd --query-service=http >/dev/null || firewall-cmd --add-service=http
+    firewall-cmd --query-service=https >/dev/null || firewall-cmd --add-service=https
+    firewall-cmd --permanent --query-service=http >/dev/null \
+      || firewall-cmd --permanent --add-service=http
+    firewall-cmd --permanent --query-service=https >/dev/null \
+      || firewall-cmd --permanent --add-service=https
   fi
 else
   export DEBIAN_FRONTEND=noninteractive
@@ -101,8 +104,6 @@ fi
   --env-file /etc/e-posyandu/nutrition-grpc.env \
   up --detach --build --remove-orphans
 
-ln -sfn "$release_dir" /opt/e-posyandu/current
-
 health_site="$(sed -n 's/^ORACLE_HEALTH_SITE=//p' /etc/e-posyandu/nutrition-grpc.env | tail -n 1)"
 if [[ "$health_site" == http://* ]]; then
   health_host="${health_site#http://}"
@@ -114,6 +115,7 @@ fi
 
 for attempt in $(seq 1 30); do
   if "${health_check[@]}" 2>/dev/null | grep -Fq "E-Posyandu nutrition worker aktif"; then
+    ln -sfn "$release_dir" /opt/e-posyandu/current
     echo "Nutrition worker Oracle aktif."
     "${compose_command[@]}" \
       --project-name e-posyandu-oracle \

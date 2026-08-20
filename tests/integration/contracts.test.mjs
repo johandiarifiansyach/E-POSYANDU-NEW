@@ -429,13 +429,17 @@ test('deployment Oracle mengisolasi gRPC dan tidak menaruh secret dalam image', 
   assert.match(bootstrap, /install -m 0600 .*nutrition-grpc\.env/);
   assert.match(bootstrap, /compose_command=\(podman-compose\)/);
   assert.match(bootstrap, /dnf install --assumeyes container-tools oracle-epel-release-el9/);
-  assert.match(bootstrap, /firewall-cmd --permanent --add-service=https/);
+  assert.match(bootstrap, /firewall-cmd --query-service=http/);
+  assert.match(bootstrap, /firewall-cmd --permanent --query-service=https/);
+  assert.doesNotMatch(bootstrap, /firewall-cmd --reload/);
   assert.match(bootstrap, /"\$\{compose_command\[@\]\}"[\s\S]+up --detach --build --remove-orphans/);
   assert.match(bootstrap, /-H "Host: \$health_host" http:\/\/127\.0\.0\.1\/health/);
   assert.match(bootstrap, /--resolve "\$health_host:443:127\.0\.0\.1"/);
   assert.match(deploy, /ssh -o BatchMode=yes -o ConnectTimeout=10/);
   assert.match(deploy, /mktemp -d/);
   assert.match(deploy, /COPYFILE_DISABLE=1 tar/);
+  assert.match(deploy, /--no-xattrs/);
+  assert.match(deploy, /--no-mac-metadata/);
   assert.match(connector, /secret put RUST_WORKER_HEALTH_URL/);
   assert.match(envExample, /RUST_WORKER_SHARED_SECRET=replace-/);
   assert.match(dockerfile, /USER eposyandu/);

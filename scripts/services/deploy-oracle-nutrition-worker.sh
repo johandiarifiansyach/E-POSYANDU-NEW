@@ -62,6 +62,8 @@ chmod 600 "$secret_copy"
 
 archive_file="$task_temp/e-posyandu-oracle.tar.gz"
 COPYFILE_DISABLE=1 tar \
+  --no-xattrs \
+  --no-mac-metadata \
   --exclude='services/nutrition-grpc/target' \
   --exclude='services/nutrition-grpc/.env' \
   -czf "$archive_file" \
