@@ -173,49 +173,6 @@ export type ExclusiveBreastfeedingPageResponse = {
   total: number;
 };
 
-export type AnonymousGrowthMeasurement = {
-  ageMonths: number;
-  weightKg: number | null;
-  lengthHeightCm: number | null;
-  lilaCm: number | null;
-  headCircumferenceCm: number | null;
-  measurementMethod: 'Terlentang' | 'Berdiri' | null;
-  weightTrend: 'B' | 'N' | 'T' | 'O' | null;
-  gapBefore: boolean;
-  statuses: {
-    bbu: string | null;
-    tbu: string | null;
-    bbtb: string | null;
-    imtu: string | null;
-    lilau: string | null;
-    lku: string | null;
-  };
-  zScores: {
-    bbu: number | null;
-    tbu: number | null;
-    bbtb: number | null;
-    imtu: number | null;
-    lilau: number | null;
-    lku: number | null;
-  };
-};
-
-export type GrowthAiSummaryRequest = {
-  sex: 'L' | 'P';
-  measurements: AnonymousGrowthMeasurement[];
-};
-
-export type GrowthAiSummaryResponse = {
-  overview: string;
-  observations: string[];
-  followUp: string[];
-  disclaimer: string;
-  anonymous: true;
-  stored: false;
-  provider: string;
-  model: string;
-};
-
 export type DashboardStatsRequest = {
   monthEnd: string;
   monthStart: string;
@@ -784,14 +741,6 @@ export async function getFeatureFlags(): Promise<FeatureFlags> {
 
 export async function getMonitoringStatus(): Promise<MonitoringStatus> {
   return apiRequest<MonitoringStatus>('/monitoring/status');
-}
-
-export async function getGrowthAiSummary(request: GrowthAiSummaryRequest): Promise<GrowthAiSummaryResponse> {
-  if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-  return apiRequest<GrowthAiSummaryResponse>('/ai/growth-summary', {
-    method: 'POST',
-    body: JSON.stringify(request)
-  });
 }
 
 export async function getChangeHistory(

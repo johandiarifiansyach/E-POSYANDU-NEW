@@ -104,7 +104,6 @@ async function configureAuthenticatedPage(
   syncDelayMs = 0
 ) {
   const syncedMutations: Array<Record<string, any>> = [];
-  const aiSummaryPayloads: Array<Record<string, any>> = [];
   let activeChild: { id: string; data: Record<string, any> } = {
     id: child.id,
     data: { ...child.data }
@@ -186,20 +185,6 @@ async function configureAuthenticatedPage(
         role: 'Kader Posyandu',
         desa: 'Desa Gumukmas',
         posyandu: 'SALAK 1'
-      } });
-      return;
-    }
-    if (path.endsWith('/ai/growth-summary')) {
-      aiSummaryPayloads.push(request.postDataJSON() as Record<string, any>);
-      await route.fulfill({ status: 200, headers, json: {
-        overview: 'Pertumbuhan anak terpantau melalui satu pengukuran yang tersedia.',
-        observations: ['Status WHO tetap menjadi dasar penilaian pertumbuhan.'],
-        followUp: ['Lanjutkan pengukuran rutin setiap bulan.'],
-        disclaimer: 'Ringkasan AI hanya membantu membaca pola. Keputusan status gizi tetap mengikuti hasil WHO dan penilaian tenaga kesehatan.',
-        anonymous: true,
-        stored: false,
-        provider: 'OpenAI',
-        model: 'gpt-5.6-luna'
       } });
       return;
     }
@@ -364,7 +349,7 @@ async function configureAuthenticatedPage(
     await route.fulfill({ status: 404, headers, json: { detail: 'Rute uji tidak tersedia.' } });
   });
 
-  return { syncedMutations, aiSummaryPayloads };
+  return { syncedMutations };
 }
 
 test('balita yang dihapus tidak muncul kembali ketika pengiriman masih tertunda', async ({ page }) => {
@@ -918,36 +903,16 @@ test('form penimbangan memakai tata letak iOS yang responsif', async ({ page }) 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 
-test('ringkasan AI grafik pertumbuhan hanya mengirim payload anonim', async ({ page }) => {
-  const { aiSummaryPayloads } = await configureAuthenticatedPage(page);
+test('dialog grafik pertumbuhan tidak menampilkan ringkasan AI yang belum siap', async ({ page }) => {
+  await configureAuthenticatedPage(page);
   await page.goto('/#data_balita');
   await page.getByRole('button', { name: 'Pengukuran Balita', exact: true }).click();
   await page.getByRole('button', { name: 'Buka enam grafik pertumbuhan WHO' }).click();
 
   const dialog = page.getByRole('dialog', { name: 'Grafik Pertumbuhan WHO' });
-  await expect(dialog.getByRole('heading', { name: 'Ringkasan AI Pertumbuhan' })).toBeVisible();
-  await expect(dialog.getByText(/Nama, NIK, tanggal lahir/)).toBeVisible();
-  await dialog.getByRole('button', { name: 'Buat Ringkasan AI' }).click();
-
-  await expect(dialog.getByText('Pertumbuhan anak terpantau melalui satu pengukuran yang tersedia.')).toBeVisible();
-  await expect(dialog.getByText('Status WHO tetap menjadi dasar penilaian pertumbuhan.')).toBeVisible();
-  await expect(dialog.getByText('Lanjutkan pengukuran rutin setiap bulan.')).toBeVisible();
-  await expect(dialog.getByText(/Keputusan status gizi tetap mengikuti hasil WHO/)).toBeVisible();
-  expect(aiSummaryPayloads).toHaveLength(1);
-
-  const encoded = JSON.stringify(aiSummaryPayloads[0]);
-  for (const privateValue of [
-    child.id,
-    child.data.nama,
-    child.data.nik,
-    child.data.tglLahir,
-    child.data.desa,
-    child.data.posyandu,
-    measurement.data.tglUkur
-  ]) {
-    expect(encoded).not.toContain(privateValue);
-  }
-  expect(Object.keys(aiSummaryPayloads[0]).sort()).toEqual(['measurements', 'sex']);
+  await expect(dialog.getByRole('heading', { name: 'Ringkasan AI Pertumbuhan' })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Buat Ringkasan AI' })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: /Unduh Semua Grafik/ })).toBeVisible();
 });
 
 test('penimbangan tetap tersimpan saat batas harian Cloudflare tercapai', async ({ page }) => {

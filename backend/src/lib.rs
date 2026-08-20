@@ -9,7 +9,6 @@ use worker::{
     wasm_bindgen::JsValue,
 };
 
-mod ai;
 mod api;
 mod graphql;
 
@@ -307,7 +306,6 @@ fn is_allowed_nonproduction_post(path: &str) -> bool {
             | "/api/v1/graphql"
             | "/api/v1/client-errors"
             | "/api/v1/security/csp-report"
-            | "/api/v1/ai/growth-summary"
     )
 }
 
@@ -2272,7 +2270,6 @@ async fn dispatch(request: Request, env: &Env, _context: &Context) -> ApiResult<
                 }
             }))
         }
-        (Method::Post, "/api/v1/ai/growth-summary") => ai::growth_summary(request, env).await,
         (Method::Get, "/api/v1/me") => {
             let scope = require_scope(&request, env).await?;
             Ok(json!({
@@ -2359,7 +2356,6 @@ mod tests {
         assert!(is_allowed_nonproduction_post("/api/v1/graphql"));
         assert!(is_allowed_nonproduction_post("/api/v1/client-errors"));
         assert!(is_allowed_nonproduction_post("/api/v1/security/csp-report"));
-        assert!(is_allowed_nonproduction_post("/api/v1/ai/growth-summary"));
         assert!(!is_allowed_nonproduction_post("/api/v1/sync"));
         assert!(!is_allowed_nonproduction_post("/api/v1/jobs"));
     }

@@ -434,37 +434,6 @@ html[data-theme="dark"] .growth-chart-tabs button.is-active {
 
 html[data-theme="dark"] .growth-chart-actions { background: rgba(44, 44, 49, 0.86); }
 
-html[data-theme="dark"] .growth-ai-panel {
-  border-color: rgba(100, 210, 255, 0.16);
-  background: linear-gradient(145deg, rgba(44, 44, 52, 0.96), rgba(32, 40, 50, 0.96));
-}
-
-html[data-theme="dark"] .growth-ai-heading { border-color: rgba(235, 235, 245, 0.1); }
-html[data-theme="dark"] .growth-ai-heading h3,
-html[data-theme="dark"] .growth-ai-loading strong,
-html[data-theme="dark"] .growth-ai-overview,
-html[data-theme="dark"] .growth-ai-columns h4 { color: #f5f5f7; }
-html[data-theme="dark"] .growth-ai-heading p,
-html[data-theme="dark"] .growth-ai-consent p,
-html[data-theme="dark"] .growth-ai-loading span,
-html[data-theme="dark"] .growth-ai-provider { color: rgba(235, 235, 245, 0.62); }
-html[data-theme="dark"] .growth-ai-columns section {
-  border-color: rgba(235, 235, 245, 0.1);
-  background: rgba(58, 58, 64, 0.58);
-}
-html[data-theme="dark"] .growth-ai-columns ul { color: rgba(235, 235, 245, 0.78); }
-html[data-theme="dark"] .growth-ai-disclaimer { color: #ffd60a; }
-html[data-theme="dark"] .growth-ai-fallback-note {
-  border-color: rgba(255, 159, 10, 0.24);
-  background: rgba(255, 159, 10, 0.12);
-  color: #ffd08a;
-}
-html[data-theme="dark"] .growth-ai-error {
-  border-color: rgba(255, 69, 58, 0.24);
-  background: rgba(255, 69, 58, 0.12);
-}
-html[data-theme="dark"] .growth-ai-error p { color: #ff9f92; }
-
 html[data-theme="dark"] .ios-form-switch-track {
   border-color: rgba(235, 235, 245, 0.14);
   background: rgba(118, 118, 128, 0.42);

@@ -270,7 +270,6 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
     '/api/v1/monitoring/status',
     '/api/v1/client-errors',
     '/api/v1/security/csp-report',
-    '/api/v1/ai/growth-summary',
     '/api/v1/jobs',
     '/api/v1/jobs/{jobId}',
     '/api/v1/jobs/{jobId}/file'
@@ -289,34 +288,19 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
     document.components.schemas.LoginResponse.properties.profile.$ref,
     '#/components/schemas/AccessProfile'
   );
-  assert.equal(
-    document.paths['/api/v1/ai/growth-summary'].post.requestBody.content['application/json'].schema.$ref,
-    '#/components/schemas/GrowthAiSummaryRequest'
-  );
-  assert.equal(document.components.schemas.GrowthAiSummaryRequest.additionalProperties, false);
-  assert.deepEqual(
-    Object.keys(document.components.schemas.GrowthAiSummaryRequest.properties).sort(),
-    ['measurements', 'sex']
-  );
 });
 
-test('Ringkasan AI hanya menerima data anonim dan tidak menyimpan respons penyedia', async () => {
-  const worker = await readFile(resolve(root, 'backend/src/ai.rs'), 'utf8');
-  const frontend = await readFile(
-    resolve(root, 'frontend/src/features/measurements/growthSummary.ts'),
-    'utf8'
-  );
+test('ringkasan AI pertumbuhan tidak diekspos sebelum layanan siap', async () => {
+  const [worker, wrangler, document] = await Promise.all([
+    readFile(resolve(root, 'backend/src/lib.rs'), 'utf8'),
+    readFile(resolve(root, 'backend/wrangler.toml'), 'utf8'),
+    readJson('backend/openapi.json')
+  ]);
 
-  assert.match(worker, /deny_unknown_fields/g);
-  assert.match(worker, /"store": false/);
-  assert.match(worker, /require_scope\(&request, env\)/);
-  assert.match(worker, /RATE_LIMIT_REQUESTS/);
-  assert.match(worker, /OPENAI_API_KEY/);
-  assert.match(frontend, /buildAnonymousGrowthSummaryPayload/);
-  assert.deepEqual(
-    Object.keys((await readJson('backend/openapi.json')).components.schemas.GrowthAiSummaryRequest.properties).sort(),
-    ['measurements', 'sex']
-  );
+  assert.ok(!document.paths['/api/v1/ai/growth-summary']);
+  assert.ok(!Object.keys(document.components.schemas).some((name) => /GrowthAi|AnonymousGrowth/.test(name)));
+  assert.doesNotMatch(worker, /ai\/growth-summary|mod ai/);
+  assert.doesNotMatch(wrangler, /OPENAI/);
 });
 
 test('environment database dipisahkan dan penulisan non-production dilindungi', async () => {

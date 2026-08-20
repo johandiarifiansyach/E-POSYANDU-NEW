@@ -12,10 +12,6 @@ import {
   calculateZScore
 } from '../../frontend/src/shared/dashboardUtils';
 import { getGrowthChartModels } from '../../frontend/src/features/measurements/growthCharts';
-import {
-  buildAnonymousGrowthSummaryPayload,
-  buildLocalGrowthSummaryFallback
-} from '../../frontend/src/features/measurements/growthSummary';
 import { fetchChildMeasurementHistory } from '../../frontend/src/services/measurementService';
 
 const child = { tglLahir: '2026-01-01', jk: 'L' };
@@ -250,64 +246,4 @@ test.describe('measurement feature', () => {
     expect(models.lku.childPoints.map((point) => point.breakBefore)).toEqual([false, true]);
   });
 
-  test('builds an anonymous AI payload without child identity or measurement dates', () => {
-    const privateChild = {
-      id: 'child-private-123',
-      nama: 'Bayi Sangat Rahasia',
-      nik: '3509040101260001',
-      tglLahir: '2026-01-01',
-      jk: 'P',
-      alamat: 'Jalan Rahasia 10',
-      desa: 'Desa Rahasia',
-      posyandu: 'Posyandu Rahasia'
-    };
-    const payload = buildAnonymousGrowthSummaryPayload([
-      { tglUkur: '2026-02-01', bb: 4.2, tb: 53, lila: 12.1, lk: 36, caraUkur: 'Terlentang', statusNaik: 'B' },
-      { tglUkur: '2026-04-01', bb: 6.1, tb: 61, lila: 13.3, lk: 40, caraUkur: 'Terlentang', statusNaik: 'O' }
-    ], privateChild);
-    const encoded = JSON.stringify(payload);
-
-    expect(payload.sex).toBe('P');
-    expect(payload.measurements).toHaveLength(2);
-    expect(payload.measurements[0].ageMonths).toBe(1);
-    expect(payload.measurements[0].lilaCm).toBeNull();
-    expect(payload.measurements[1].ageMonths).toBe(3);
-    expect(payload.measurements[1].gapBefore).toBe(true);
-    expect(payload.measurements[1].statuses).toHaveProperty('bbu');
-    expect(payload.measurements[1].zScores).toHaveProperty('lku');
-
-    for (const privateValue of [
-      privateChild.id,
-      privateChild.nama,
-      privateChild.nik,
-      privateChild.tglLahir,
-      privateChild.alamat,
-      privateChild.desa,
-      privateChild.posyandu,
-      '2026-02-01',
-      '2026-04-01'
-    ]) {
-      expect(encoded).not.toContain(privateValue);
-    }
-    for (const forbiddenField of ['childId', 'nama', 'nik', 'tglLahir', 'tglUkur', 'alamat', 'desa', 'posyandu']) {
-      expect(encoded).not.toContain(`"${forbiddenField}"`);
-    }
-  });
-
-  test('uses a transparent local summary when the external AI service is unavailable', () => {
-    const result = buildLocalGrowthSummaryFallback({
-      sex: 'L',
-      measurements: [{
-        ageMonths: 5,
-        gapBefore: true,
-        weightTrend: 'O',
-        statuses: { bbu: 'Berat Normal', tbu: 'Normal', bbtb: 'Gizi Baik', imtu: 'Gizi Baik', lilau: 'LILA Normal', lku: 'Normal' }
-      }]
-    });
-
-    expect(result.provider).toBe('E-Posyandu (mode cadangan)');
-    expect(result.stored).toBe(false);
-    expect(result.observations.join(' ')).toContain('bulan sebelumnya tidak ditimbang');
-    expect(result.followUp.join(' ')).toContain('garis pertumbuhan berikutnya tidak terputus');
-  });
 });
