@@ -66,10 +66,13 @@ policy least-privilege berikut pada dynamic group `eposyandu-grpc-worker-dg`,
 dengan mengganti compartment dan OCID secret sesuai tenancy:
 
 ```text
-Allow dynamic-group eposyandu-grpc-worker-dg to manage objects in compartment id <COMPARTMENT_OCID> where target.bucket.name='eposyandu-oracle-backups'
-Allow dynamic-group eposyandu-grpc-worker-dg to read buckets in compartment id <COMPARTMENT_OCID> where target.bucket.name='eposyandu-oracle-backups'
-Allow dynamic-group eposyandu-grpc-worker-dg to read secret-bundles in compartment id <COMPARTMENT_OCID> where target.secret.id='<BACKUP_PASSPHRASE_SECRET_OCID>'
+Allow dynamic-group eposyandu-grpc-worker-dg to manage objects in tenancy where all {target.bucket.name='eposyandu-oracle-backups', target.object.name='production/*', any {request.permission='OBJECT_CREATE'}}
+Allow dynamic-group eposyandu-grpc-worker-dg to read secret-bundles in tenancy where target.secret.id='<BACKUP_PASSPHRASE_SECRET_OCID>'
 ```
+
+Policy pertama sengaja hanya mengizinkan pembuatan objek baru di prefix
+`production/`; worker tidak dapat membaca atau menghapus backup. Penghapusan
+otomatis dilakukan oleh lifecycle Object Storage, bukan oleh VM.
 
 Buat `/etc/e-posyandu/backup.env` di server dari
 `deploy/oracle/backup/eposyandu-backup.env.example`, isi OCID secret passphrase,
