@@ -38,6 +38,8 @@
     "replica:deploy": "npm --prefix services/neon-read-worker run deploy",
     "replica:deploy:staging": "npm --prefix services/neon-read-worker run deploy:staging",
     "grpc:connect:render": "./scripts/services/connect-render-nutrition-worker.sh",
+    "grpc:deploy:oracle": "./scripts/services/deploy-oracle-nutrition-worker.sh",
+    "grpc:connect:oracle": "./scripts/services/connect-oracle-nutrition-worker.sh",
     "grpc:activate:macos": "./scripts/services/activate-nutrition-grpc-macos.sh",
     "grpc:install:macos": "./scripts/services/install-nutrition-grpc-macos.sh",
     "worker:deploy": "npx --yes wrangler --cwd backend deploy --env=",

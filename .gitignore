@@ -25,6 +25,8 @@ backend/.wrangler/
 !.env.production.example
 frontend/.env
 backend/.dev.vars
+deploy/oracle/*.env
+!deploy/oracle/*.env.example
 
 # Service-account credentials are never committed.
 secrets/*.json

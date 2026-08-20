@@ -21,6 +21,7 @@ tests/                 Pengujian kontrak lintas komponen
 | API | Cloudflare Worker berbasis Rust |
 | Data utama dan autentikasi | Supabase PostgreSQL + Supabase Auth |
 | Replika baca query berat | Neon PostgreSQL melalui private Cloudflare Worker |
+| Pekerjaan berat | Rust `nutrition-grpc`; deployment Oracle Compute siap diaktifkan |
 | Cache ringkasan | Cloudflare Cache API |
 | Metadata invalidasi cache | Cloudflare KV |
 | Pembatas login | Upstash Redis |
@@ -40,6 +41,7 @@ npm run db:migrate      # Terapkan migration yang belum dijalankan
 npm run db:backup       # Buat backup PostgreSQL dengan izin file privat
 npm run replica:check   # Periksa TypeScript private Neon Read Worker
 npm run replica:verify  # Verifikasi sinkronisasi HTTPS dan role read-only
+npm run grpc:deploy:oracle -- ALIAS_SSH DOMAIN_HEALTH # Deploy worker ke Oracle
 npm run worker:deploy   # Deploy API ke Cloudflare Worker
 npm run worker:deploy:staging # Deploy API staging
 npm run pages:deploy    # Build dan deploy frontend ke Cloudflare Pages

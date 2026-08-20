@@ -43,6 +43,34 @@ development dan staging tidak boleh diisi data identitas atau kesehatan nyata.
 
 Salin template frontend yang sesuai menjadi file lokal tanpa akhiran `.example`. Nilai `VITE_*` bersifat publik; secret service-role tidak boleh berada di frontend.
 
+## Worker pekerjaan berat di Oracle
+
+Oracle Compute menjalankan `nutrition-grpc` sebagai pull consumer Cloudflare
+Queue. VM ini tidak menggantikan Cloudflare Worker, Supabase Auth/PostgreSQL,
+Neon, KV, atau R2. Job hanya diproses di memori; hasil JSON kembali ke PostgreSQL
+dan hasil berkas masuk ke bucket R2 privat.
+
+Gunakan OCI Ampere A1 dengan Ubuntu ARM64. Atur Network Security Group agar TCP
+22 hanya dapat diakses dari IP pengelola dan hanya TCP 80/443 yang terbuka untuk
+health check HTTPS. Port `50051` dan `8080` tidak boleh memiliki aturan ingress.
+Panduan lengkap tersedia di
+[`deploy/oracle/README.md`](../deploy/oracle/README.md).
+
+Urutan aktivasi production:
+
+1. Buat DNS health menuju reserved public IP Oracle.
+2. Isi secret privat `~/.config/e-posyandu/nutrition-grpc.env`.
+3. Deploy dengan `npm run grpc:deploy:oracle -- ALIAS_SSH DOMAIN_HEALTH`.
+4. Jalankan job ekspor uji dan pastikan status mencapai `completed`.
+5. Sambungkan monitoring memakai `npm run grpc:connect:oracle -- URL_HEALTH`.
+6. Setelah stabil, hentikan consumer Render/macOS lama agar hanya satu consumer
+   menarik pesan Queue.
+
+Container service memakai filesystem read-only, pengguna non-root, seluruh
+Linux capability dibuang, batas proses/memori/CPU, dan log lokal berotasi.
+Secret berada di `/etc/e-posyandu/nutrition-grpc.env` dengan izin `0600` serta
+tidak ikut ke image atau repository.
+
 ## Urutan rilis
 
 1. Jalankan `npm run check` dan `npm run build`.
@@ -106,7 +134,7 @@ Pantau setiap hari pada masa awal rilis:
 | Request, subrequest, CPU, bandwidth | Cloudflare Workers > Metrics | Cari endpoint dengan lonjakan subrequest atau waktu CPU |
 | Egress database | Supabase > Usage | Bandingkan pemakaian harian; periksa ekspor besar dan full sync |
 | Login dibatasi | Log status 429 dan Upstash | Pastikan bukan salah konfigurasi Redis atau serangan berulang |
-| Nutrition worker | Dashboard Admin Gizi dan key KV `monitoring:nutrition-worker:v1` | Alarm setelah 3 kegagalan beruntun; periksa Render dan Queue |
+| Nutrition worker | Dashboard Admin Gizi dan key KV `monitoring:nutrition-worker:v1` | Alarm setelah 3 kegagalan beruntun; periksa Oracle, Caddy, dan Queue |
 
 Jangan menulis NIK, KK, nama balita, token, password, atau isi formulir ke log runtime.
 

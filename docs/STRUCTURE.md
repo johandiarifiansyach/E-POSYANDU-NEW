@@ -28,6 +28,7 @@ E-POSYANDU/
 ├── services/
 │   ├── neon-read-worker/    Gateway privat baca-only menuju replika Neon
 │   └── nutrition-grpc/      Worker job berat Rust dan pull consumer Queue
+├── deploy/oracle/           Runtime terisolasi dan bootstrap worker Oracle
 ├── database/migrations/     Migration PostgreSQL berurutan
 ├── docs/                    Dokumentasi arsitektur dan operasional
 ├── scripts/database/        Backup, restore, dan penerapan migration

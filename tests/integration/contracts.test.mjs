@@ -407,6 +407,34 @@ test('pekerjaan berat memakai migration privat, Queue, dan kontrak frontend', as
   assert.match(client, /export async function downloadBackgroundJobFile/);
 });
 
+test('deployment Oracle mengisolasi gRPC dan tidak menaruh secret dalam image', async () => {
+  const [compose, caddy, bootstrap, deploy, connector, envExample, dockerfile] = await Promise.all([
+    readFile(resolve(root, 'deploy/oracle/compose.yaml'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/Caddyfile'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/bootstrap.sh'), 'utf8'),
+    readFile(resolve(root, 'scripts/services/deploy-oracle-nutrition-worker.sh'), 'utf8'),
+    readFile(resolve(root, 'scripts/services/connect-oracle-nutrition-worker.sh'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/nutrition-grpc.env.example'), 'utf8'),
+    readFile(resolve(root, 'services/nutrition-grpc/Dockerfile'), 'utf8')
+  ]);
+
+  assert.match(compose, /GRPC_ADDR: 127\.0\.0\.1:50051/);
+  assert.match(compose, /read_only: true/g);
+  assert.match(compose, /cap_drop:\s+- ALL/g);
+  assert.match(compose, /no-new-privileges:true/g);
+  assert.doesNotMatch(compose, /-\s*["']?(?:50051|8080):/);
+  assert.match(caddy, /@health path \/health/);
+  assert.match(caddy, /respond "Rute tidak ditemukan" 404/);
+  assert.match(bootstrap, /install -m 0600 .*nutrition-grpc\.env/);
+  assert.match(bootstrap, /docker compose[\s\S]+up --detach --build --remove-orphans/);
+  assert.match(deploy, /ssh -o BatchMode=yes -o ConnectTimeout=10/);
+  assert.match(deploy, /mktemp -d/);
+  assert.match(connector, /secret put RUST_WORKER_HEALTH_URL/);
+  assert.match(envExample, /RUST_WORKER_SHARED_SECRET=replace-/);
+  assert.match(dockerfile, /USER eposyandu/);
+  assert.doesNotMatch(`${compose}\n${dockerfile}`, /CLOUDFLARE_QUEUES_API_TOKEN=/);
+});
+
 test('riwayat perubahan dimuat langsung, dibatasi, dan rincian diproses bertahap', async () => {
   const worker = await readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8');
   const client = await readApiClient();

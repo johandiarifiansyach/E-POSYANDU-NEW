@@ -71,7 +71,7 @@ Perangkat bersama wajib memakai akun OS terpisah, kunci layar, enkripsi disk, pe
 
 - [ ] Tetapkan secara tertulis pengendali data, prosesor, penanggung jawab teknis, dan kontak insiden.
 - [ ] Sahkan tujuan pemrosesan, dasar pemrosesan, pemberitahuan privasi orang tua/wali, serta prosedur hak subjek.
-- [ ] Konfirmasi lokasi pemrosesan dan perjanjian dengan Supabase, Cloudflare, GitHub, Neon/Render bila dipakai.
+- [ ] Konfirmasi lokasi pemrosesan dan perjanjian dengan Supabase, Cloudflare, GitHub, Neon/Render/Oracle bila dipakai.
 - [ ] Tetapkan retensi log Cloudflare maksimal 30 hari dan buktikan penghapusannya.
 - [ ] Pisahkan database development, staging, dan production; data production tidak boleh disalin ke pengujian.
 - [ ] Jalankan uji restore terenkripsi, uji akses role/wilayah, uji pemulihan akun, pembatasan login, dan simulasi insiden.

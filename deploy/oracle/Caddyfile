@@ -1,0 +1,23 @@
+{
+  admin off
+}
+
+{$ORACLE_HEALTH_SITE} {
+  @health path /health
+
+  handle @health {
+    reverse_proxy nutrition-worker:8080
+    header Cache-Control "no-store"
+  }
+
+  handle {
+    respond "Rute tidak ditemukan" 404
+  }
+
+  header {
+    -Server
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "no-referrer"
+    X-Frame-Options "DENY"
+  }
+}

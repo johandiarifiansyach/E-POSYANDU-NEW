@@ -69,6 +69,26 @@ port HTTP `$PORT` untuk health check, sedangkan gRPC tetap berada di
 `127.0.0.1:50051` di dalam container. Environment Queue tetap diberikan sebagai
 secret dari platform hosting, bukan dimasukkan ke image.
 
+## Hosting Oracle Compute
+
+Oracle Compute menjadi target utama untuk worker pekerjaan berat. Cloudflare
+Queue, R2, API Worker, Supabase PostgreSQL, dan Supabase Auth tetap berada pada
+layanan masing-masing; Oracle hanya menjalankan Queue consumer dan kalkulasi
+Rust. Browser tidak pernah terhubung ke VM Oracle.
+
+Konfigurasi siap-deploy ada di [`deploy/oracle`](../../deploy/oracle/README.md).
+Deployment memakai image yang sama pada ARM64, container non-root/read-only,
+Caddy untuk satu-satunya endpoint publik `/health`, dan restart otomatis Docker.
+Port gRPC `50051` serta health internal `8080` tidak diterbitkan ke host.
+
+```bash
+npm run grpc:deploy:oracle -- eposyandu-oracle nutrition.example.go.id
+npm run grpc:connect:oracle -- https://nutrition.example.go.id/health
+```
+
+Jalankan satu Queue consumer aktif saja. Render atau LaunchAgent macOS baru boleh
+dimatikan setelah Oracle sehat dan satu job uji berhasil sampai status selesai.
+
 ## Layanan gratis di macOS
 
 Bila belum memakai host container berbayar, worker dapat dijalankan sebagai
@@ -92,7 +112,7 @@ Binary dan runner dipasang ke `~/Library/Application Support/EPosyandu` agar
 LaunchAgent tidak memerlukan izin akses ke folder Documents. Jalankan ulang
 `npm run grpc:install:macos` setiap kali kode service Rust diperbarui.
 
-## Hosting cloud sementara
+## Hosting Render sementara
 
 Container menjalankan health check HTTP dan server gRPC privat pada proses yang
 sama. Queue consumer hanya menghubungi gRPC melalui `127.0.0.1`, sehingga RPC
@@ -115,7 +135,5 @@ npm run grpc:connect:render -- https://NAMA-SERVICE.onrender.com
 
 Gunakan hanya satu web service gratis agar jatah bulanan Render cukup. Bila secret
 `RUST_WORKER_HEALTH_URL` belum dibuat, cron aman dilewati dan tidak memengaruhi
-API utama. Service ini hanya dipakai sementara sampai instance Oracle tersedia.
-
-Ketika Oracle sudah tersedia, image yang sama dapat dijalankan di sana atau
-gunakan kembali binary standalone tanpa mengubah kontrak Queue maupun gRPC.
+API utama. Service Render hanya menjadi cadangan sementara bila instance Oracle
+belum tersedia. Jangan menjalankan Render dan Oracle bersamaan dalam waktu lama.
