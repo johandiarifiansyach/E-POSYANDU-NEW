@@ -61,7 +61,7 @@ printf '\nORACLE_HEALTH_SITE=%s\n' "$health_site" >> "$secret_copy"
 chmod 600 "$secret_copy"
 
 archive_file="$task_temp/e-posyandu-oracle.tar.gz"
-tar \
+COPYFILE_DISABLE=1 tar \
   --exclude='services/nutrition-grpc/target' \
   --exclude='services/nutrition-grpc/.env' \
   -czf "$archive_file" \
