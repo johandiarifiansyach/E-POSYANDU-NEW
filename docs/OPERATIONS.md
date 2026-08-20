@@ -71,6 +71,31 @@ Linux capability dibuang, batas proses/memori/CPU, dan log lokal berotasi.
 Secret berada di `/etc/e-posyandu/nutrition-grpc.env` dengan izin `0600` serta
 tidak ikut ke image atau repository.
 
+Exporter `/usr/local/libexec/e-posyandu/eposyandu-oci-metrics.py` berjalan sebagai
+systemd timer setiap menit. Exporter hanya mengirim metrik operasional ke
+namespace OCI `eposyandu`: `DiskUsagePercent`, `WorkerUp`, dan `HttpsPortUp`.
+Tidak ada NIK, token, isi formulir, atau payload Queue yang dikirim. Dynamic Group
+worker hanya boleh memakai namespace metrik tersebut melalui policy:
+
+```text
+Allow dynamic-group eposyandu-grpc-worker-dg to use metrics in tenancy where target.metrics.namespace='eposyandu'
+```
+
+Buat topic OCI Notifications khusus operasional, lalu buat alarm berikut pada
+Monitoring dengan topic tersebut sebagai destination:
+
+| Metrik | Query alarm | Ambang awal |
+| --- | --- | --- |
+| CPU | `CpuUtilization[5m].mean()` | > 80% |
+| Memori | `MemoryUtilization[5m].mean()` | > 85% |
+| Disk root | `DiskUsagePercent[5m].mean()` | > 80% |
+| Worker | `WorkerUp[5m].mean()` | < 1 |
+| HTTPS | `HttpsPortUp[5m].mean()` | < 1 |
+
+Untuk alarm Worker dan HTTPS, perlakukan data yang hilang sebagai pelanggaran
+agar timer yang berhenti juga terdeteksi. Topic dan email hanya berisi status
+operasional; jangan masukkan data kesehatan ke dalam pesan notifikasi.
+
 ## Urutan rilis
 
 1. Jalankan `npm run check` dan `npm run build`.

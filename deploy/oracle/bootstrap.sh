@@ -86,6 +86,22 @@ install -d -m 0750 /opt/e-posyandu/releases /etc/e-posyandu "$release_dir"
 tar -xzf "$archive_file" --no-same-owner -C "$release_dir"
 install -m 0600 "$secret_file" /etc/e-posyandu/nutrition-grpc.env
 
+monitoring_dir="$release_dir/deploy/oracle/monitoring"
+if [[ -f "$monitoring_dir/eposyandu-oci-metrics.py" ]]; then
+  install -d -m 0750 /usr/local/libexec/e-posyandu
+  install -o root -g root -m 0750 \
+    "$monitoring_dir/eposyandu-oci-metrics.py" \
+    /usr/local/libexec/e-posyandu/eposyandu-oci-metrics.py
+  install -o root -g root -m 0644 \
+    "$monitoring_dir/eposyandu-oci-metrics.service" \
+    /etc/systemd/system/eposyandu-oci-metrics.service
+  install -o root -g root -m 0644 \
+    "$monitoring_dir/eposyandu-oci-metrics.timer" \
+    /etc/systemd/system/eposyandu-oci-metrics.timer
+  systemctl daemon-reload
+  systemctl enable --now eposyandu-oci-metrics.timer
+fi
+
 compose_file="$release_dir/deploy/oracle/compose.yaml"
 if [[ ! -f "$compose_file" ]]; then
   echo "Konfigurasi Compose Oracle tidak ditemukan dalam archive." >&2
