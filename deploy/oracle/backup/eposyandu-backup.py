@@ -139,12 +139,16 @@ def copy_selected_files(staging: Path) -> list[str]:
 
 def encrypt_staging(staging: Path, output: Path, passphrase: str) -> None:
     passphrase_file = staging.parent / ".backup-passphrase"
+    gpg_home = staging.parent / ".gnupg"
     passphrase_file.write_text(passphrase, encoding="utf-8")
     os.chmod(passphrase_file, 0o600)
+    gpg_home.mkdir(mode=0o700)
     command = [
         "gpg",
         "--batch",
         "--yes",
+        "--homedir",
+        str(gpg_home),
         "--pinentry-mode",
         "loopback",
         "--passphrase-file",
@@ -156,18 +160,25 @@ def encrypt_staging(staging: Path, output: Path, passphrase: str) -> None:
         str(output),
     ]
     try:
-        with output.open("wb") as output_handle:
-            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
-            assert process.stdin is not None
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+        assert process.stdin is not None
+        try:
             try:
                 with tarfile.open(fileobj=process.stdin, mode="w:gz") as archive:
                     archive.add(staging, arcname="e-posyandu-backup")
-            finally:
+            except BrokenPipeError:
+                # GPG's exit code below contains the useful failure reason.
+                pass
+        finally:
+            try:
                 process.stdin.close()
-            if process.wait(timeout=120) != 0:
-                raise RuntimeError("GPG gagal mengenkripsi backup")
+            except BrokenPipeError:
+                pass
+        if process.wait(timeout=120) != 0:
+            raise RuntimeError("GPG gagal mengenkripsi backup")
     finally:
         passphrase_file.unlink(missing_ok=True)
+        shutil.rmtree(gpg_home, ignore_errors=True)
 
 
 def main() -> int:
