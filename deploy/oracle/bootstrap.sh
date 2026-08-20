@@ -28,9 +28,20 @@ fi
 # shellcheck disable=SC1091
 source /etc/os-release
 case "${ID:-}" in
-  ubuntu|debian) ;;
+  ol)
+    if [[ "${VERSION_ID%%.*}" != "9" ]]; then
+      echo "Bootstrap Oracle hanya mendukung Oracle Linux 9." >&2
+      exit 1
+    fi
+    container_engine="podman"
+    compose_command=(podman-compose)
+    ;;
+  ubuntu|debian)
+    container_engine="docker"
+    compose_command=(docker compose)
+    ;;
   *)
-    echo "Bootstrap otomatis saat ini mendukung Ubuntu/Debian. Gunakan image Ubuntu pada OCI." >&2
+    echo "Bootstrap mendukung Oracle Linux 9 serta Ubuntu/Debian." >&2
     exit 1
     ;;
 esac
@@ -44,17 +55,23 @@ while IFS= read -r archive_entry; do
   esac
 done < <(tar -tzf "$archive_file")
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install --yes --no-install-recommends ca-certificates docker.io
+if [[ "$container_engine" == "podman" ]]; then
+  dnf install --assumeyes container-tools oracle-epel-release-el9
+  dnf config-manager --enable ol9_developer_EPEL
+  dnf install --assumeyes podman-compose
+  systemctl enable podman-restart.service
+else
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install --yes --no-install-recommends ca-certificates docker.io
 
-if ! docker compose version >/dev/null 2>&1; then
-  if ! apt-get install --yes --no-install-recommends docker-compose-v2; then
-    apt-get install --yes --no-install-recommends docker-compose-plugin
+  if ! docker compose version >/dev/null 2>&1; then
+    if ! apt-get install --yes --no-install-recommends docker-compose-v2; then
+      apt-get install --yes --no-install-recommends docker-compose-plugin
+    fi
   fi
+  systemctl enable --now docker
 fi
-
-systemctl enable --now docker
 
 release_dir="/opt/e-posyandu/releases/$release_id"
 install -d -m 0750 /opt/e-posyandu/releases /etc/e-posyandu "$release_dir"
@@ -67,13 +84,13 @@ if [[ ! -f "$compose_file" ]]; then
   exit 1
 fi
 
-docker compose \
+"${compose_command[@]}" \
   --project-name e-posyandu-oracle \
   --file "$compose_file" \
   --env-file /etc/e-posyandu/nutrition-grpc.env \
-  config --quiet
+  config >/dev/null
 
-docker compose \
+"${compose_command[@]}" \
   --project-name e-posyandu-oracle \
   --file "$compose_file" \
   --env-file /etc/e-posyandu/nutrition-grpc.env \
@@ -82,15 +99,11 @@ docker compose \
 ln -sfn "$release_dir" /opt/e-posyandu/current
 
 for attempt in $(seq 1 30); do
-  if docker compose \
-    --project-name e-posyandu-oracle \
-    --file "$compose_file" \
-    --env-file /etc/e-posyandu/nutrition-grpc.env \
-    exec -T health-proxy \
-    wget -qO- http://nutrition-worker:8080/health 2>/dev/null \
+  if curl --fail --silent --show-error --max-time 3 \
+    http://127.0.0.1/health 2>/dev/null \
     | grep -Fq "E-Posyandu nutrition worker aktif"; then
     echo "Nutrition worker Oracle aktif."
-    docker compose \
+    "${compose_command[@]}" \
       --project-name e-posyandu-oracle \
       --file "$compose_file" \
       --env-file /etc/e-posyandu/nutrition-grpc.env \
@@ -101,7 +114,7 @@ for attempt in $(seq 1 30); do
 done
 
 echo "Nutrition worker belum sehat setelah 60 detik." >&2
-docker compose \
+"${compose_command[@]}" \
   --project-name e-posyandu-oracle \
   --file "$compose_file" \
   --env-file /etc/e-posyandu/nutrition-grpc.env \

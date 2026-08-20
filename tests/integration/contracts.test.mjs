@@ -426,7 +426,10 @@ test('deployment Oracle mengisolasi gRPC dan tidak menaruh secret dalam image', 
   assert.match(caddy, /@health path \/health/);
   assert.match(caddy, /respond "Rute tidak ditemukan" 404/);
   assert.match(bootstrap, /install -m 0600 .*nutrition-grpc\.env/);
-  assert.match(bootstrap, /docker compose[\s\S]+up --detach --build --remove-orphans/);
+  assert.match(bootstrap, /compose_command=\(podman-compose\)/);
+  assert.match(bootstrap, /dnf install --assumeyes container-tools oracle-epel-release-el9/);
+  assert.match(bootstrap, /"\$\{compose_command\[@\]\}"[\s\S]+up --detach --build --remove-orphans/);
+  assert.match(bootstrap, /http:\/\/127\.0\.0\.1\/health/);
   assert.match(deploy, /ssh -o BatchMode=yes -o ConnectTimeout=10/);
   assert.match(deploy, /mktemp -d/);
   assert.match(connector, /secret put RUST_WORKER_HEALTH_URL/);

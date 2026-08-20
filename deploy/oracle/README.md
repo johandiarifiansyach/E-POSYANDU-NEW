@@ -6,8 +6,8 @@ Cloudflare/Supabase. VM Oracle tidak menerima data langsung dari browser.
 
 ## Spesifikasi instance
 
-- OCI Ampere A1, Ubuntu 24.04 ARM64.
-- Awal yang cukup: 1 OCPU, RAM 6 GB, boot volume 50 GB.
+- OCI Ampere A1, Oracle Linux 9 ARM64 (Ubuntu/Debian juga tetap didukung).
+- Awal yang cukup: 1 OCPU, RAM sekitar 6 GB, boot volume minimal 30 GB.
 - IP publik statis/reserved dan DNS `A` menuju IP tersebut.
 - Network Security Group: TCP 22 hanya dari IP pengelola; TCP 80 dan 443 dari
   internet untuk penerbitan serta pembaruan sertifikat. Jangan membuka 50051
@@ -20,7 +20,7 @@ Simpan private key hanya di komputer pengelola dan buat alias SSH:
 ```sshconfig
 Host eposyandu-oracle
   HostName IP_PUBLIK_ORACLE
-  User ubuntu
+  User opc
   IdentityFile ~/.ssh/id_ed25519_oracle
   IdentitiesOnly yes
 ```
@@ -51,9 +51,10 @@ Pastikan DNS health sudah mengarah ke Oracle, lalu jalankan dari root project:
 npm run grpc:deploy:oracle -- eposyandu-oracle nutrition.example.go.id
 ```
 
-Script memeriksa SSH, mengirim source yang diperlukan, memasang Docker pada
-Ubuntu, membangun image ARM64, menjalankan container non-root/read-only, dan
-memastikan health check internal berhasil. Rilis berada di
+Script memeriksa SSH, mengirim source yang diperlukan, memasang Podman resmi
+Oracle Linux (atau Docker pada Ubuntu/Debian), membangun image ARM64,
+menjalankan container non-root/read-only, dan memastikan health check internal
+berhasil. Rilis berada di
 `/opt/e-posyandu/releases`; symlink `current` hanya dipindah setelah container
 berhasil aktif.
 
@@ -68,7 +69,7 @@ npm run grpc:connect:oracle -- https://nutrition.example.go.id/health
 ```bash
 curl --fail https://nutrition.example.go.id/health
 ssh eposyandu-oracle \
-  'sudo docker compose -p e-posyandu-oracle -f /opt/e-posyandu/current/deploy/oracle/compose.yaml --env-file /etc/e-posyandu/nutrition-grpc.env ps'
+  'sudo podman-compose -p e-posyandu-oracle -f /opt/e-posyandu/current/deploy/oracle/compose.yaml --env-file /etc/e-posyandu/nutrition-grpc.env ps'
 ```
 
 Endpoint lain harus mengembalikan `404`. Hanya Caddy yang menerbitkan port;
@@ -77,7 +78,7 @@ menyalin secret:
 
 ```bash
 ssh eposyandu-oracle \
-  'sudo docker compose -p e-posyandu-oracle -f /opt/e-posyandu/current/deploy/oracle/compose.yaml --env-file /etc/e-posyandu/nutrition-grpc.env logs --tail 100 nutrition-worker'
+  'sudo podman-compose -p e-posyandu-oracle -f /opt/e-posyandu/current/deploy/oracle/compose.yaml --env-file /etc/e-posyandu/nutrition-grpc.env logs --tail 100 nutrition-worker'
 ```
 
 Hapus layanan Render/macOS lama hanya setelah Oracle sehat, job uji selesai,
