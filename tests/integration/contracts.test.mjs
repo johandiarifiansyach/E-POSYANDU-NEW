@@ -419,6 +419,7 @@ test('deployment Oracle mengisolasi gRPC dan tidak menaruh secret dalam image', 
   ]);
 
   assert.match(compose, /GRPC_ADDR: 127\.0\.0\.1:50051/);
+  assert.match(compose, /image: docker\.io\/library\/caddy:2\.10\.2-alpine/);
   assert.match(compose, /read_only: true/g);
   assert.match(compose, /cap_drop:\s+- ALL/g);
   assert.match(compose, /no-new-privileges:true/g);
@@ -435,6 +436,8 @@ test('deployment Oracle mengisolasi gRPC dan tidak menaruh secret dalam image', 
   assert.match(connector, /secret put RUST_WORKER_HEALTH_URL/);
   assert.match(envExample, /RUST_WORKER_SHARED_SECRET=replace-/);
   assert.match(dockerfile, /USER eposyandu/);
+  assert.match(dockerfile, /FROM docker\.io\/library\/rust:1\.97-slim-bookworm/);
+  assert.match(dockerfile, /FROM docker\.io\/library\/debian:bookworm-slim/);
   assert.doesNotMatch(`${compose}\n${dockerfile}`, /CLOUDFLARE_QUEUES_API_TOKEN=/);
 });
 

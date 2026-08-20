@@ -31,7 +31,7 @@ services:
       driver: journald
 
   health-proxy:
-    image: caddy:2.10.2-alpine
+    image: docker.io/library/caddy:2.10.2-alpine
     restart: unless-stopped
     depends_on:
       - nutrition-worker

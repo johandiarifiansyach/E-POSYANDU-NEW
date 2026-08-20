@@ -1,10 +1,10 @@
-FROM rust:1.97-slim-bookworm AS builder
+FROM docker.io/library/rust:1.97-slim-bookworm AS builder
 
 WORKDIR /app
 COPY services/nutrition-grpc services/nutrition-grpc
 RUN cargo build --locked --release --bin nutrition-grpc-cloud --manifest-path services/nutrition-grpc/Cargo.toml
 
-FROM debian:bookworm-slim AS runtime
+FROM docker.io/library/debian:bookworm-slim AS runtime
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates \
