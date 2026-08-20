@@ -9,6 +9,7 @@ services:
     restart: unless-stopped
     env_file:
       - ${ORACLE_NUTRITION_ENV_FILE:-/etc/e-posyandu/nutrition-grpc.env}
+      - ${ORACLE_NUTRITION_VAULT_ENV_FILE:-/run/e-posyandu/nutrition-grpc-vault.env}
     environment:
       GRPC_ADDR: 127.0.0.1:50051
       PORT: "8080"

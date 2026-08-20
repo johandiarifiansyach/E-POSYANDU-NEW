@@ -102,6 +102,29 @@ if [[ -f "$monitoring_dir/eposyandu-oci-metrics.py" ]]; then
   systemctl enable --now eposyandu-oci-metrics.timer
 fi
 
+vault_dir="$release_dir/deploy/oracle/vault"
+if [[ -f "$vault_dir/eposyandu-vault-env.py" && -f "$vault_dir/eposyandu-vault-env.service" ]]; then
+  if [[ ! -f /etc/e-posyandu/vault.env ]]; then
+    echo "Konfigurasi OCI Vault tidak ditemukan: /etc/e-posyandu/vault.env" >&2
+    echo "Buat file tersebut dari deploy/oracle/vault/eposyandu-vault.env.example." >&2
+    exit 1
+  fi
+  install -d -o root -g root -m 0750 /usr/local/libexec/e-posyandu
+  install -o root -g root -m 0750 \
+    "$vault_dir/eposyandu-vault-env.py" \
+    /usr/local/libexec/e-posyandu/eposyandu-vault-env.py
+  install -o root -g root -m 0644 \
+    "$vault_dir/eposyandu-vault-env.service" \
+    /etc/systemd/system/eposyandu-vault-env.service
+  systemctl daemon-reload
+  systemctl enable eposyandu-vault-env.service
+  systemctl restart eposyandu-vault-env.service
+  if [[ ! -s /run/e-posyandu/nutrition-grpc-vault.env ]]; then
+    echo "Secret runtime OCI tidak berhasil disiapkan." >&2
+    exit 1
+  fi
+fi
+
 compose_file="$release_dir/deploy/oracle/compose.yaml"
 if [[ ! -f "$compose_file" ]]; then
   echo "Konfigurasi Compose Oracle tidak ditemukan dalam archive." >&2

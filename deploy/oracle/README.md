@@ -38,10 +38,16 @@ cp deploy/oracle/nutrition-grpc.env.example \
 chmod 600 ~/.config/e-posyandu/nutrition-grpc.env
 ```
 
-Isi ID akun/Queue Cloudflare, token Queue dengan izin minimum, URL API, dan
-`RUST_WORKER_SHARED_SECRET` yang sama dengan Worker. Nilai secret tidak pernah
-masuk image, archive aplikasi, log, atau Git; script mengirim salinan sementara
-langsung ke `/etc/e-posyandu/nutrition-grpc.env` dengan mode `0600`.
+Isi ID akun/Queue Cloudflare dan URL API. Token Queue serta
+`RUST_WORKER_SHARED_SECRET` disimpan di OCI Vault, bukan di archive deployment.
+Buat `/etc/e-posyandu/vault.env` dari
+`deploy/oracle/vault/eposyandu-vault.env.example`, lalu isi OCID secret yang
+telah dibuat di Vault. File ini hanya berisi metadata non-secret dan harus
+dimiliki root dengan mode `0600`.
+
+Saat boot atau deployment, instance principal mengambil secret ke
+`/run/e-posyandu/nutrition-grpc-vault.env` (tmpfs, mode `0600`) untuk container.
+Nilai secret tidak pernah masuk image, archive aplikasi, log, atau Git.
 
 ## Deploy
 

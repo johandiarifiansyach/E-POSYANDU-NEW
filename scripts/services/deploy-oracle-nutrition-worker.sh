@@ -32,9 +32,7 @@ fi
 required_names=(
   CLOUDFLARE_ACCOUNT_ID
   CLOUDFLARE_QUEUE_ID
-  CLOUDFLARE_QUEUES_API_TOKEN
   EPOSYANDU_API_URL
-  RUST_WORKER_SHARED_SECRET
 )
 for required_name in "${required_names[@]}"; do
   required_value="$(sed -n "s/^${required_name}=//p" "$source_env" | tail -n 1)"
@@ -56,7 +54,8 @@ cleanup() {
 trap cleanup EXIT
 
 secret_copy="$task_temp/nutrition-grpc.env"
-awk -F= '$1 != "ORACLE_HEALTH_SITE"' "$source_env" > "$secret_copy"
+awk -F= '$1 != "ORACLE_HEALTH_SITE" && $1 != "CLOUDFLARE_QUEUES_API_TOKEN" && $1 != "RUST_WORKER_SHARED_SECRET"' \
+  "$source_env" > "$secret_copy"
 printf '\nORACLE_HEALTH_SITE=%s\n' "$health_site" >> "$secret_copy"
 chmod 600 "$secret_copy"
 
