@@ -49,6 +49,47 @@ Saat boot atau deployment, instance principal mengambil secret ke
 `/run/e-posyandu/nutrition-grpc-vault.env` (tmpfs, mode `0600`) untuk container.
 Nilai secret tidak pernah masuk image, archive aplikasi, log, atau Git.
 
+## Backup konfigurasi terenkripsi
+
+Backup Oracle hanya berisi konfigurasi deployment, Caddyfile, unit systemd,
+manifest rilis, dan metadata operasional. Backup tidak berisi database dump,
+NIK, data kesehatan, payload Queue, file secret runtime, atau data TLS Caddy.
+
+Buat bucket Object Storage **private** bernama, misalnya,
+`eposyandu-oracle-backups`. Namespace Object Storage akun ini adalah
+`axf8c8ghakg4`. Atur lifecycle bucket untuk menghapus objek dengan prefix
+`production/` setelah masa retensi yang disetujui (contoh 30 hari).
+
+Buat secret Vault baru, misalnya `E_POSYANDU_BACKUP_PASSPHRASE`, berisi
+passphrase acak minimal 20 karakter. Simpan nilainya hanya di Vault. Tambahkan
+policy least-privilege berikut pada dynamic group `eposyandu-grpc-worker-dg`,
+dengan mengganti compartment dan OCID secret sesuai tenancy:
+
+```text
+Allow dynamic-group eposyandu-grpc-worker-dg to manage objects in compartment id <COMPARTMENT_OCID> where target.bucket.name='eposyandu-oracle-backups'
+Allow dynamic-group eposyandu-grpc-worker-dg to read buckets in compartment id <COMPARTMENT_OCID> where target.bucket.name='eposyandu-oracle-backups'
+Allow dynamic-group eposyandu-grpc-worker-dg to read secret-bundles in compartment id <COMPARTMENT_OCID> where target.secret.id='<BACKUP_PASSPHRASE_SECRET_OCID>'
+```
+
+Buat `/etc/e-posyandu/backup.env` di server dari
+`deploy/oracle/backup/eposyandu-backup.env.example`, isi OCID secret passphrase,
+lalu set permission `0600`. Setelah deployment berikutnya, timer
+`eposyandu-backup.timer` berjalan sekali sehari. Arsip dibuat dengan GPG
+AES-256 sebelum diunggah menggunakan instance principal; Object Storage juga
+tetap menggunakan enkripsi server-side.
+
+Pemeriksaan backup tanpa membuka isinya:
+
+```bash
+sudo systemctl status eposyandu-backup.timer --no-pager
+sudo journalctl -u eposyandu-backup.service -n 30 --no-pager
+```
+
+Untuk pemulihan, unduh objek dari bucket melalui akun administrator, ambil
+passphrase dari Vault, dekripsi di direktori sementara yang terlindungi, dan
+periksa `MANIFEST.json`. Jangan mengekstrak langsung ke `/etc` atau
+`/opt/e-posyandu` sebelum konfigurasi diverifikasi.
+
 ## Deploy
 
 Pastikan DNS health sudah mengarah ke Oracle, lalu jalankan dari root project:

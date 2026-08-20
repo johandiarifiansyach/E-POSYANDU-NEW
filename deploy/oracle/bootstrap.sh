@@ -56,7 +56,7 @@ while IFS= read -r archive_entry; do
 done < <(tar -tzf "$archive_file")
 
 if [[ "$container_engine" == "podman" ]]; then
-  dnf install --assumeyes container-tools oracle-epel-release-el9
+  dnf install --assumeyes container-tools oracle-epel-release-el9 gnupg2
   dnf config-manager --enable ol9_developer_EPEL
   dnf install --assumeyes podman-compose
   systemctl enable podman-restart.service
@@ -71,7 +71,7 @@ if [[ "$container_engine" == "podman" ]]; then
 else
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install --yes --no-install-recommends ca-certificates docker.io
+  apt-get install --yes --no-install-recommends ca-certificates docker.io gnupg
 
   if ! docker compose version >/dev/null 2>&1; then
     if ! apt-get install --yes --no-install-recommends docker-compose-v2; then
@@ -122,6 +122,28 @@ if [[ -f "$vault_dir/eposyandu-vault-env.py" && -f "$vault_dir/eposyandu-vault-e
   if [[ ! -s /run/e-posyandu/nutrition-grpc-vault.env ]]; then
     echo "Secret runtime OCI tidak berhasil disiapkan." >&2
     exit 1
+  fi
+fi
+
+backup_dir="$release_dir/deploy/oracle/backup"
+if [[ -f "$backup_dir/eposyandu-backup.py" && -f "$backup_dir/eposyandu-backup.service" && -f "$backup_dir/eposyandu-backup.timer" ]]; then
+  install -d -o root -g root -m 0750 /usr/local/libexec/e-posyandu /var/lib/e-posyandu/backup
+  install -o root -g root -m 0750 \
+    "$backup_dir/eposyandu-backup.py" \
+    /usr/local/libexec/e-posyandu/eposyandu-backup.py
+  install -o root -g root -m 0644 \
+    "$backup_dir/eposyandu-backup.service" \
+    /etc/systemd/system/eposyandu-backup.service
+  install -o root -g root -m 0644 \
+    "$backup_dir/eposyandu-backup.timer" \
+    /etc/systemd/system/eposyandu-backup.timer
+  systemctl daemon-reload
+  if [[ -f /etc/e-posyandu/backup.env ]]; then
+    chmod 600 /etc/e-posyandu/backup.env
+    systemctl enable --now eposyandu-backup.timer
+  else
+    systemctl disable --now eposyandu-backup.timer >/dev/null 2>&1 || true
+    echo "Backup OCI belum aktif: /etc/e-posyandu/backup.env belum dibuat." >&2
   fi
 fi
 
