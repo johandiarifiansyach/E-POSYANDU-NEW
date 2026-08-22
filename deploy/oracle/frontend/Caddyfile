@@ -1,0 +1,24 @@
+{
+  admin off
+  auto_https off
+  persist_config off
+}
+
+:8080 {
+  root * /srv
+  encode zstd gzip
+
+  @immutable path /assets/*
+  header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+  @no_cache path /index.html /service-worker.js /manifest.webmanifest
+  header @no_cache Cache-Control "no-cache, no-store, must-revalidate"
+
+  try_files {path} /index.html
+  file_server
+
+  header {
+    -Server
+    X-Content-Type-Options "nosniff"
+  }
+}

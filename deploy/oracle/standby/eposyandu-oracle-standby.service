@@ -1,0 +1,17 @@
+[Unit]
+Description=E-Posyandu Oracle PostgreSQL read-only standby
+Wants=network-online.target
+After=network-online.target eposyandu-vault-env.service
+Requires=eposyandu-vault-env.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+KillMode=process
+ExecStart=/usr/local/libexec/e-posyandu/eposyandu-oracle-standby up
+ExecStop=/usr/local/libexec/e-posyandu/eposyandu-oracle-standby down
+TimeoutStartSec=180
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

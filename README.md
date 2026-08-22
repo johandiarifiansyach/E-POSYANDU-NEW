@@ -17,17 +17,22 @@ tests/                 Pengujian kontrak lintas komponen
 
 | Bagian | Layanan |
 | --- | --- |
-| Frontend | Cloudflare Pages |
-| API | Cloudflare Worker berbasis Rust |
+| Edge web | Cloudflare DNS/proxy/WAF/DDoS/Turnstile/Tunnel |
+| Frontend utama | Container Caddy di Oracle Compute melalui Tunnel |
+| API utama | `oracle-api` Rust di Oracle Compute melalui Tunnel |
 | Data utama dan autentikasi | Supabase PostgreSQL + Supabase Auth |
-| Replika baca query berat | Neon PostgreSQL melalui private Cloudflare Worker |
-| Pekerjaan berat | Rust `nutrition-grpc`; deployment Oracle Compute siap diaktifkan |
+| Standby laporan | PostgreSQL Oracle read-only; Supabase tetap satu-satunya writable primary |
+| Pekerjaan berat | Rust `nutrition-grpc` di Oracle Compute + Cloudflare Queue |
+| Rollback darurat | Cloudflare Pages + Worker lama, tetap tersedia tetapi bukan jalur normal |
+| File job privat | Cloudflare R2 |
 | Cache ringkasan | Cloudflare Cache API |
 | Metadata invalidasi cache | Cloudflare KV |
 | Pembatas login | Upstash Redis |
 
-- Frontend: https://e-posyandu.pages.dev
-- API: https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev
+- Frontend utama: https://eposyandu.app
+- Frontend fallback: https://e-posyandu.pages.dev
+- API utama: https://api.eposyandu.app
+- API fallback: https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev
 
 ## Perintah Utama
 

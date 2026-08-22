@@ -1,9 +1,9 @@
 // @ts-nocheck
 import { addDoc, collection, serverTimestamp, syncPendingMutations } from '../api/syncApi';
-import Native, { useMemo, useState } from '../runtime/dom';
+import Native, { useState } from '../runtime/dom';
 import { Baby, CheckCircle2, ChevronLeft, MapPin, UserPlus, UserRound, XCircle } from '../ui/icons';
 import { showSuccess } from '../ui/notifications';
-import { Button, Select, StatusBadge } from '../components';
+import { Button, Select } from '../components';
 import { Card, InputGroup } from '../ui/dashboardPrimitives';
 import {
     CHILD_BIRTH_DECIMAL_RULES,
@@ -11,7 +11,6 @@ import {
     formatChildName,
     generateTemporaryKk,
     generateTemporaryNik,
-    getBirthGrowthStatuses,
     normalizeChildInput,
     parseChildDecimalForRange,
     validateChildBirthMeasurements
@@ -22,12 +21,6 @@ const inputClass = 'block w-full rounded-xl border border-slate-200 bg-slate-50 
 export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
     const [formData, setFormData] = useState(() => createInitialChildForm(user));
     const [saveState, setSaveState] = useState<PageState<void>>({ status: 'idle' });
-    const birthStatuses = useMemo(() => getBirthGrowthStatuses(formData), [
-        formData.bbLahir,
-        formData.pbLahir,
-        formData.lkLahir,
-        formData.jk
-    ]);
     const saving = saveState.status === 'loading';
     const errorMessage = saveState.status === 'error' ? saveState.message : null;
     const setFormError = (message) => setSaveState(message ? { status: 'error', message } : { status: 'idle' });
@@ -227,22 +220,7 @@ export default function AddChildPage({ allChildren, onBack, onSuccess, user }) {
                         Native.createElement(InputGroup, { label: "Buku KIA Kecil" },
                             Native.createElement(Select, { required: true, value: formData.bukuKIAKecil, onChange: (event) => setFormData({ ...formData, bukuKIAKecil: event.target.value }), options: yesNoOptions })),
                         Native.createElement(InputGroup, { label: "IMD" },
-                            Native.createElement(Select, { required: true, value: formData.imd, onChange: (event) => setFormData({ ...formData, imd: event.target.value }), options: yesNoOptions }))),
-                    Native.createElement("section", { className: "measurement-live-status birth-live-status", "aria-live": "polite", "aria-label": "Hasil status pertumbuhan bayi baru secara realtime", "data-birth-live-status": true },
-                        Native.createElement("div", { className: "measurement-live-status-heading" },
-                            Native.createElement("h3", null, "Status Pertumbuhan Saat Lahir"),
-                            Native.createElement("p", null, "Dihitung realtime menurut standar WHO usia 0 bulan")),
-                        Native.createElement("div", { className: "measurement-live-status-grid birth-live-status-grid" },
-                            [
-                                ['BB/U', birthStatuses.statusBbu, birthStatuses.zScoreBbu],
-                                ['PB/U', birthStatuses.statusPbu, birthStatuses.zScorePbu],
-                                ['BB/PB', birthStatuses.statusBbpb, birthStatuses.zScoreBbpb],
-                                ['IMT/U', birthStatuses.statusImtu, birthStatuses.zScoreImtu],
-                                ['LK/U', birthStatuses.statusLku, birthStatuses.zScoreLku]
-                            ].map(([label, status, zScore]) => Native.createElement("div", { key: label, className: "measurement-live-status-item" },
-                                Native.createElement("span", { className: "measurement-live-status-label" }, label),
-                                Native.createElement(StatusBadge, { status: status }),
-                                Native.createElement("small", null, Number.isFinite(zScore) ? `Z-score ${zScore.toFixed(2).replace('.', ',')} SD` : 'Pilih jenis kelamin dan isi data')))))),
+                            Native.createElement(Select, { required: true, value: formData.imd, onChange: (event) => setFormData({ ...formData, imd: event.target.value }), options: yesNoOptions })))),
                 Native.createElement("section", { className: "border-t border-slate-200 pt-6 space-y-4" },
                     Native.createElement("div", { className: "ios-form-section-header text-slate-800" },
                         Native.createElement("span", { className: "apple-symbol-tile apple-symbol-tile-purple", "aria-hidden": "true" },

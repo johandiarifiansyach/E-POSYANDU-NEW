@@ -23,8 +23,8 @@ jobs:
       - name: Check frontend, API, readiness, and nutrition worker
         env:
           MONITOR_FRONTEND_URL: https://e-posyandu.pages.dev
-          MONITOR_API_URL: https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev
-          MONITOR_GRPC_HEALTH_URL: ${{ vars.NUTRITION_WORKER_HEALTH_URL || 'https://e-posyandu-nutrition-worker.onrender.com/health' }}
+          MONITOR_API_URL: https://api.eposyandu.app
+          MONITOR_GRPC_HEALTH_URL: ${{ vars.NUTRITION_WORKER_HEALTH_URL || 'https://nutrition.eposyandu.app/health' }}
           MONITOR_OUTPUT_PATH: ${{ runner.temp }}/system-monitor.json
         run: node scripts/operations/monitor-system.mjs
       - name: Publish monitoring summary

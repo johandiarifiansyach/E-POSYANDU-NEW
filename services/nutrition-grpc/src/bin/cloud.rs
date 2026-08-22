@@ -1,7 +1,7 @@
 use axum::{Router, routing::get};
 use e_posyandu_nutrition_grpc::NutritionService;
 use e_posyandu_nutrition_grpc::proto::nutrition_worker_server::NutritionWorkerServer;
-use e_posyandu_nutrition_grpc::queue_consumer::{self, QueueConfig};
+use e_posyandu_nutrition_grpc::queue_consumer::{self, QueueConfig, QueueConfigInput};
 use std::{env, io, net::SocketAddr};
 use tonic::transport::Server;
 
@@ -71,16 +71,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .await
     });
 
-    let queue_config = QueueConfig::new(
-        required_env("CLOUDFLARE_ACCOUNT_ID")?,
-        required_env("CLOUDFLARE_QUEUE_ID")?,
-        required_env("CLOUDFLARE_QUEUES_API_TOKEN")?,
-        required_env("EPOSYANDU_API_URL")?,
-        required_env("RUST_WORKER_SHARED_SECRET")?,
-        format!("http://{grpc_address}"),
-        optional_number("QUEUE_BATCH_SIZE", 2_u8)?,
-        optional_number("QUEUE_POLL_INTERVAL_MS", 15_000_u64)?,
-    )
+    let queue_config = QueueConfig::new(QueueConfigInput {
+        account_id: required_env("CLOUDFLARE_ACCOUNT_ID")?,
+        queue_id: required_env("CLOUDFLARE_QUEUE_ID")?,
+        api_token: required_env("CLOUDFLARE_QUEUES_API_TOKEN")?,
+        api_url: required_env("EPOSYANDU_API_URL")?,
+        shared_secret: required_env("RUST_WORKER_SHARED_SECRET")?,
+        grpc_url: format!("http://{grpc_address}"),
+        batch_size: optional_number("QUEUE_BATCH_SIZE", 2_u8)?,
+        poll_interval_ms: optional_number("QUEUE_POLL_INTERVAL_MS", 15_000_u64)?,
+    })
     .map_err(io::Error::other)?;
 
     let mut queue_task = tokio::spawn(queue_consumer::run(queue_config));

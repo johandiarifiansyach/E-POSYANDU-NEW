@@ -7,6 +7,7 @@ export type {
 } from './legacyClient';
 
 export {
+  expireAuthSession,
   getAuth,
   getCurrentAccessProfile,
   initializeApp,

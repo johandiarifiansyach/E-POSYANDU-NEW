@@ -54,9 +54,24 @@ cleanup() {
 trap cleanup EXIT
 
 secret_copy="$task_temp/nutrition-grpc.env"
-awk -F= '$1 != "ORACLE_HEALTH_SITE" && $1 != "CLOUDFLARE_QUEUES_API_TOKEN" && $1 != "RUST_WORKER_SHARED_SECRET"' \
+awk -F= '$1 != "ORACLE_HEALTH_SITE" && $1 != "ORACLE_FRONTEND_TURNSTILE_SITE_KEY" && $1 != "CLOUDFLARE_QUEUES_API_TOKEN" && $1 != "RUST_WORKER_SHARED_SECRET"' \
   "$source_env" > "$secret_copy"
 printf '\nORACLE_HEALTH_SITE=%s\n' "$health_site" >> "$secret_copy"
+
+frontend_site_key="$(sed -n 's/^ORACLE_FRONTEND_TURNSTILE_SITE_KEY=//p' "$source_env" | tail -n 1)"
+if [[ -z "$frontend_site_key" || "$frontend_site_key" == replace-* ]]; then
+  frontend_site_key="$(sed -n 's/^VITE_TURNSTILE_SITE_KEY=//p' "$project_root/frontend/.env" 2>/dev/null | tail -n 1)"
+fi
+if [[ -n "$frontend_site_key" ]]; then
+  if [[ ! "$frontend_site_key" =~ ^[A-Za-z0-9_-]{10,100}$ ]]; then
+    echo "Format Turnstile site key frontend tidak valid." >&2
+    exit 1
+  fi
+  printf 'ORACLE_FRONTEND_TURNSTILE_SITE_KEY=%s\n' "$frontend_site_key" >> "$secret_copy"
+else
+  echo "Peringatan: frontend Oracle dibangun tanpa Turnstile site key." >&2
+fi
+unset frontend_site_key
 chmod 600 "$secret_copy"
 
 archive_file="$task_temp/e-posyandu-oracle.tar.gz"
@@ -66,9 +81,19 @@ COPYFILE_DISABLE=1 tar \
   --no-fflags \
   --exclude='services/nutrition-grpc/target' \
   --exclude='services/nutrition-grpc/.env' \
+  --exclude='services/oracle-api/target' \
+  --exclude='frontend/node_modules' \
+  --exclude='frontend/dist' \
+  --exclude='frontend/test-results' \
+  --exclude='frontend/playwright-report' \
+  --exclude='frontend/.env' \
+  --exclude='frontend/.env.*' \
   -czf "$archive_file" \
   -C "$project_root" \
-  services/nutrition-grpc deploy/oracle
+  services/nutrition-grpc services/oracle-api \
+  frontend \
+  backend/openapi.json backend/graphql-schema.graphql \
+  deploy/oracle
 
 echo "Memeriksa koneksi SSH ke $ssh_host ..."
 ssh -o BatchMode=yes -o ConnectTimeout=10 "$ssh_host" true
@@ -85,7 +110,7 @@ scp -q \
   "$ssh_host:$remote_stage/"
 
 release_id="$(date -u +%Y%m%d%H%M%S)"
-echo "Membangun dan mengaktifkan nutrition worker di Oracle ..."
+echo "Membangun dan mengaktifkan platform Oracle (API + nutrition worker) ..."
 ssh "$ssh_host" \
   "sudo bash '$remote_stage/bootstrap.sh' '$remote_stage/e-posyandu-oracle.tar.gz' '$remote_stage/nutrition-grpc.env' '$release_id'"
 
@@ -95,7 +120,8 @@ else
   health_url="https://${health_site%/}/health"
 fi
 
-echo "Deployment Oracle selesai."
+echo "Deployment platform Oracle selesai."
 echo "Health check: $health_url"
+echo "API migration gateway internal: http://127.0.0.1:8081/health"
 echo "Hubungkan ke monitoring Cloudflare dengan:"
 echo "npm run grpc:connect:oracle -- $health_url"

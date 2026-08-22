@@ -35,6 +35,7 @@ case "${ID:-}" in
     fi
     container_engine="podman"
     compose_command=(podman-compose)
+    export BUILDAH_FORMAT=docker
     ;;
   ubuntu|debian)
     container_engine="docker"
@@ -82,9 +83,38 @@ else
 fi
 
 release_dir="/opt/e-posyandu/releases/$release_id"
-install -d -m 0750 /opt/e-posyandu/releases /etc/e-posyandu "$release_dir"
+install -d -m 0750 /opt/e-posyandu/releases /etc/e-posyandu /var/lib/e-posyandu "$release_dir"
+install -d -o 10001 -g 10001 -m 0700 /var/lib/e-posyandu/oracle-api
 tar -xzf "$archive_file" --no-same-owner -C "$release_dir"
+
+# Nilai berikut merupakan state migrasi/cutover di server. Pertahankan bila
+# file sumber deployment belum memuatnya, agar update aplikasi tidak membuka
+# origin, mematikan Tunnel, atau menurunkan mode API secara tidak sengaja.
+declare -A preserved_deployment_values=()
+if [[ -f /etc/e-posyandu/nutrition-grpc.env ]]; then
+  for deployment_name in \
+    COMPOSE_PROFILES \
+    ORACLE_PUBLIC_BIND \
+    ORACLE_API_NATIVE_AUTH_ENABLED \
+    ORACLE_API_NATIVE_READS_ENABLED \
+    ORACLE_API_NATIVE_WRITES_ENABLED \
+    ORACLE_API_MIGRATION_PROXY_ENABLED; do
+    deployment_value="$(sed -n "s/^${deployment_name}=//p" /etc/e-posyandu/nutrition-grpc.env | tail -n 1)"
+    if [[ -n "$deployment_value" ]]; then
+      preserved_deployment_values["$deployment_name"]="$deployment_value"
+    fi
+  done
+fi
 install -m 0600 "$secret_file" /etc/e-posyandu/nutrition-grpc.env
+for deployment_name in "${!preserved_deployment_values[@]}"; do
+  if ! grep -q "^${deployment_name}=" /etc/e-posyandu/nutrition-grpc.env; then
+    printf '%s=%s\n' "$deployment_name" "${preserved_deployment_values[$deployment_name]}" \
+      >> /etc/e-posyandu/nutrition-grpc.env
+  fi
+done
+install -o root -g root -m 0750 \
+  "$release_dir/deploy/oracle/oracle-native-mode.sh" \
+  /usr/local/sbin/eposyandu-native-mode
 
 monitoring_dir="$release_dir/deploy/oracle/monitoring"
 if [[ -f "$monitoring_dir/eposyandu-oci-metrics.py" ]]; then
@@ -123,6 +153,10 @@ if [[ -f "$vault_dir/eposyandu-vault-env.py" && -f "$vault_dir/eposyandu-vault-e
     echo "Secret runtime OCI tidak berhasil disiapkan." >&2
     exit 1
   fi
+  if [[ ! -e /run/e-posyandu/oracle-api-vault.env ]]; then
+    echo "File secret runtime API Oracle tidak berhasil disiapkan." >&2
+    exit 1
+  fi
 fi
 
 backup_dir="$release_dir/deploy/oracle/backup"
@@ -153,6 +187,50 @@ if [[ ! -f "$compose_file" ]]; then
   exit 1
 fi
 
+compose_profiles="$(sed -n 's/^COMPOSE_PROFILES=//p' /etc/e-posyandu/nutrition-grpc.env | tail -n 1)"
+public_bind="$(sed -n 's/^ORACLE_PUBLIC_BIND=//p' /etc/e-posyandu/nutrition-grpc.env | tail -n 1)"
+case "${public_bind:-0.0.0.0}" in
+  0.0.0.0|127.0.0.1) ;;
+  *)
+    echo "ORACLE_PUBLIC_BIND hanya boleh 0.0.0.0 atau 127.0.0.1." >&2
+    exit 1
+    ;;
+esac
+export COMPOSE_PROFILES="$compose_profiles"
+case ",${compose_profiles// /,}," in
+  *,cloudflare-tunnel,*)
+    if [[ ! -s /run/e-posyandu/cloudflare-tunnel-token ]]; then
+      echo "Profile Tunnel aktif tetapi token OCI Vault belum tersedia." >&2
+      exit 1
+    fi
+    ;;
+esac
+
+previous_release="$(readlink -f /opt/e-posyandu/current 2>/dev/null || true)"
+previous_compose=""
+if [[ "$previous_release" == /opt/e-posyandu/releases/* \
+  && -f "$previous_release/deploy/oracle/compose.yaml" ]]; then
+  previous_compose="$previous_release/deploy/oracle/compose.yaml"
+fi
+deployment_started=false
+release_activated=false
+rollback_on_failure() {
+  local exit_code=$?
+  if [[ "$exit_code" -ne 0 && "$deployment_started" == true \
+    && "$release_activated" != true && -n "$previous_compose" ]]; then
+    echo "Rilis baru gagal; memulihkan konfigurasi Oracle sebelumnya." >&2
+    "${compose_command[@]}" \
+      --project-name e-posyandu-oracle \
+      --file "$previous_compose" \
+      --env-file /etc/e-posyandu/nutrition-grpc.env \
+      up --detach --remove-orphans >&2 || \
+      echo "Rollback otomatis gagal; pemeriksaan operator diperlukan." >&2
+  fi
+  exit "$exit_code"
+}
+trap rollback_on_failure EXIT
+
+deployment_started=true
 "${compose_command[@]}" \
   --project-name e-posyandu-oracle \
   --file "$compose_file" \
@@ -173,11 +251,16 @@ else
   health_host="$health_site"
   health_check=(curl --fail --silent --show-error --max-time 5 --resolve "$health_host:443:127.0.0.1" "https://$health_host/health")
 fi
+api_health_check=(curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8081/health)
+frontend_health_check=(curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8082/)
 
 for attempt in $(seq 1 30); do
-  if "${health_check[@]}" 2>/dev/null | grep -Fq "E-Posyandu nutrition worker aktif"; then
+  if "${health_check[@]}" 2>/dev/null | grep -Fq "E-Posyandu nutrition worker aktif" \
+    && "${api_health_check[@]}" 2>/dev/null | grep -Fq '"service":"e-posyandu-oracle-api"' \
+    && "${frontend_health_check[@]}" 2>/dev/null | grep -Fqi '<html'; then
     ln -sfn "$release_dir" /opt/e-posyandu/current
-    echo "Nutrition worker Oracle aktif."
+    release_activated=true
+    echo "API dan nutrition worker Oracle aktif."
     "${compose_command[@]}" \
       --project-name e-posyandu-oracle \
       --file "$compose_file" \
@@ -188,7 +271,7 @@ for attempt in $(seq 1 30); do
   sleep 2
 done
 
-echo "Nutrition worker belum sehat setelah 60 detik." >&2
+echo "Frontend, API, atau nutrition worker belum sehat setelah 60 detik." >&2
 "${compose_command[@]}" \
   --project-name e-posyandu-oracle \
   --file "$compose_file" \

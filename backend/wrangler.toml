@@ -41,8 +41,8 @@ bucket_name = "e-posyandu-files"
 # Pisahkan dengan koma. Nilai rahasia dibuat melalui `wrangler secret put`,
 # bukan disimpan dalam file ini.
 ENVIRONMENT = "production"
-CORS_ORIGINS = "https://e-posyandu.pages.dev"
-TURNSTILE_HOSTNAMES = "e-posyandu.pages.dev"
+CORS_ORIGINS = "https://e-posyandu.pages.dev,https://eposyandu.app,https://www.eposyandu.app"
+TURNSTILE_HOSTNAMES = "e-posyandu.pages.dev,eposyandu.app,www.eposyandu.app"
 PRODUCTION_SUPABASE_PROJECT_REF = "hujopuazuxxxpnxhermo"
 # Diaktifkan setelah Worker `e-posyandu-neon-read` tersedia dan secret
 # READ_REPLICA_SHARED_SECRET pada kedua Worker berisi nilai yang sama.

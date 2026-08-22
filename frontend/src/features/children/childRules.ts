@@ -1,13 +1,10 @@
 // @ts-nocheck
 import { DATA_WILAYAH, ROLES } from '../../config/dashboard';
 import {
-  calculateGiziStatus,
-  calculateZScore,
   formatChildName,
   normalizeDecimalInput,
   parseLocaleNumberForRange
 } from '../../shared/dashboardUtils';
-import { calculateCircumferenceZScore, getCircumferenceStatus } from '../measurements/measurementRules';
 
 export const CHILD_BIRTH_DECIMAL_RULES = {
   bbLahir: { minimum: 0.1, maximum: 10, shift: 2 },
@@ -73,48 +70,6 @@ export function validateChildBirthMeasurements({ bbLahir, pbLahir, lkLahir }) {
     if (values[key] === null) return { ok: false, message: messages[key] };
   }
   return { ok: true, data: values };
-}
-
-export function getBirthGrowthStatuses({ bbLahir, pbLahir, lkLahir, jk }) {
-  const sex = jk === 'L' || jk === 'P' ? jk : null;
-  const weight = parseChildDecimalForRange(
-    bbLahir,
-    CHILD_BIRTH_DECIMAL_RULES.bbLahir.minimum,
-    CHILD_BIRTH_DECIMAL_RULES.bbLahir.maximum,
-    CHILD_BIRTH_DECIMAL_RULES.bbLahir.shift
-  );
-  const length = parseChildDecimalForRange(
-    pbLahir,
-    CHILD_BIRTH_DECIMAL_RULES.pbLahir.minimum,
-    CHILD_BIRTH_DECIMAL_RULES.pbLahir.maximum,
-    CHILD_BIRTH_DECIMAL_RULES.pbLahir.shift
-  );
-  const headCircumference = parseChildDecimalForRange(
-    lkLahir,
-    CHILD_BIRTH_DECIMAL_RULES.lkLahir.minimum,
-    CHILD_BIRTH_DECIMAL_RULES.lkLahir.maximum,
-    CHILD_BIRTH_DECIMAL_RULES.lkLahir.shift
-  );
-
-  if (!sex) {
-    return {
-      statusBbu: '-', statusPbu: '-', statusBbpb: '-', statusImtu: '-', statusLku: '-',
-      zScoreBbu: null, zScorePbu: null, zScoreBbpb: null, zScoreImtu: null, zScoreLku: null
-    };
-  }
-
-  return {
-    statusBbu: calculateGiziStatus(weight, 'BBU', 0, sex),
-    statusPbu: calculateGiziStatus(length, 'TBU', 0, sex, null, 'Terlentang'),
-    statusBbpb: calculateGiziStatus(weight, 'BBTB', 0, sex, length, 'Terlentang'),
-    statusImtu: calculateGiziStatus(weight, 'IMTU', 0, sex, length, 'Terlentang'),
-    statusLku: getCircumferenceStatus(headCircumference, 'lk', 0, sex),
-    zScoreBbu: calculateZScore(weight, 'BBU', 0, sex),
-    zScorePbu: calculateZScore(length, 'TBU', 0, sex, null, 'Terlentang'),
-    zScoreBbpb: calculateZScore(weight, 'BBTB', 0, sex, length, 'Terlentang'),
-    zScoreImtu: calculateZScore(weight, 'IMTU', 0, sex, length, 'Terlentang'),
-    zScoreLku: calculateCircumferenceZScore(headCircumference, 'lk', 0, sex)
-  };
 }
 
 export function getPmtCategoryForTab(activeTab) {

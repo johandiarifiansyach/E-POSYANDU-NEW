@@ -232,8 +232,10 @@ test('dashboard, masalah gizi, dan ASI memakai sumber serta cakupan data yang sa
     assert.match(migration, new RegExp(view));
     assert.match(dashboard, new RegExp(`'${view}'`));
   }
-  assert.match(client, /query ChildrenPage/);
-  assert.match(client, /query ExclusiveBreastfeedingPage/);
+  assert.match(client, /\/children\/page\?\$\{parameters\.toString\(\)\}/);
+  assert.match(client, /\/exclusive-breastfeeding\/page\?\$\{parameters\.toString\(\)\}/);
+  assert.doesNotMatch(client, /query ChildrenPage/);
+  assert.doesNotMatch(client, /query ExclusiveBreastfeedingPage/);
 });
 
 test('halaman balita hanya membaca cache untuk ID yang sedang ditampilkan', async () => {
@@ -407,8 +409,20 @@ test('pekerjaan berat memakai migration privat, Queue, dan kontrak frontend', as
   assert.match(client, /export async function downloadBackgroundJobFile/);
 });
 
-test('deployment Oracle mengisolasi gRPC dan tidak menaruh secret dalam image', async () => {
-  const [compose, caddy, bootstrap, deploy, connector, envExample, dockerfile, cloudWorker] = await Promise.all([
+test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image', async () => {
+  const [
+    compose,
+    caddy,
+    bootstrap,
+    deploy,
+    connector,
+    envExample,
+    dockerfile,
+    cloudWorker,
+    frontendDockerfile,
+    frontendCaddy,
+    vaultMaterializer
+  ] = await Promise.all([
     readFile(resolve(root, 'deploy/oracle/compose.yaml'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/Caddyfile'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/bootstrap.sh'), 'utf8'),
@@ -416,7 +430,10 @@ test('deployment Oracle mengisolasi gRPC dan tidak menaruh secret dalam image', 
     readFile(resolve(root, 'scripts/services/connect-oracle-nutrition-worker.sh'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/nutrition-grpc.env.example'), 'utf8'),
     readFile(resolve(root, 'services/nutrition-grpc/Dockerfile'), 'utf8'),
-    readFile(resolve(root, 'services/nutrition-grpc/src/bin/cloud.rs'), 'utf8')
+    readFile(resolve(root, 'services/nutrition-grpc/src/bin/cloud.rs'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/frontend/Dockerfile'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/frontend/Caddyfile'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/vault/eposyandu-vault-env.py'), 'utf8')
   ]);
 
   assert.match(compose, /GRPC_ADDR: 127\.0\.0\.1:50051/);
@@ -424,16 +441,37 @@ test('deployment Oracle mengisolasi gRPC dan tidak menaruh secret dalam image', 
   assert.match(compose, /read_only: true/g);
   assert.match(compose, /cap_drop:\s+- ALL/g);
   assert.match(compose, /no-new-privileges:true/g);
+  assert.match(compose, /127\.0\.0\.1:8082:8080/);
+  assert.match(compose, /ORACLE_FRONTEND_SITE:-http:\/\/frontend\.invalid/);
+  assert.match(compose, /cloudflare\/cloudflared:2026\.7\.2/);
+  assert.match(compose, /profiles:\s+- cloudflare-tunnel/);
+  assert.match(compose, /TUNNEL_TOKEN_FILE: \/run\/secrets\/cloudflare-tunnel-token/);
+  assert.match(compose, /127\.0\.0\.1:2000:2000/);
+  assert.match(compose, /ORACLE_PUBLIC_BIND:-0\.0\.0\.0/);
   assert.doesNotMatch(compose, /-\s*["']?(?:50051|8080):/);
   assert.match(caddy, /@health path \/health/);
   assert.match(caddy, /respond "Rute tidak ditemukan" 404/);
+  assert.match(caddy, /Reporting-Endpoints "csp-endpoint=/);
+  assert.match(caddy, /report-to csp-endpoint/);
+  assert.match(caddy, /:8088/);
+  assert.match(caddy, /host api\.eposyandu\.app/);
+  assert.match(caddy, /host eposyandu\.app/);
+  assert.match(caddy, /header_up -CF-Connecting-IP/);
   assert.match(bootstrap, /install -m 0600 .*nutrition-grpc\.env/);
+  assert.match(bootstrap, /ORACLE_API_NATIVE_AUTH_ENABLED/);
+  assert.match(bootstrap, /ORACLE_API_NATIVE_READS_ENABLED/);
+  assert.match(bootstrap, /ORACLE_API_NATIVE_WRITES_ENABLED/);
+  assert.match(bootstrap, /ORACLE_API_MIGRATION_PROXY_ENABLED/);
+  const nativeMode = await readFile(resolve(root, 'deploy/oracle/oracle-native-mode.sh'), 'utf8');
+  assert.match(nativeMode, /up --detach --force-recreate --remove-orphans/);
   assert.match(bootstrap, /compose_command=\(podman-compose\)/);
   assert.match(bootstrap, /dnf install --assumeyes container-tools oracle-epel-release-el9/);
   assert.match(bootstrap, /firewall-cmd --query-service=http/);
   assert.match(bootstrap, /firewall-cmd --permanent --query-service=https/);
   assert.doesNotMatch(bootstrap, /firewall-cmd --reload/);
   assert.match(bootstrap, /"\$\{compose_command\[@\]\}"[\s\S]+up --detach --build --remove-orphans/);
+  assert.match(bootstrap, /Rilis baru gagal; memulihkan konfigurasi Oracle sebelumnya/);
+  assert.match(bootstrap, /up --detach --remove-orphans/);
   assert.match(bootstrap, /-H "Host: \$health_host" http:\/\/127\.0\.0\.1\/health/);
   assert.match(bootstrap, /--resolve "\$health_host:443:127\.0\.0\.1"/);
   assert.match(deploy, /ssh -o BatchMode=yes -o ConnectTimeout=10/);
@@ -442,14 +480,23 @@ test('deployment Oracle mengisolasi gRPC dan tidak menaruh secret dalam image', 
   assert.match(deploy, /--no-xattrs/);
   assert.match(deploy, /--no-mac-metadata/);
   assert.match(deploy, /--no-fflags/);
+  assert.match(deploy, /VITE_TURNSTILE_SITE_KEY/);
+  assert.match(deploy, /ORACLE_FRONTEND_TURNSTILE_SITE_KEY/);
   assert.match(connector, /secret put RUST_WORKER_HEALTH_URL/);
-  assert.match(envExample, /RUST_WORKER_SHARED_SECRET=replace-/);
+  assert.doesNotMatch(envExample, /RUST_WORKER_SHARED_SECRET=/);
   assert.match(dockerfile, /USER eposyandu/);
   assert.match(dockerfile, /FROM docker\.io\/library\/rust:1\.97-slim-bookworm/);
   assert.match(dockerfile, /FROM docker\.io\/library\/debian:bookworm-slim/);
   assert.match(cloudWorker, /SignalKind::terminate\(\)/);
   assert.match(cloudWorker, /nutrition worker menerima sinyal shutdown/);
-  assert.doesNotMatch(`${compose}\n${dockerfile}`, /CLOUDFLARE_QUEUES_API_TOKEN=/);
+  assert.match(frontendDockerfile, /RUN npm ci/);
+  assert.match(frontendDockerfile, /RUN setcap -r \/usr\/bin\/caddy/);
+  assert.match(frontendDockerfile, /USER 10001:10001/);
+  assert.match(frontendCaddy, /try_files \{path\} \/index\.html/);
+  assert.match(vaultMaterializer, /OCI_SECRET_CLOUDFLARE_TUNNEL_TOKEN_ID/);
+  assert.match(vaultMaterializer, /cloudflare-tunnel-token/);
+  assert.doesNotMatch(`${compose}\n${dockerfile}\n${frontendDockerfile}`, /CLOUDFLARE_QUEUES_API_TOKEN=/);
+  assert.doesNotMatch(compose, /TUNNEL_TOKEN:/);
 });
 
 test('riwayat perubahan dimuat langsung, dibatasi, dan rincian diproses bertahap', async () => {
@@ -599,6 +646,13 @@ test('cache sensitif dienkripsi per akun dan login tidak melewati gerbang keaman
   assert.doesNotMatch(client, /auth\/mfa|enrollMfa|verifyMfa|MfaStatus/);
   assert.match(pagesProxy, /isApiPath/);
   assert.match(pagesProxy, /env\.ASSETS\.fetch/);
+  assert.match(pagesProxy, /env\.PRODUCTION_API_ORIGIN/);
+  assert.match(pagesProxy, /env\.PRODUCTION_API_FALLBACK_ORIGIN/);
+  assert.match(pagesProxy, /safeConfiguredOrigin/);
+  assert.match(pagesProxy, /SAFE_RETRY_METHODS/);
+  assert.match(pagesProxy, /RETRYABLE_GATEWAY_STATUSES/);
+  assert.match(pagesProxy, /X-E-Posyandu-Fallback/);
+  assert.doesNotMatch(pagesProxy, /SAFE_RETRY_METHODS\.has\([^)]*POST/);
 });
 
 test('laporan CSP diminimalkan, dibatasi ukuran, dan dibatasi laju', async () => {

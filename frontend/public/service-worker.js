@@ -1,4 +1,5 @@
-const CACHE_NAME = 'e-posyandu-shell-v33';
+// Bump whenever the deployed shell changes so browsers discard stale login bundles.
+const CACHE_NAME = 'e-posyandu-shell-v36';
 const APP_SHELL = [
   '/index.html',
   '/manifest.webmanifest',

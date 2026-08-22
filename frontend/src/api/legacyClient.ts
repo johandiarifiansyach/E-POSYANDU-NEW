@@ -689,44 +689,6 @@ async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function graphQlRequest<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-  ensureApiRequestAllowed();
-  let response: Response;
-  try {
-    response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/graphql`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'X-Request-ID': createRequestId()
-      },
-      body: JSON.stringify({ query, variables })
-    });
-  } catch (error) {
-    if (isNetworkError(error)) {
-      markApiUnavailable();
-      throw new ApiUnavailableError();
-    }
-    throw error;
-  }
-  if (!response.ok) {
-    const detail = await responseErrorDetail(response, `Permintaan GraphQL gagal (${response.status}).`);
-    throw new Error(detail);
-  }
-  let payload: { data?: T; errors?: Array<{ message?: string }> };
-  try {
-    payload = await response.json();
-  } catch {
-    throw new Error(`Permintaan GraphQL gagal (${response.status}).`);
-  }
-  if (!response.ok || payload.errors?.length || !payload.data) {
-    throw new Error(payload.errors?.[0]?.message || `Permintaan GraphQL gagal (${response.status}).`);
-  }
-  clearApiUnavailable();
-  return payload.data;
-}
-
 export type FeatureFlags = {
   csvExport: boolean;
   largeExports: boolean;
@@ -853,45 +815,19 @@ export async function getChildrenPage(request: ChildrenPageRequest): Promise<Chi
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
   let response: ChildrenPageResponse;
   try {
-    const result = await graphQlRequest<{ childrenPage: ChildrenPageResponse }>(`
-    query ChildrenPage(
-      $asOf: String!
-      $measurementStart: String!
-      $measurementEnd: String!
-      $page: Int!
-      $size: Int!
-      $sort: String!
-      $view: String!
-      $search: String
-      $village: String
-      $posyandu: String
-    ) {
-      childrenPage(
-        asOf: $asOf
-        measurementStart: $measurementStart
-        measurementEnd: $measurementEnd
-        page: $page
-        size: $size
-        sort: $sort
-        view: $view
-        search: $search
-        village: $village
-        posyandu: $posyandu
-      )
-    }
-    `, {
+    const parameters = new URLSearchParams({
       asOf: request.asOf,
       measurementEnd: request.measurementEnd,
       measurementStart: request.measurementStart,
-      page: request.page,
-      size: request.size || 10,
+      page: String(request.page),
+      size: String(request.size || 10),
       sort: request.sort,
-      view: request.view || 'data',
-      search: request.search?.trim() || null,
-      village: request.village?.trim() || null,
-      posyandu: request.posyandu?.trim() || null
+      view: request.view || 'data'
     });
-    response = result.childrenPage;
+    if (request.search?.trim()) parameters.set('search', request.search.trim());
+    if (request.village?.trim()) parameters.set('village', request.village.trim());
+    if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
+    response = await apiRequest<ChildrenPageResponse>(`/children/page?${parameters.toString()}`);
   } catch (error) {
     if (!isNetworkError(error)) throw error;
     response = await getCachedChildrenPage(request);
@@ -945,40 +881,18 @@ export async function getExclusiveBreastfeedingPage(
   request: ExclusiveBreastfeedingPageRequest
 ): Promise<ExclusiveBreastfeedingPageResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-  try {
-    const result = await graphQlRequest<{ exclusiveBreastfeedingPage: ExclusiveBreastfeedingPageResponse }>(`
-    query ExclusiveBreastfeedingPage(
-      $measurementStart: String!
-      $measurementEnd: String!
-      $ageGroup: String!
-      $page: Int!
-      $size: Int!
-      $village: String
-      $posyandu: String
-    ) {
-      exclusiveBreastfeedingPage(
-        measurementStart: $measurementStart
-        measurementEnd: $measurementEnd
-        ageGroup: $ageGroup
-        page: $page
-        size: $size
-        village: $village
-        posyandu: $posyandu
-      )
-    }
-    `, {
-      ageGroup: request.ageGroup,
-      measurementEnd: request.measurementEnd,
-      measurementStart: request.measurementStart,
-      page: request.page,
-      size: request.size || 10,
-      village: request.village?.trim() || null,
-      posyandu: request.posyandu?.trim() || null
-    });
-    return result.exclusiveBreastfeedingPage;
-  } catch (error) {
-    throw error;
-  }
+  const parameters = new URLSearchParams({
+    ageGroup: request.ageGroup,
+    measurementEnd: request.measurementEnd,
+    measurementStart: request.measurementStart,
+    page: String(request.page),
+    size: String(request.size || 10)
+  });
+  if (request.village?.trim()) parameters.set('village', request.village.trim());
+  if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
+  return apiRequest<ExclusiveBreastfeedingPageResponse>(
+    `/exclusive-breastfeeding/page?${parameters.toString()}`
+  );
 }
 
 export async function getChildDetail(id: string): Promise<ApiDocument> {
@@ -1387,13 +1301,7 @@ export function onAuthStateChanged(
   return () => authListeners.delete(callback);
 }
 
-export async function signOut(auth: Auth): Promise<void> {
-  const pending = await getPendingMutations();
-  if (pending.length > 0) throw new Error('Masih ada data offline yang belum tersinkron. Sambungkan internet sebelum keluar.');
-
-  if (!isOnline()) {
-    throw new Error('Sambungkan internet untuk menghapus sesi aman, lalu coba keluar kembali.');
-  }
+async function requestRemoteLogout(): Promise<void> {
   const response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/auth/logout`, {
     method: 'POST',
     credentials: 'include',
@@ -1407,11 +1315,36 @@ export async function signOut(auth: Auth): Promise<void> {
   if (!response.ok) {
     throw new Error(await responseErrorDetail(response, 'Sesi aman belum dapat dihapus.'));
   }
+}
+
+async function clearLocalAuthState(auth: Auth): Promise<void> {
   auth.currentUser = null;
   saveSession(null);
   await resetOfflineStoreWithoutSession();
   clearSyncState();
   notifyAuthListeners();
+}
+
+export async function signOut(auth: Auth): Promise<void> {
+  const pending = await getPendingMutations();
+  if (pending.length > 0) throw new Error('Masih ada data offline yang belum tersinkron. Sambungkan internet sebelum keluar.');
+
+  if (!isOnline()) {
+    throw new Error('Sambungkan internet untuk menghapus sesi aman, lalu coba keluar kembali.');
+  }
+  await requestRemoteLogout();
+  await clearLocalAuthState(auth);
+}
+
+export async function expireAuthSession(auth: Auth): Promise<void> {
+  if (isOnline()) {
+    try {
+      await requestRemoteLogout();
+    } catch (error) {
+      console.warn('Sesi server belum dapat dihapus setelah batas tidak aktif:', error);
+    }
+  }
+  await clearLocalAuthState(auth);
 }
 
 export function getFirestore(_app?: FirebaseAppCompat): Firestore {

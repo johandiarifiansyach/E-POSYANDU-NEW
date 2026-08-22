@@ -1,4 +1,4 @@
-const apiUrl = process.env.LOAD_API_URL || 'https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev';
+const apiUrl = process.env.LOAD_API_URL || 'https://api.eposyandu.app';
 const staticAccessToken = process.env.LOAD_ACCESS_TOKEN?.trim();
 const supabaseUrl = process.env.LOAD_SUPABASE_URL?.trim().replace(/\/$/, '');
 const supabasePublishableKey = process.env.LOAD_SUPABASE_PUBLISHABLE_KEY?.trim();

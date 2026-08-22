@@ -26,7 +26,7 @@ test('login dapat dipakai dengan keyboard, footer rilis, dan pengaturan password
 
   await expect(page.getByRole('heading', { name: 'E-Posyandu' })).toBeVisible();
   await expect(page.locator('.login-footer p').first()).toHaveText('© 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach');
-  const versionButton = page.getByRole('button', { name: 'E-Posyandu v3.5.6' });
+  const versionButton = page.getByRole('button', { name: 'E-Posyandu v3.6.0' });
   await expect(versionButton).toBeVisible();
   await expect(page.locator('.login-glass-card .login-footer')).toHaveCount(0);
   await expect(page.locator('.login-shell > .login-footer')).toBeVisible();
@@ -49,7 +49,7 @@ test('login dapat dipakai dengan keyboard, footer rilis, dan pengaturan password
   const releaseDialog = page.getByRole('dialog', { name: 'Apa yang Baru' });
   await expect(releaseDialog).toBeVisible();
   await expect(releaseDialog.getByText('13 Agustus 2026', { exact: true }).first()).toBeVisible();
-  for (const version of ['v3.5.6', 'v3.5.5', 'v3.5.4', 'v3.5.3', 'v3.5.2', 'v3.5.1', 'v3.5.0', 'v3.4.5', 'v3.4.4', 'v3.4.3', 'v3.4.1', 'v3.4.0', 'v3.3.0', 'v3.0.0', 'v2.4.0', 'v2.0.0', 'v1.0.0']) {
+  for (const version of ['v3.6.0', 'v3.5.6', 'v3.5.5', 'v3.5.4', 'v3.5.3', 'v3.5.2', 'v3.5.1', 'v3.5.0', 'v3.4.5', 'v3.4.4', 'v3.4.3', 'v3.4.1', 'v3.4.0', 'v3.3.0', 'v3.0.0', 'v2.4.0', 'v2.0.0', 'v1.0.0']) {
     await expect(releaseDialog.getByText(version, { exact: true })).toBeVisible();
   }
   await expect(releaseDialog.getByText('6 Januari 2026', { exact: true })).toBeVisible();
@@ -108,7 +108,7 @@ test('halaman login tidak melebar di layar ponsel', async ({ page }, testInfo) =
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
 });
 
-test('login memakai profil terverifikasi tanpa meminta endpoint me atau langkah kedua', async ({ page }) => {
+test('login pulih dari koneksi IndexedDB yang sedang ditutup tanpa meminta endpoint me', async ({ page }) => {
   let profileRequests = 0;
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
@@ -161,6 +161,19 @@ test('login memakai profil terverifikasi tanpa meminta endpoint me atau langkah 
   });
 
   await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'E-Posyandu' })).toBeVisible();
+  await page.evaluate(() => {
+    const prototype = IDBDatabase.prototype as any;
+    const originalTransaction = prototype.transaction;
+    let rejectedTransactions = 0;
+    prototype.transaction = function (...args: any[]) {
+      if (rejectedTransactions < 2) {
+        rejectedTransactions += 1;
+        throw new DOMException('The database connection is closing', 'InvalidStateError');
+      }
+      return originalTransaction.apply(this, args);
+    };
+  });
   await page.getByLabel('Username').fill('salak1');
   await page.getByRole('textbox', { name: 'Kata Sandi', exact: true }).fill('kata-sandi-uji');
   await page.getByRole('button', { name: 'Masuk' }).click();
@@ -168,6 +181,104 @@ test('login memakai profil terverifikasi tanpa meminta endpoint me atau langkah 
   await expect(page.locator('[data-nav-id="dashboard"]')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Verifikasi Dua Langkah' })).toHaveCount(0);
   expect(profileRequests).toBe(0);
+});
+
+test('sesi logout otomatis setelah 30 menit tidak aktif dan tidak pulih saat logout server gagal', async ({ page }) => {
+  let serverSessionActive = false;
+  let sessionRequests = 0;
+  let logoutRequests = 0;
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const headers = {
+      'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Request-ID',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Origin': 'http://127.0.0.1:4174',
+      'Content-Type': 'application/json'
+    };
+    if (request.method() === 'OPTIONS') {
+      await route.fulfill({ status: 204, headers });
+      return;
+    }
+    if (path.endsWith('/auth/session')) {
+      sessionRequests += 1;
+      await route.fulfill(serverSessionActive ? {
+        status: 200,
+        headers,
+        json: {
+          user: { id: 'user-idle', email: 'salak1@posyandu.com' },
+          profile: {
+            userId: 'user-idle',
+            email: 'salak1@posyandu.com',
+            role: 'Kader Posyandu',
+            desa: 'Desa Gumukmas',
+            posyandu: 'SALAK 1'
+          }
+        }
+      } : { status: 401, headers, json: { detail: 'Sesi belum tersedia.' } });
+      return;
+    }
+    if (path.endsWith('/auth/login')) {
+      serverSessionActive = true;
+      await route.fulfill({ status: 200, headers, json: {
+        user: { id: 'user-idle', email: 'salak1@posyandu.com' },
+        profile: {
+          userId: 'user-idle',
+          email: 'salak1@posyandu.com',
+          role: 'Kader Posyandu',
+          desa: 'Desa Gumukmas',
+          posyandu: 'SALAK 1'
+        }
+      } });
+      return;
+    }
+    if (path.endsWith('/auth/logout')) {
+      logoutRequests += 1;
+      await route.fulfill({ status: 503, headers, json: { detail: 'Logout server sengaja digagalkan.' } });
+      return;
+    }
+    if (path.endsWith('/graphql')) {
+      await route.fulfill({ status: 200, headers, json: {
+        data: { dashboardStats: {
+          S: 0, D: 0, N: 0, T: 0, B: 0, O: 0,
+          asiEksklusif: 0, asiTarget: 0, underweight: 0, stunting: 0, wasting: 0,
+          perD: '0', perN: '0', perT: '0', perAsiEksklusif: '0',
+          perUnderweight: '0', perStunting: '0', perWasting: '0'
+        } }
+      } });
+      return;
+    }
+    await route.fulfill({ status: 200, headers, json: { items: [], cursor: new Date().toISOString() } });
+  });
+
+  await page.goto('/');
+  await page.getByLabel('Username').fill('salak1');
+  await page.getByRole('textbox', { name: 'Kata Sandi', exact: true }).fill('kata-sandi-uji');
+  await page.getByRole('button', { name: 'Masuk' }).click();
+  await expect(page.locator('[data-nav-id="dashboard"]')).toBeVisible();
+
+  await page.evaluate(() => {
+    localStorage.setItem('e-posyandu:last-activity', String(Date.now() - (31 * 60 * 1000)));
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+
+  await expect(page.getByRole('heading', { name: 'E-Posyandu' })).toBeVisible();
+  await expect.poll(() => logoutRequests).toBe(1);
+  const expiredState = await page.evaluate(() => ({
+    activity: localStorage.getItem('e-posyandu:last-activity'),
+    expired: localStorage.getItem('e-posyandu:idle-session-expired'),
+    user: localStorage.getItem('e-posyandu:user')
+  }));
+  expect(expiredState.activity).toBeNull();
+  expect(expiredState.expired).not.toBeNull();
+  expect(expiredState.user).toBeNull();
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'E-Posyandu' })).toBeVisible();
+  await expect(page.locator('[data-nav-id="dashboard"]')).toHaveCount(0);
+  await expect.poll(() => logoutRequests).toBe(2);
+  expect(sessionRequests).toBe(1);
 });
 
 test('login tidak melewati Turnstile dan rate limiter saat Worker mencapai batas kapasitas', async ({ page }) => {

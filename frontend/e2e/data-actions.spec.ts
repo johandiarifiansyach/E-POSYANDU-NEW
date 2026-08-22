@@ -451,15 +451,10 @@ test('halaman tambah balita memakai simbol dan kontrol bergaya iOS', async ({ pa
   await expect(birthHead).toHaveValue('33.2');
   await expect(parentName).toHaveValue('orang tua bayi');
 
-  const birthLiveStatus = addChildPage.locator('[data-birth-live-status]');
-  await expect(birthLiveStatus).toBeVisible();
-  await expect(birthLiveStatus.locator('.measurement-live-status-item')).toHaveCount(5);
-  await expect(birthLiveStatus).toContainText('Berat Normal');
-  await expect(birthLiveStatus).toContainText('Gizi Baik');
-  await expect(birthLiveStatus).toContainText('Z-score');
+  await expect(addChildPage.locator('[data-birth-live-status]')).toHaveCount(0);
 
   if (process.env.E2E_CAPTURE_UI) {
-    await page.screenshot({ path: `${process.env.E2E_CAPTURE_UI}/add-child-birth-status-${testInfo.project.name}.png`, fullPage: true });
+    await page.screenshot({ path: `${process.env.E2E_CAPTURE_UI}/add-child-${testInfo.project.name}.png`, fullPage: true });
   }
 
   await expect(page.getByRole('button', { name: 'Batal' }).locator('svg')).toBeVisible();
@@ -580,7 +575,7 @@ test('sidebar desktop dapat diciutkan menjadi ikon dan dibuka kembali', async ({
   await expect(sidebarLabel).toBeVisible();
   await expect(sidebarBrand).toBeVisible();
   await expect(sidebarBrand).toContainText('E-Posyandu');
-  await expect(sidebarBrand).toContainText('v3.5.6');
+  await expect(sidebarBrand).toContainText('v3.6.0');
   await expect(page.getByRole('button', { name: 'Ringkas Menu', exact: true })).toBeVisible();
   await expect(page.locator('.app-sidebar')).toHaveCSS('width', '280px');
 
@@ -651,7 +646,7 @@ test('header bersih, periode berada di panel data, tema dan footer berfungsi', a
   }
 
   await expect(page.locator('.app-footer')).toContainText('© 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach');
-  const versionButton = page.locator('.app-footer').getByRole('button', { name: 'E-Posyandu v3.5.6' });
+  const versionButton = page.locator('.app-footer').getByRole('button', { name: 'E-Posyandu v3.6.0' });
   await expect(versionButton).toBeVisible();
   await versionButton.click();
   const releaseDialog = page.getByRole('dialog', { name: 'Apa yang Baru' });
@@ -704,17 +699,12 @@ test('tabel ASI eksklusif menampilkan skeleton sesuai enam kolom saat memuat', a
     releaseResponse = resolve;
   });
 
-  await page.route('**/api/v1/graphql', async (route) => {
-    const payload = route.request().postDataJSON() as { query?: string };
-    if (!payload.query?.includes('exclusiveBreastfeedingPage')) {
-      await route.fallback();
-      return;
-    }
+  await page.route('**/api/v1/exclusive-breastfeeding/page?*', async (route) => {
     await responseGate;
     await route.fulfill({
       status: 200,
       headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' },
-      json: { data: { exclusiveBreastfeedingPage: { items: [], total: 0 } } }
+      json: { items: [], total: 0 }
     });
   });
 
@@ -867,7 +857,7 @@ test('form penimbangan memakai tata letak iOS yang responsif', async ({ page }) 
   const measurementPage = page.locator('[data-measurement-page]');
   await expect(measurementPage.locator('.ios-measurement-form')).toBeVisible();
   await expect(measurementPage.locator('.measurement-form-panel')).toHaveCount(3);
-  await expect(measurementPage.locator('.measurement-status-panel')).toHaveCount(0);
+  await expect(measurementPage.locator('.measurement-live-status')).toHaveCount(0);
   await expect(measurementPage.locator('.measurement-service-panel')).toBeVisible();
   const weightInput = measurementPage.locator('input[name="bb"]');
   const heightInput = measurementPage.locator('input[name="tb"]');

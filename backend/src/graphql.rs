@@ -5,41 +5,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use worker::{Env, Headers, Method, Request, RequestInit};
 
-const SCHEMA: &str = r#"
-scalar JSON
-
-type Query {
-  dashboardStats(
-    monthStart: String!
-    monthEnd: String!
-    previousMonthStart: String!
-    previousMonthEnd: String!
-    village: String
-    posyandu: String
-  ): JSON!
-  childrenPage(
-    asOf: String!
-    measurementStart: String!
-    measurementEnd: String!
-    page: Int = 1
-    size: Int = 10
-    sort: String = "recent"
-    view: String = "data"
-    search: String
-    village: String
-    posyandu: String
-  ): JSON!
-  exclusiveBreastfeedingPage(
-    measurementStart: String!
-    measurementEnd: String!
-    ageGroup: String!
-    page: Int = 1
-    size: Int = 10
-    village: String
-    posyandu: String
-  ): JSON!
-}
-"#;
+const SCHEMA: &str = include_str!("../graphql-schema.graphql");
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

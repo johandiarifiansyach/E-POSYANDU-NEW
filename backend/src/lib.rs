@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{cell::RefCell, collections::HashMap};
+use url::Url;
 use worker::{
     Context, Env, Fetch, Headers, Method, Request, RequestInit, Response, Result, event,
     wasm_bindgen::JsValue,
@@ -332,9 +333,44 @@ fn configured_origins(env: &Env) -> Vec<String> {
         .unwrap_or_default()
         .split(',')
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+        .filter_map(normalize_origin)
         .collect()
+}
+
+/// Normalize an HTTP(S) origin before comparing it with the allow-list.
+///
+/// Browsers send an origin without a path, but reverse proxies and manually
+/// configured clients may add a trailing slash or use a different case. We
+/// accept those harmless representations while rejecting URLs that contain a
+/// path, credentials, query, or fragment.
+fn normalize_origin(value: &str) -> Option<String> {
+    let parsed = Url::parse(value.trim()).ok()?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || (parsed.path() != "" && parsed.path() != "/")
+    {
+        return None;
+    }
+
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    let port = parsed.port().filter(|port| {
+        !((*port == 80 && scheme == "http") || (*port == 443 && scheme == "https"))
+    });
+    let authority = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host
+    };
+    Some(match port {
+        Some(port) => format!("{scheme}://{authority}:{port}"),
+        None => format!("{scheme}://{authority}"),
+    })
 }
 
 fn request_origin(request: &Request, env: &Env) -> ApiResult<Option<String>> {
@@ -345,9 +381,11 @@ fn request_origin(request: &Request, env: &Env) -> ApiResult<Option<String>> {
     let Some(origin) = origin else {
         return Ok(None);
     };
+    let normalized = normalize_origin(&origin)
+        .ok_or_else(|| ApiFailure::new(403, "Origin aplikasi tidak diizinkan."))?;
     if configured_origins(env)
         .iter()
-        .any(|allowed| allowed == &origin)
+        .any(|allowed| allowed == &normalized)
     {
         Ok(Some(origin))
     } else {

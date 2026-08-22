@@ -89,7 +89,6 @@ export default function MeasurementPage({ child, onBack }) {
     const ageAtMeasure = useMemo(() => getAgeInMonths(child.tglLahir, measureDate), [child.tglLahir, measureDate]);
     const showLilaMeasurement = ageAtMeasure >= 3;
     const lengthHeightLabel = ageAtMeasure <= 24 ? 'Panjang Badan (cm)' : 'Tinggi Badan (cm)';
-    const liveStatuses = useMemo(() => getMeasurementStatuses({ ...formData, tglUkur: formData.tglUkur }, child, measureDate), [formData, child, measureDate]);
     const monthlyHistory = useMemo(() => {
         const monthlyMap = new Map();
         history.forEach((item) => {
@@ -432,22 +431,6 @@ export default function MeasurementPage({ child, onBack }) {
                         Native.createElement("input", { name: "lila", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.lila, onInput: handleDecimalFieldChange('lila'), onBlur: handleDecimalFieldBlur('lila') })),
                     Native.createElement(InputGroup, { label: "Lingkar Kepala (cm)" },
                         Native.createElement("input", { name: "lk", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.lk, onInput: handleDecimalFieldChange('lk'), onBlur: handleDecimalFieldBlur('lk') }))),
-                Native.createElement("section", { className: "measurement-live-status", "aria-live": "polite", "aria-label": "Hasil status pertumbuhan realtime" },
-                    Native.createElement("div", { className: "measurement-live-status-heading" },
-                        Native.createElement("h3", null, "Hasil Status Pertumbuhan"),
-                        Native.createElement("p", null, `Dihitung realtime pada usia ${ageAtMeasure} bulan`)),
-                    Native.createElement("div", { className: "measurement-live-status-grid" },
-                        [
-                            ['BB/U', liveStatuses.statusBbu, liveStatuses.zScoreBbu],
-                            ['PB atau TB/U', liveStatuses.statusTbu, liveStatuses.zScoreTbu],
-                            ['BB/PB atau BB/TB', liveStatuses.statusBbtb, liveStatuses.zScoreBbtb],
-                            ['IMT/U', liveStatuses.statusImtu, liveStatuses.zScoreImtu],
-                            ...(showLilaMeasurement ? [['LILA/U', liveStatuses.statusLilau, liveStatuses.zScoreLilau]] : []),
-                            ['LK/U', liveStatuses.statusLku, liveStatuses.zScoreLku]
-                        ].map(([label, status, zScore]) => Native.createElement("div", { key: label, className: "measurement-live-status-item" },
-                            Native.createElement("span", { className: "measurement-live-status-label" }, label),
-                            Native.createElement(StatusBadge, { status: status }),
-                            Native.createElement("small", null, Number.isFinite(zScore) ? `Z-score ${zScore.toFixed(2).replace('.', ',')} SD` : 'Isi data untuk melihat hasil'))))),
                 Native.createElement(InputGroup, { label: "Pitting Edema Bilateral" },
                     Native.createElement(Select, { value: formData.edema, onChange: (event) => setFormData((previous) => ({ ...previous, edema: event.target.value })), options: [
                             { value: 'Tidak', label: 'Tidak' },

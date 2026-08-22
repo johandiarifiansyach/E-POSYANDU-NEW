@@ -60,6 +60,7 @@ const OFFLINE_OWNER_SESSION_KEY = 'e-posyandu:offline-owner-v1';
 const OFFLINE_ENCRYPTION_SESSION_KEY = 'e-posyandu:offline-key-v1';
 
 let databasePromise: Promise<IDBDatabase> | null = null;
+let activeDatabase: IDBDatabase | null = null;
 let activeOwnerId = '';
 let activeOwnerScope = '';
 let activeEncryptionKey: CryptoKey | null = null;
@@ -116,9 +117,30 @@ function ensureIndex(store: IDBObjectStore, name: string, keyPath: string | stri
   if (!store.indexNames.contains(name)) store.createIndex(name, keyPath, { unique: false });
 }
 
+function forgetDatabase(database: IDBDatabase) {
+  if (activeDatabase !== database) return;
+  activeDatabase = null;
+  databasePromise = null;
+}
+
+function closeAndForgetDatabase(database: IDBDatabase) {
+  forgetDatabase(database);
+  try {
+    database.close();
+  } catch {
+    // The browser may already be closing this connection.
+  }
+}
+
+function isClosingDatabaseError(error: unknown) {
+  if (error instanceof DOMException && error.name === 'InvalidStateError') return true;
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /database connection is closing|database connection is closed|connection.*closing/i.test(message);
+}
+
 function getDatabase(): Promise<IDBDatabase> {
   if (!databasePromise) {
-    databasePromise = new Promise((resolve, reject) => {
+    const openingPromise = new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
       request.onupgradeneeded = () => {
         const database = request.result;
@@ -142,11 +164,36 @@ function getDatabase(): Promise<IDBDatabase> {
         ensureIndex(conflicts, 'documentKey', ['tableName', 'documentId']);
         ensureIndex(conflicts, 'ownerScope', 'ownerScope');
       };
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        const database = request.result;
+        activeDatabase = database;
+        database.addEventListener('versionchange', () => closeAndForgetDatabase(database), { once: true });
+        database.addEventListener('close', () => forgetDatabase(database), { once: true });
+        resolve(database);
+      };
       request.onerror = () => reject(request.error || new Error('Tidak dapat membuka penyimpanan offline.'));
+    });
+    databasePromise = openingPromise;
+    void openingPromise.catch(() => {
+      if (databasePromise === openingPromise) databasePromise = null;
     });
   }
   return databasePromise;
+}
+
+async function withDatabaseRetry<T>(operation: (database: IDBDatabase) => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const database = await getDatabase();
+    try {
+      return await operation(database);
+    } catch (error) {
+      lastError = error;
+      if (!isClosingDatabaseError(error) || attempt > 0) throw error;
+      closeAndForgetDatabase(database);
+    }
+  }
+  throw lastError;
 }
 
 async function runStore<T>(
@@ -154,8 +201,7 @@ async function runStore<T>(
   mode: IDBTransactionMode,
   operation: (store: IDBObjectStore) => Promise<T>
 ): Promise<T> {
-  const database = await getDatabase();
-  return new Promise<T>((resolve, reject) => {
+  return withDatabaseRetry((database) => new Promise<T>((resolve, reject) => {
     const transaction = database.transaction(storeName, mode);
     const store = transaction.objectStore(storeName);
     let result: T;
@@ -172,7 +218,7 @@ async function runStore<T>(
       transaction.abort();
       reject(error);
     });
-  });
+  }));
 }
 
 function bytesToBase64(bytes: Uint8Array) {
@@ -265,17 +311,19 @@ async function decryptValue<T>(storeName: string, envelope: EncryptedEnvelope): 
 
 async function readRawOfflineStores(): Promise<RawOfflineStores> {
   if (!canUseIndexedDb()) return { documents: [], mutations: [], conflicts: [] };
-  const database = await getDatabase();
-  const readStore = (storeName: string) => new Promise<any[]>((resolve, reject) => {
-    const transaction = database.transaction(storeName, 'readonly');
-    const request = transaction.objectStore(storeName).getAll();
-    request.onsuccess = () => resolve(request.result || []);
-    request.onerror = () => reject(request.error || new Error('Cache offline tidak dapat diperiksa.'));
-  });
-  const [documents, mutations, conflicts] = await Promise.all([
-    readStore(DOCUMENT_STORE), readStore(MUTATION_STORE), readStore(CONFLICT_STORE)
-  ]);
-  return { documents, mutations, conflicts };
+  return withDatabaseRetry((database) => new Promise<RawOfflineStores>((resolve, reject) => {
+    const transaction = database.transaction([DOCUMENT_STORE, MUTATION_STORE, CONFLICT_STORE], 'readonly');
+    const documents = transaction.objectStore(DOCUMENT_STORE).getAll();
+    const mutations = transaction.objectStore(MUTATION_STORE).getAll();
+    const conflicts = transaction.objectStore(CONFLICT_STORE).getAll();
+    transaction.oncomplete = () => resolve({
+      documents: documents.result || [],
+      mutations: mutations.result || [],
+      conflicts: conflicts.result || []
+    });
+    transaction.onerror = () => reject(transaction.error || new Error('Cache offline tidak dapat diperiksa.'));
+    transaction.onabort = () => reject(transaction.error || new Error('Pemeriksaan cache offline dibatalkan.'));
+  }));
 }
 
 function rawEntries(stores: RawOfflineStores) {
@@ -298,8 +346,7 @@ async function conflictEnvelope(conflict: SyncConflict): Promise<EncryptedEnvelo
 }
 
 async function replaceRawStores(stores: RawOfflineStores) {
-  const database = await getDatabase();
-  await new Promise<void>((resolve, reject) => {
+  await withDatabaseRetry((database) => new Promise<void>((resolve, reject) => {
     const transaction = database.transaction([DOCUMENT_STORE, MUTATION_STORE, CONFLICT_STORE], 'readwrite');
     const documents = transaction.objectStore(DOCUMENT_STORE);
     const mutations = transaction.objectStore(MUTATION_STORE);
@@ -313,7 +360,7 @@ async function replaceRawStores(stores: RawOfflineStores) {
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error || new Error('Migrasi cache terenkripsi gagal.'));
     transaction.onabort = () => reject(transaction.error || new Error('Migrasi cache terenkripsi dibatalkan.'));
-  });
+  }));
 }
 
 async function migrateLegacyStores(stores: RawOfflineStores) {
@@ -354,21 +401,28 @@ export async function initializeOfflineStoreSession(
     return;
   }
 
-  let rawStores = await readRawOfflineStores();
-  const entries = rawEntries(rawStores);
-  const allEntriesAreLegacy = entries.length > 0 && entries.every((entry) => !isEncryptedEnvelope(entry));
-  let rawKey = options.forceReset ? null : sessionKeyMaterial(normalizedOwnerId);
-  if (options.forceReset || !rawKey) {
-    if (!(options.allowLegacyMigration && allEntriesAreLegacy)) {
-      await clearOfflineStore();
-      rawStores = { documents: [], mutations: [], conflicts: [] };
+  try {
+    let rawStores = await readRawOfflineStores();
+    const entries = rawEntries(rawStores);
+    const allEntriesAreLegacy = entries.length > 0 && entries.every((entry) => !isEncryptedEnvelope(entry));
+    let rawKey = options.forceReset ? null : sessionKeyMaterial(normalizedOwnerId);
+    if (options.forceReset || !rawKey) {
+      if (!(options.allowLegacyMigration && allEntriesAreLegacy)) {
+        await clearOfflineStore();
+        rawStores = { documents: [], mutations: [], conflicts: [] };
+      }
+      rawKey = crypto.getRandomValues(new Uint8Array(32));
+      saveSessionKeyMaterial(normalizedOwnerId, rawKey);
     }
-    rawKey = crypto.getRandomValues(new Uint8Array(32));
-    saveSessionKeyMaterial(normalizedOwnerId, rawKey);
+    activeEncryptionKey = await importEncryptionKey(rawKey);
+    if (options.allowLegacyMigration && allEntriesAreLegacy) await migrateLegacyStores(rawStores);
+    else await retainOnlyActiveOwner(rawStores);
+  } catch {
+    if (activeDatabase) closeAndForgetDatabase(activeDatabase);
+    activeEncryptionKey = null;
+    clearSessionKeyMaterial();
+    // Cache offline is optional; a damaged browser database must never block login.
   }
-  activeEncryptionKey = await importEncryptionKey(rawKey);
-  if (options.allowLegacyMigration && allEntriesAreLegacy) await migrateLegacyStores(rawStores);
-  else await retainOnlyActiveOwner(rawStores);
 }
 
 export async function resetOfflineStoreWithoutSession(): Promise<void> {
@@ -477,8 +531,7 @@ export async function clearOfflineStore(): Promise<void> {
   memoryConflicts.clear();
   if (canUseIndexedDb()) {
     try {
-      const database = await getDatabase();
-      await new Promise<void>((resolve, reject) => {
+      await withDatabaseRetry((database) => new Promise<void>((resolve, reject) => {
         const transaction = database.transaction([DOCUMENT_STORE, MUTATION_STORE, CONFLICT_STORE], 'readwrite');
         transaction.objectStore(DOCUMENT_STORE).clear();
         transaction.objectStore(MUTATION_STORE).clear();
@@ -486,7 +539,7 @@ export async function clearOfflineStore(): Promise<void> {
         transaction.oncomplete = () => resolve();
         transaction.onerror = () => reject(transaction.error || new Error('Gagal membersihkan penyimpanan offline.'));
         transaction.onabort = () => reject(transaction.error || new Error('Pembersihan penyimpanan offline dibatalkan.'));
-      });
+      }));
     } catch {
       // In-memory entries have already been cleared.
     }

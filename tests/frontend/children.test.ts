@@ -4,7 +4,6 @@ import {
   formatChildName,
   generateTemporaryKk,
   generateTemporaryNik,
-  getBirthGrowthStatuses,
   validateChildBirthMeasurements
 } from '../../frontend/src/features/children/childRules';
 
@@ -33,23 +32,6 @@ test.describe('children feature', () => {
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain('kilogram');
-  });
-
-  test('calculates five birth growth statuses in realtime at age zero', () => {
-    const statuses = getBirthGrowthStatuses({
-      bbLahir: '3,2',
-      pbLahir: '49,5',
-      lkLahir: '33,2',
-      jk: 'L'
-    });
-
-    expect(statuses.statusBbu).toBe('Berat Normal');
-    expect(statuses.statusPbu).toBe('Normal');
-    expect(statuses.statusBbpb).toBe('Gizi Baik');
-    expect(statuses.statusImtu).toBe('Gizi Baik');
-    expect(statuses.statusLku).toBe('Normal');
-    expect(statuses.zScoreBbu).not.toBeNull();
-    expect(statuses.zScoreLku).not.toBeNull();
   });
 
   test('creates scoped defaults and unique temporary identity values', () => {

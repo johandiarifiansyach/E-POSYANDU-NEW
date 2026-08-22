@@ -1,8 +1,8 @@
 import { writeFile } from 'node:fs/promises';
 
 const frontendUrl = process.env.MONITOR_FRONTEND_URL || 'https://e-posyandu.pages.dev';
-const apiUrl = process.env.MONITOR_API_URL || 'https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev';
-const workerHealthUrl = process.env.MONITOR_GRPC_HEALTH_URL || 'https://e-posyandu-nutrition-worker.onrender.com/health';
+const apiUrl = process.env.MONITOR_API_URL || 'https://api.eposyandu.app';
+const workerHealthUrl = process.env.MONITOR_GRPC_HEALTH_URL || 'https://nutrition.eposyandu.app/health';
 const timeoutMs = Math.min(60_000, Math.max(2_000, Number(process.env.MONITOR_TIMEOUT_MS) || 45_000));
 const outputPath = process.env.MONITOR_OUTPUT_PATH;
 

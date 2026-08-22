@@ -1,6 +1,77 @@
 name: e-posyandu-oracle
 
 services:
+  frontend:
+    build:
+      context: ../..
+      dockerfile: deploy/oracle/frontend/Dockerfile
+      args:
+        VITE_API_URL: ""
+        VITE_TURNSTILE_SITE_KEY: ${ORACLE_FRONTEND_TURNSTILE_SITE_KEY:-}
+    image: e-posyandu-frontend:oracle
+    restart: unless-stopped
+    expose:
+      - "8080"
+    ports:
+      - "127.0.0.1:8082:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+      - /data:rw,noexec,nosuid,nodev,size=4m
+      - /config:rw,noexec,nosuid,nodev,size=4m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    mem_swappiness: 0
+    cpus: 0.15
+    logging:
+      driver: journald
+
+  oracle-api:
+    build:
+      context: ../..
+      dockerfile: services/oracle-api/Dockerfile
+    image: e-posyandu-oracle-api:oracle
+    restart: unless-stopped
+    env_file:
+      - ${ORACLE_API_VAULT_ENV_FILE:-/run/e-posyandu/oracle-api-vault.env}
+    environment:
+      ORACLE_API_LISTEN_ADDR: 0.0.0.0:8081
+      ORACLE_API_ENVIRONMENT: production
+      ORACLE_API_NATIVE_AUTH_ENABLED: ${ORACLE_API_NATIVE_AUTH_ENABLED:-false}
+      ORACLE_API_NATIVE_READS_ENABLED: ${ORACLE_API_NATIVE_READS_ENABLED:-false}
+      ORACLE_API_NATIVE_WRITES_ENABLED: ${ORACLE_API_NATIVE_WRITES_ENABLED:-false}
+      ORACLE_API_SESSION_DB_PATH: /var/lib/e-posyandu-api/sessions.sqlite
+      CORS_ORIGINS: ${ORACLE_API_CORS_ORIGINS:-https://eposyandu.app,https://www.eposyandu.app}
+      TURNSTILE_HOSTNAMES: ${ORACLE_API_TURNSTILE_HOSTNAMES:-eposyandu.app}
+      ORACLE_API_PUBLIC_ORIGIN: ${ORACLE_API_PUBLIC_ORIGIN:-https://api.eposyandu.app}
+      ORACLE_API_LEGACY_ORIGIN: ${ORACLE_API_LEGACY_ORIGIN:-https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev}
+      ORACLE_API_NUTRITION_HEALTH_URL: ${ORACLE_API_NUTRITION_HEALTH_URL:-http://nutrition-worker:8080/health}
+      ORACLE_API_MIGRATION_PROXY_ENABLED: ${ORACLE_API_MIGRATION_PROXY_ENABLED:-true}
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_QUEUE_ID: ${CLOUDFLARE_QUEUE_ID:-}
+      RUST_LOG: ${ORACLE_API_LOG_LEVEL:-e_posyandu_oracle_api=info,tower_http=info}
+    ports:
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - /var/lib/e-posyandu/oracle-api:/var/lib/e-posyandu-api:rw,Z
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    mem_swappiness: 0
+    cpus: 0.35
+    logging:
+      driver: journald
+
   nutrition-worker:
     build:
       context: ../..
@@ -35,13 +106,21 @@ services:
     image: docker.io/library/caddy:2.10.2-alpine
     restart: unless-stopped
     depends_on:
+      - frontend
+      - oracle-api
       - nutrition-worker
     environment:
       ORACLE_HEALTH_SITE: ${ORACLE_HEALTH_SITE:?ORACLE_HEALTH_SITE wajib diisi}
+      ORACLE_API_SITE: ${ORACLE_API_SITE:-http://api.invalid}
+      ORACLE_FRONTEND_SITE: ${ORACLE_FRONTEND_SITE:-http://frontend.invalid}
+      ORACLE_FRONTEND_WWW_SITE: ${ORACLE_FRONTEND_WWW_SITE:-http://www.invalid}
+      ORACLE_FRONTEND_CANONICAL_ORIGIN: ${ORACLE_FRONTEND_CANONICAL_ORIGIN:-https://eposyandu.app}
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - "${ORACLE_PUBLIC_BIND:-0.0.0.0}:80:80"
+      - "${ORACLE_PUBLIC_BIND:-0.0.0.0}:443:443"
+      - "${ORACLE_PUBLIC_BIND:-0.0.0.0}:443:443/udp"
+    expose:
+      - "8088"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -57,6 +136,41 @@ services:
       - no-new-privileges:true
     pids_limit: 128
     mem_limit: 256m
+    logging:
+      driver: journald
+
+  cloudflare-tunnel:
+    image: docker.io/cloudflare/cloudflared:2026.7.2
+    profiles:
+      - cloudflare-tunnel
+    restart: unless-stopped
+    depends_on:
+      - health-proxy
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --loglevel
+      - info
+      - --metrics
+      - 0.0.0.0:2000
+      - run
+    environment:
+      TUNNEL_TOKEN_FILE: /run/secrets/cloudflare-tunnel-token
+    ports:
+      - "127.0.0.1:2000:2000"
+    volumes:
+      - /run/e-posyandu/cloudflare-tunnel-token:/run/secrets/cloudflare-tunnel-token:ro,Z
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    mem_swappiness: 0
+    cpus: 0.15
     logging:
       driver: journald
 

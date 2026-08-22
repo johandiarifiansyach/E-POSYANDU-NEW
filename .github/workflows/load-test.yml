@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Run end-to-end Queue and gRPC load test
         env:
-          LOAD_API_URL: https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev
+          LOAD_API_URL: https://api.eposyandu.app
           LOAD_SUPABASE_URL: ${{ secrets.LOAD_SUPABASE_URL }}
           LOAD_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.LOAD_SUPABASE_PUBLISHABLE_KEY }}
           LOAD_TEST_EMAIL: ${{ secrets.LOAD_TEST_EMAIL }}

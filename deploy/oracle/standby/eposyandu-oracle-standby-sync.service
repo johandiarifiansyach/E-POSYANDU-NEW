@@ -1,0 +1,17 @@
+[Unit]
+Description=Synchronize E-Posyandu Oracle PostgreSQL read-only standby
+Wants=network-online.target
+After=network-online.target eposyandu-oracle-standby.service
+Requires=eposyandu-oracle-standby.service
+
+[Service]
+Type=oneshot
+KillMode=control-group
+ExecStart=/usr/local/libexec/e-posyandu/eposyandu-oracle-standby sync
+TimeoutStartSec=900
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=multi-user.target

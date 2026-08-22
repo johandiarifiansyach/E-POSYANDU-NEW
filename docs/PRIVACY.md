@@ -38,7 +38,7 @@ Pembatasan wajib diterapkan berlapis pada UI, Worker/API, dan Row Level Security
 | Rekam identitas dan pelayanan/pengukuran elektronik | Paling singkat 25 tahun sejak kunjungan terakhir pasien sesuai Pasal 39 Permenkes 24/2022 | Dimusnahkan hanya melalui prosedur resmi setelah masa minimum berakhir dan setelah legal hold diperiksa |
 | Audit perubahan rekam dan akses istimewa | Mengikuti rekam terkait, paling singkat 25 tahun sejak kunjungan terakhir | Pemusnahan bersama rekam terkait setelah persetujuan |
 | Profil akun aktif | Selama penugasan | Akses dinonaktifkan segera; jejak audit lama tetap mengikuti retensi rekam |
-| Cookie sesi backend | Maksimum 8 jam | Kedaluwarsa/dihapus saat logout; logout juga mengirim `Clear-Site-Data` |
+| Cookie sesi backend | Maksimum 8 jam, dengan logout otomatis setelah 30 menit tanpa aktivitas | Kedaluwarsa/dihapus saat logout; logout juga mengirim `Clear-Site-Data` |
 | Cache scope baca darurat | Maksimum 1 jam dan tidak melampaui JWT | Kedaluwarsa otomatis di KV |
 | Cache offline browser | Hanya untuk kelangsungan sesi dan antrean sinkronisasi | Dienkripsi per akun; dihapus saat logout, pergantian akun, sesi hilang, atau inisialisasi berikutnya tanpa kunci sesi |
 | File job/ekspor sementara di R2 | 7 hari | Dihapus otomatis; dapat lebih cepat oleh pengaman kapasitas |

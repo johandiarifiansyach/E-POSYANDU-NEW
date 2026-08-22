@@ -43,37 +43,43 @@ development dan staging tidak boleh diisi data identitas atau kesehatan nyata.
 
 Salin template frontend yang sesuai menjadi file lokal tanpa akhiran `.example`. Nilai `VITE_*` bersifat publik; secret service-role tidak boleh berada di frontend.
 
-## Worker pekerjaan berat di Oracle
+## Platform utama di Oracle
 
-Oracle Compute menjalankan `nutrition-grpc` sebagai pull consumer Cloudflare
-Queue. VM ini tidak menggantikan Cloudflare Worker, Supabase Auth/PostgreSQL,
-Neon, KV, atau R2. Job hanya diproses di memori; hasil JSON kembali ke PostgreSQL
-dan hasil berkas masuk ke bucket R2 privat.
+Oracle Compute menjalankan frontend, `oracle-api`, dan `nutrition-grpc` sebagai
+origin utama. Cloudflare tetap menjadi edge dan pemilik Queue/R2; Worker/Pages
+lama dipertahankan sebagai rollback darurat. Supabase Auth/PostgreSQL tetap
+satu-satunya sumber identitas dan database writable. PostgreSQL Oracle adalah
+standby read-only dan tidak boleh dipromosikan otomatis.
 
-Gunakan OCI Ampere A1 dengan Ubuntu ARM64. Atur Network Security Group agar TCP
-22 hanya dapat diakses dari IP pengelola dan hanya TCP 80/443 yang terbuka untuk
-health check HTTPS. Port `50051` dan `8080` tidak boleh memiliki aturan ingress.
+Gunakan OCI Ampere A1 Oracle Linux 9 ARM64. Setelah Cloudflare Tunnel aktif,
+Network Security Group tidak memiliki ingress publik 22/80/443. SSH hanya lewat
+OCI Bastion dan web hanya lewat Tunnel outbound-only. Port `50051`, `8080`,
+`8081`, `8088`, serta `2000` tidak boleh memiliki aturan ingress publik.
 Panduan lengkap tersedia di
 [`deploy/oracle/README.md`](../deploy/oracle/README.md).
 
 Urutan aktivasi production:
 
-1. Buat DNS health menuju reserved public IP Oracle.
-2. Isi secret privat `~/.config/e-posyandu/nutrition-grpc.env`.
-3. Deploy dengan `npm run grpc:deploy:oracle -- ALIAS_SSH DOMAIN_HEALTH`.
+1. Deploy mode proxy dan periksa health internal.
+2. Materialisasi auth/Queue/standby/Tunnel dari OCI Vault.
+3. Aktifkan `eposyandu-native-mode auth`, lalu `reads`, lalu `full`.
 4. Jalankan job ekspor uji dan pastikan status mencapai `completed`.
-5. Sambungkan monitoring memakai `npm run grpc:connect:oracle -- URL_HEALTH`.
-6. Setelah stabil, hentikan consumer Render/macOS lama agar hanya satu consumer
-   menarik pesan Queue.
+5. Aktifkan Cloudflare Tunnel serta route empat hostname ke
+   `http://health-proxy:8088`.
+6. Delegasikan DNS, uji desktop/seluler, lalu bind Caddy ke loopback dan tutup
+   ingress publik OCI.
+7. Hentikan consumer Render/macOS lama agar hanya satu consumer menarik Queue.
 
 Container service memakai filesystem read-only, pengguna non-root, seluruh
 Linux capability dibuang, batas proses/memori/CPU, dan log lokal berotasi.
-Secret berada di `/etc/e-posyandu/nutrition-grpc.env` dengan izin `0600` serta
-tidak ikut ke image atau repository.
+File persisten `/etc/e-posyandu/*.env` hanya berisi konfigurasi non-secret dan
+OCID Vault. Nilai secret dimaterialisasi ke `/run/e-posyandu` (tmpfs, `0600`),
+tidak ikut image, archive deployment, log, atau repository.
 
 Exporter `/usr/local/libexec/e-posyandu/eposyandu-oci-metrics.py` berjalan sebagai
 systemd timer setiap menit. Exporter hanya mengirim metrik operasional ke
-namespace OCI `eposyandu`: `DiskUsagePercent`, `WorkerUp`, dan `HttpsPortUp`.
+namespace OCI `eposyandu`: `DiskUsagePercent`, `WorkerUp`, `ApiUp`,
+`TunnelUp`, dan `HttpsPortUp`.
 Tidak ada NIK, token, isi formulir, atau payload Queue yang dikirim. Dynamic Group
 worker hanya boleh memakai namespace metrik tersebut melalui policy:
 
@@ -90,9 +96,11 @@ Monitoring dengan topic tersebut sebagai destination:
 | Memori | `MemoryUtilization[5m].mean()` | > 85% |
 | Disk root | `DiskUsagePercent[5m].mean()` | > 80% |
 | Worker | `WorkerUp[5m].mean()` | < 1 |
+| API | `ApiUp[5m].mean()` | < 1 |
+| Tunnel | `TunnelUp[5m].mean()` | < 1 |
 | HTTPS | `HttpsPortUp[5m].mean()` | < 1 |
 
-Untuk alarm Worker dan HTTPS, perlakukan data yang hilang sebagai pelanggaran
+Untuk alarm Worker, API, Tunnel, dan HTTPS, perlakukan data yang hilang sebagai pelanggaran
 agar timer yang berhenti juga terdeteksi. Topic dan email hanya berisi status
 operasional; jangan masukkan data kesehatan ke dalam pesan notifikasi.
 
@@ -118,7 +126,7 @@ Smoke test production juga berjalan setiap enam jam melalui `deployment-smoke.ym
 
 ```bash
 SMOKE_FRONTEND_URL='https://e-posyandu.pages.dev' \
-SMOKE_API_URL='https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev' \
+SMOKE_API_URL='https://api.eposyandu.app' \
 npm run deployment:smoke
 ```
 
@@ -211,7 +219,7 @@ Mode ini menjaga daftar dan dashboard tetap dapat dibuka dalam gangguan singkat,
 
 Periksa kondisi replika dengan `npm run replica:verify`. Pantau `lastSuccessAt` dan `lagSeconds` pada health private Worker, error `replica_sync_failed`, fallback `read_router_fallback`, compute Neon, dan egress Supabase. Sinkronisasi hanya mengambil baris yang berubah dengan overlap lima detik serta aman diulang. Bila lag melebihi 15 menit, set `READ_REPLICA_MODE=primary-only` terlebih dahulu; jangan mengarahkan operasi tulis aplikasi ke Neon.
 
-Pemeriksaan terpadu tersedia pada `GET /api/v1/health/ready`. Endpoint ini memeriksa konfigurasi database, KV, Queue, R2, dan status nutrition worker tanpa membaca data balita. GitHub Actions menjalankannya pada Senin-Jumat pukul 07.07-16.00 WIB bersama pemeriksaan frontend dan health Render melalui `system-monitor.yml`. Pemeriksaan manual tetap dapat dijalankan kapan saja.
+Pemeriksaan terpadu tersedia pada `GET /api/v1/health/ready`. Endpoint ini memeriksa konfigurasi database, KV, Queue, R2, dan status nutrition worker tanpa membaca data balita. GitHub Actions menjalankannya pada Senin-Jumat pukul 07.07-16.00 WIB bersama pemeriksaan frontend dan health worker Oracle melalui `system-monitor.yml`. Pemeriksaan manual tetap dapat dijalankan kapan saja.
 
 Jalankan pemeriksaan yang sama dari komputer pengelola dengan:
 

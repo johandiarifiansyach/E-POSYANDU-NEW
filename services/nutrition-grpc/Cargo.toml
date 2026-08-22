@@ -1,6 +1,6 @@
 [package]
 name = "e-posyandu-nutrition-grpc"
-version = "3.5.6"
+version = "3.6.0"
 edition = "2024"
 publish = false
 default-run = "nutrition-grpc-standalone"

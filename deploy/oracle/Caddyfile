@@ -1,23 +1,150 @@
 {
-  admin off
+	admin off
+}
+
+(health_security_headers) {
+	header {
+		-Server
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+	}
+}
+
+(api_security_headers) {
+	header {
+		-Server
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+}
+
+(frontend_security_headers) {
+	header {
+		-Server
+		Content-Security-Policy "default-src 'none'; script-src 'self' https://challenges.cloudflare.com; script-src-attr 'none'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; media-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests; report-uri /api/v1/security/csp-report; report-to csp-endpoint"
+		Reporting-Endpoints "csp-endpoint=\"/api/v1/security/csp-report\""
+		Permissions-Policy "accelerometer=(), autoplay=(), camera=(), clipboard-read=(), clipboard-write=(self), display-capture=(), encrypted-media=(), fullscreen=(self), gamepad=(), geolocation=(), gyroscope=(), hid=(), identity-credentials-get=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), speaker-selection=(), storage-access=(), usb=(), web-share=(), window-management=()"
+		Referrer-Policy "no-referrer"
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		X-Permitted-Cross-Domain-Policies "none"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		Origin-Agent-Cluster "?1"
+	}
+}
+
+(redirect_security_headers) {
+	header {
+		-Server
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
 }
 
 {$ORACLE_HEALTH_SITE} {
-  @health path /health
+	@health path /health
 
-  handle @health {
-    reverse_proxy nutrition-worker:8080
-    header Cache-Control "no-store"
-  }
+	handle @health {
+		reverse_proxy nutrition-worker:8080
+		header Cache-Control "no-store"
+	}
 
-  handle {
-    respond "Rute tidak ditemukan" 404
-  }
+	handle {
+		respond "Rute tidak ditemukan" 404
+	}
 
-  header {
-    -Server
-    X-Content-Type-Options "nosniff"
-    Referrer-Policy "no-referrer"
-    X-Frame-Options "DENY"
-  }
+	import health_security_headers
+}
+
+{$ORACLE_API_SITE:http://api.invalid} {
+	reverse_proxy oracle-api:8081 {
+		# Port publik masih dapat menerima trafik langsung selama transisi. Jangan
+		# percaya header alamat Cloudflare dari koneksi yang belum melalui Tunnel.
+		header_up -CF-Connecting-IP
+	}
+
+	import api_security_headers
+}
+
+{$ORACLE_FRONTEND_SITE:http://frontend.invalid} {
+	@api path /api/health /api/v1/*
+
+	handle @api {
+		reverse_proxy oracle-api:8081 {
+			header_up -CF-Connecting-IP
+		}
+	}
+
+	handle {
+		reverse_proxy frontend:8080
+	}
+
+	import frontend_security_headers
+}
+
+{$ORACLE_FRONTEND_WWW_SITE:http://www.invalid} {
+	redir {$ORACLE_FRONTEND_CANONICAL_ORIGIN:https://eposyandu.app}{uri} permanent
+
+	import redirect_security_headers
+}
+
+# Listener ini hanya berada di jaringan Compose dan menjadi satu-satunya origin
+# Cloudflare Tunnel. Setiap published hostname harus memakai service
+# http://health-proxy:8088 serta HTTP Host Header yang sama dengan hostname-nya.
+:8088 {
+	@nutrition_health {
+		host nutrition.eposyandu.app
+		path /health
+	}
+	handle @nutrition_health {
+		reverse_proxy nutrition-worker:8080
+		header Cache-Control "no-store"
+		import health_security_headers
+	}
+
+	@nutrition host nutrition.eposyandu.app
+	handle @nutrition {
+		import health_security_headers
+		respond "Rute tidak ditemukan" 404
+	}
+
+	@api host api.eposyandu.app
+	handle @api {
+		# Header CF-Connecting-IP hanya dipercaya pada listener internal Tunnel.
+		reverse_proxy oracle-api:8081
+		import api_security_headers
+	}
+
+	@frontend_api {
+		host eposyandu.app
+		path /api/health /api/v1/*
+	}
+	handle @frontend_api {
+		reverse_proxy oracle-api:8081
+		import frontend_security_headers
+	}
+
+	@www host www.eposyandu.app
+	handle @www {
+		redir {$ORACLE_FRONTEND_CANONICAL_ORIGIN:https://eposyandu.app}{uri} permanent
+		import redirect_security_headers
+	}
+
+	@frontend host eposyandu.app
+	handle @frontend {
+		reverse_proxy frontend:8080
+		import frontend_security_headers
+	}
+
+	handle {
+		import health_security_headers
+		respond "Host origin tidak diizinkan" 421
+	}
 }

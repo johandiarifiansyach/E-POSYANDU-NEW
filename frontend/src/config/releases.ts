@@ -11,6 +11,20 @@ export type AppRelease = {
 export const RELEASE_HISTORY: AppRelease[] = [
   {
     version: APP_VERSION,
+    releaseDate: '22 Agustus 2026',
+    releaseDateIso: '2026-08-22',
+    title: 'Platform Oracle dan Sesi Lebih Aman',
+    changes: [
+      'Frontend, API Rust, dan pemrosesan laporan kini berjalan sebagai platform utama di Oracle dengan autentikasi, baca, dan tulis native yang sudah diaktifkan.',
+      'PostgreSQL Oracle menyediakan salinan laporan read-only terjadwal, sementara Supabase tetap menjadi database utama untuk identitas dan seluruh perubahan data.',
+      'Login tidak lagi gagal ketika koneksi IndexedDB browser sedang ditutup; cache offline mencoba pulih dan beralih sementara ke memori bila penyimpanan rusak.',
+      'Sesi otomatis logout setelah 30 menit tanpa aktivitas, tersinkron antar-tab, dan tidak dipulihkan diam-diam ketika logout server sedang terganggu.',
+      'Penghitungan status gizi realtime di form penimbangan dan identitas bayi baru dihapus agar pengisian lebih ringan; hasil tetap tersedia pada riwayat.',
+      'Cache aplikasi diperbarui agar seluruh perangkat segera menerima perbaikan login, formulir, dan keamanan sesi.'
+    ]
+  },
+  {
+    version: '3.5.6',
     releaseDate: '13 Agustus 2026',
     releaseDateIso: '2026-08-13',
     title: 'Baca Darurat Aman melalui Neon',
@@ -124,7 +138,7 @@ export const RELEASE_HISTORY: AppRelease[] = [
       'Kolom identitas dan penimbangan kini tetap terisi saat digunakan pada ponsel, tablet, maupun desktop.',
       'Runtime native mempertahankan elemen, fokus, posisi kursor, dan keyboard saat formulir diperbarui.',
       'Pemrosesan ganda pada input desimal dihapus agar BB, TB, LiLA, serta lingkar kepala tidak saling menimpa.',
-      'Status gizi real-time di form penimbangan dihapus agar pengisian lebih ringan; hasil status tetap tersedia pada tabel riwayat.',
+      'Status gizi real-time di form penimbangan dan identitas bayi baru dihapus agar pengisian lebih ringan; hasil status tetap tersedia pada tabel riwayat.',
       'Pengujian pengisian form ditambahkan untuk tampilan desktop dan ponsel.'
     ]
   },

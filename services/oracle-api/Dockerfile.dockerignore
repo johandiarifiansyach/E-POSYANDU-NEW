@@ -1,0 +1,6 @@
+*
+!services/oracle-api/Cargo.toml
+!services/oracle-api/Cargo.lock
+!services/oracle-api/src/**
+!backend/openapi.json
+!backend/graphql-schema.graphql

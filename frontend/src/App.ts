@@ -1,5 +1,6 @@
 import Native, { createRoot } from './runtime/dom';
 import {
+  expireAuthSession,
   getAuth,
   getCurrentAccessProfile,
   initializeApp,
@@ -23,6 +24,7 @@ const auth = getAuth(initializeApp({
 }));
 const STORED_USER_KEY = 'e-posyandu:user';
 const IDLE_ACTIVITY_KEY = 'e-posyandu:last-activity';
+const IDLE_EXPIRED_KEY = 'e-posyandu:idle-session-expired';
 const IDLE_LOGOUT_MS = 30 * 60 * 1000;
 
 function isUserRole(value: unknown): value is UserRole {
@@ -81,7 +83,7 @@ function startIdleSession(onExpired: () => Promise<void>): Cleanup {
   let timeoutId: number | undefined;
 
   const lastActivityAt = () => {
-    const saved = Number(window.sessionStorage.getItem(IDLE_ACTIVITY_KEY));
+    const saved = Number(window.localStorage.getItem(IDLE_ACTIVITY_KEY));
     return Number.isFinite(saved) && saved > 0 ? saved : Date.now();
   };
   const clearIdleTimer = () => {
@@ -93,22 +95,26 @@ function startIdleSession(onExpired: () => Promise<void>): Cleanup {
     const wait = Math.max(0, IDLE_LOGOUT_MS - (Date.now() - lastActivityAt()));
     timeoutId = window.setTimeout(() => void endIdleSession(), wait);
   };
-  const endIdleSession = async () => {
+  const expireNow = async () => {
     if (stopped) return;
-    if (Date.now() - lastActivityAt() < IDLE_LOGOUT_MS) {
-      scheduleIdleLogout();
-      return;
-    }
     stopped = true;
     clearIdleTimer();
     try {
       await onExpired();
     } catch (error) {
       stopped = false;
-      window.sessionStorage.setItem(IDLE_ACTIVITY_KEY, String(Date.now()));
+      window.localStorage.setItem(IDLE_ACTIVITY_KEY, String(Date.now()));
       scheduleIdleLogout();
       console.warn('Logout otomatis ditunda:', error);
     }
+  };
+  const endIdleSession = async () => {
+    if (stopped) return;
+    if (Date.now() - lastActivityAt() < IDLE_LOGOUT_MS) {
+      scheduleIdleLogout();
+      return;
+    }
+    await expireNow();
   };
   const recordActivity = () => {
     if (stopped) return;
@@ -118,7 +124,7 @@ function startIdleSession(onExpired: () => Promise<void>): Cleanup {
       return;
     }
     if (now - lastActivityAt() < 1_000) return;
-    window.sessionStorage.setItem(IDLE_ACTIVITY_KEY, String(now));
+    window.localStorage.setItem(IDLE_ACTIVITY_KEY, String(now));
     scheduleIdleLogout();
   };
   const checkIdleWhenVisible = () => {
@@ -129,13 +135,22 @@ function startIdleSession(onExpired: () => Promise<void>): Cleanup {
     }
     scheduleIdleLogout();
   };
+  const handleSharedSessionChange = (event: StorageEvent) => {
+    if (event.storageArea !== window.localStorage) return;
+    if (event.key === IDLE_ACTIVITY_KEY && event.newValue) {
+      scheduleIdleLogout();
+      return;
+    }
+    if (event.key === IDLE_EXPIRED_KEY && event.newValue) void expireNow();
+  };
 
-  if (!window.sessionStorage.getItem(IDLE_ACTIVITY_KEY)) {
-    window.sessionStorage.setItem(IDLE_ACTIVITY_KEY, String(Date.now()));
+  if (!window.localStorage.getItem(IDLE_ACTIVITY_KEY)) {
+    window.localStorage.setItem(IDLE_ACTIVITY_KEY, String(Date.now()));
   }
   const activityEvents = ['pointerdown', 'keydown', 'touchstart', 'scroll'];
   activityEvents.forEach((eventName) => window.addEventListener(eventName, recordActivity, { passive: true }));
   window.addEventListener('focus', checkIdleWhenVisible);
+  window.addEventListener('storage', handleSharedSessionChange);
   document.addEventListener('visibilitychange', checkIdleWhenVisible);
   scheduleIdleLogout();
 
@@ -144,6 +159,7 @@ function startIdleSession(onExpired: () => Promise<void>): Cleanup {
     clearIdleTimer();
     activityEvents.forEach((eventName) => window.removeEventListener(eventName, recordActivity));
     window.removeEventListener('focus', checkIdleWhenVisible);
+    window.removeEventListener('storage', handleSharedSessionChange);
     document.removeEventListener('visibilitychange', checkIdleWhenVisible);
   };
 }
@@ -159,7 +175,7 @@ export function mountApp(container: HTMLElement): Cleanup {
 
   const renderLogin = async () => {
     if (disposed) return;
-    window.sessionStorage.removeItem(IDLE_ACTIVITY_KEY);
+    window.localStorage.removeItem(IDLE_ACTIVITY_KEY);
     showLoading(container);
     const { mountLoginPage } = await import('./pages/LoginPage');
     if (disposed) return;
@@ -169,6 +185,7 @@ export function mountApp(container: HTMLElement): Cleanup {
         const login = await signInWithPassword(auth, username, password, turnstileToken);
         const profile = login.profile || await getCurrentAccessProfile();
         const user = { role: profile.role, desa: profile.desa, posyandu: profile.posyandu };
+        window.localStorage.removeItem(IDLE_EXPIRED_KEY);
         saveStoredUser(user);
         await renderDashboard(user, dashboardModule);
       }
@@ -178,7 +195,15 @@ export function mountApp(container: HTMLElement): Cleanup {
   const clearSession = async () => {
     await signOut(auth);
     clearStoredUser();
-    window.sessionStorage.removeItem(IDLE_ACTIVITY_KEY);
+    window.localStorage.removeItem(IDLE_ACTIVITY_KEY);
+    window.localStorage.removeItem(IDLE_EXPIRED_KEY);
+  };
+
+  const expireSession = async () => {
+    window.localStorage.setItem(IDLE_EXPIRED_KEY, String(Date.now()));
+    await expireAuthSession(auth);
+    clearStoredUser();
+    window.localStorage.removeItem(IDLE_ACTIVITY_KEY);
   };
 
   const renderDashboard = async (user: UserRole, preload?: Promise<DashboardModule>) => {
@@ -198,7 +223,7 @@ export function mountApp(container: HTMLElement): Cleanup {
       };
       root.render(() => Native.createElement(Dashboard, { user, onLogout: logout }));
       const stopIdleSession = startIdleSession(async () => {
-        await clearSession();
+        await expireSession();
         await renderLogin();
       });
       return () => {
@@ -210,6 +235,11 @@ export function mountApp(container: HTMLElement): Cleanup {
 
   const initialize = async () => {
     showLoading(container);
+    if (window.localStorage.getItem(IDLE_EXPIRED_KEY)) {
+      await expireSession();
+      await renderLogin();
+      return;
+    }
     const session = await restoreAuthSession(auth);
     const storedUser = loadStoredUser();
     if (!session) {

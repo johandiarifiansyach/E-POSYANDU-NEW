@@ -104,6 +104,40 @@ def https_port_open() -> bool:
         return False
 
 
+def oracle_api_health() -> bool:
+    return command_ok(
+        [
+            "curl",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--output",
+            "/dev/null",
+            "--max-time",
+            "3",
+            "http://127.0.0.1:8081/health",
+        ],
+        timeout=5,
+    )
+
+
+def cloudflare_tunnel_health() -> bool:
+    return command_ok(
+        [
+            "curl",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--output",
+            "/dev/null",
+            "--max-time",
+            "3",
+            "http://127.0.0.1:2000/ready",
+        ],
+        timeout=5,
+    )
+
+
 def disk_usage_percent() -> float:
     usage = shutil.disk_usage("/")
     if usage.total <= 0:
@@ -132,12 +166,21 @@ def main() -> int:
     metadata = read_instance_metadata()
     timestamp = dt.datetime.now(dt.timezone.utc)
     dimensions = {"instanceId": metadata["instance_id"], "service": "nutrition-worker"}
+    api_dimensions = {"instanceId": metadata["instance_id"], "service": "oracle-api"}
+    tunnel_dimensions = {
+        "instanceId": metadata["instance_id"],
+        "service": "cloudflare-tunnel",
+    }
     worker_ok = worker_health()
+    api_ok = oracle_api_health()
+    tunnel_ok = cloudflare_tunnel_health()
     https_ok = https_port_open()
     disk_percent = disk_usage_percent()
     metrics = [
         metric("DiskUsagePercent", disk_percent, {**dimensions, "mount": "/"}, timestamp, metadata["compartment_id"]),
         metric("WorkerUp", 1 if worker_ok else 0, dimensions, timestamp, metadata["compartment_id"]),
+        metric("ApiUp", 1 if api_ok else 0, api_dimensions, timestamp, metadata["compartment_id"]),
+        metric("TunnelUp", 1 if tunnel_ok else 0, tunnel_dimensions, timestamp, metadata["compartment_id"]),
         metric("HttpsPortUp", 1 if https_ok else 0, dimensions, timestamp, metadata["compartment_id"]),
     ]
     signer = InstancePrincipalsSecurityTokenSigner()
@@ -153,9 +196,11 @@ def main() -> int:
         )
     )
     LOG.info(
-        "metrik OCI terkirim: disk=%.2f worker=%s health-proxy=%s https=%s",
+        "metrik OCI terkirim: disk=%.2f worker=%s api=%s tunnel=%s health-proxy=%s https=%s",
         disk_percent,
         worker_ok,
+        api_ok,
+        tunnel_ok,
         https_ok,
         https_ok,
     )

@@ -88,6 +88,6 @@ jobs:
       - run: npm run deployment:smoke
         env:
           SMOKE_FRONTEND_URL: https://e-posyandu.pages.dev
-          SMOKE_API_URL: https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev
+          SMOKE_API_URL: https://api.eposyandu.app
           SMOKE_REQUIRE_SECURITY_HEADERS: 'true'
           SMOKE_SESSION_COOKIE: ${{ secrets.SMOKE_SESSION_COOKIE }}

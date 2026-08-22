@@ -25,17 +25,19 @@ pub struct QueueConfig {
     poll_interval: Duration,
 }
 
+pub struct QueueConfigInput {
+    pub account_id: String,
+    pub queue_id: String,
+    pub api_token: String,
+    pub api_url: String,
+    pub shared_secret: String,
+    pub grpc_url: String,
+    pub batch_size: u8,
+    pub poll_interval_ms: u64,
+}
+
 impl QueueConfig {
-    pub fn new(
-        account_id: String,
-        queue_id: String,
-        api_token: String,
-        api_url: String,
-        shared_secret: String,
-        grpc_url: String,
-        batch_size: u8,
-        poll_interval_ms: u64,
-    ) -> Result<Self, String> {
+    pub fn new(input: QueueConfigInput) -> Result<Self, String> {
         let required = |name: &str, value: String| {
             if value.trim().is_empty() {
                 Err(format!(
@@ -47,28 +49,27 @@ impl QueueConfig {
         };
 
         Ok(Self {
-            account_id: required("CLOUDFLARE_ACCOUNT_ID", account_id)?,
-            queue_id: required("CLOUDFLARE_QUEUE_ID", queue_id)?,
-            api_token: required("CLOUDFLARE_QUEUES_API_TOKEN", api_token)?,
-            api_url: required("EPOSYANDU_API_URL", api_url)?
+            account_id: required("CLOUDFLARE_ACCOUNT_ID", input.account_id)?,
+            queue_id: required("CLOUDFLARE_QUEUE_ID", input.queue_id)?,
+            api_token: required("CLOUDFLARE_QUEUES_API_TOKEN", input.api_token)?,
+            api_url: required("EPOSYANDU_API_URL", input.api_url)?
                 .trim_end_matches('/')
                 .into(),
-            shared_secret: required("RUST_WORKER_SHARED_SECRET", shared_secret)?,
-            grpc_url: if grpc_url.trim().is_empty() {
+            shared_secret: required("RUST_WORKER_SHARED_SECRET", input.shared_secret)?,
+            grpc_url: if input.grpc_url.trim().is_empty() {
                 "http://127.0.0.1:50051".into()
             } else {
-                grpc_url
+                input.grpc_url
             },
-            batch_size: batch_size.clamp(1, 100),
-            poll_interval: Duration::from_millis(poll_interval_ms.clamp(250, 60_000)),
+            batch_size: input.batch_size.clamp(1, 100),
+            poll_interval: Duration::from_millis(input.poll_interval_ms.clamp(250, 60_000)),
         })
     }
 
     fn from_env() -> Result<Option<Self>, String> {
-        if env::var("QUEUE_CONSUMER_ENABLED")
+        if !env::var("QUEUE_CONSUMER_ENABLED")
             .unwrap_or_default()
-            .to_ascii_lowercase()
-            != "true"
+            .eq_ignore_ascii_case("true")
         {
             return Ok(None);
         }
@@ -88,16 +89,16 @@ impl QueueConfig {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(1_500)
             .clamp(250, 60_000);
-        Self::new(
-            required("CLOUDFLARE_ACCOUNT_ID")?,
-            required("CLOUDFLARE_QUEUE_ID")?,
-            required("CLOUDFLARE_QUEUES_API_TOKEN")?,
-            required("EPOSYANDU_API_URL")?,
-            required("RUST_WORKER_SHARED_SECRET")?,
-            env::var("GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".into()),
+        Self::new(QueueConfigInput {
+            account_id: required("CLOUDFLARE_ACCOUNT_ID")?,
+            queue_id: required("CLOUDFLARE_QUEUE_ID")?,
+            api_token: required("CLOUDFLARE_QUEUES_API_TOKEN")?,
+            api_url: required("EPOSYANDU_API_URL")?,
+            shared_secret: required("RUST_WORKER_SHARED_SECRET")?,
+            grpc_url: env::var("GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".into()),
             batch_size,
-            poll_interval,
-        )
+            poll_interval_ms: poll_interval,
+        })
         .map(Some)
     }
 
@@ -432,7 +433,11 @@ pub async fn run(config: QueueConfig) -> Result<(), String> {
                                 {
                                     eprintln!("Status job gagal diperbarui: {update_error}");
                                 }
-                                acks.push(message.lease_id.as_str());
+                                // Serahkan kembali pesan setelah percobaan terakhir agar
+                                // Cloudflare memindahkannya ke dead-letter queue. Hanya
+                                // job_id yang tersimpan di pesan; detail kegagalan tetap
+                                // berada di tabel background_jobs.
+                                retries.push(message.lease_id.as_str());
                             } else {
                                 retries.push(message.lease_id.as_str());
                             }
