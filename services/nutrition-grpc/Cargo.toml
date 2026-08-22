@@ -19,7 +19,7 @@ path = "src/bin/load.rs"
 
 [dependencies]
 axum = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 hex = "0.4"
 hmac = "0.12"
