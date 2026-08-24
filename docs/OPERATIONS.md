@@ -45,11 +45,11 @@ Salin template frontend yang sesuai menjadi file lokal tanpa akhiran `.example`.
 
 ## Platform utama di Oracle
 
-Oracle Compute menjalankan frontend, `oracle-api`, dan `nutrition-grpc` sebagai
-origin utama. Cloudflare tetap menjadi edge dan pemilik Queue/R2; Worker/Pages
-lama dipertahankan sebagai rollback darurat. Supabase Auth/PostgreSQL tetap
-satu-satunya sumber identitas dan database writable. PostgreSQL Oracle adalah
-standby read-only dan tidak boleh dipromosikan otomatis.
+Cloudflare Pages menjalankan frontend. Oracle Compute menjalankan `oracle-api`,
+`nutrition-grpc`, dan PostgreSQL native sebagai origin serta primary writable
+untuk data inti. Cloudflare tetap menjadi edge dan pemilik Queue/R2;
+Worker/Pages lama dipertahankan sebagai rollback darurat. Supabase tetap
+menyediakan Auth dan jalur job legacy, tetapi bukan lagi primary data inti.
 
 Gunakan OCI Ampere A1 Oracle Linux 9 ARM64. Setelah Cloudflare Tunnel aktif,
 Network Security Group tidak memiliki ingress publik 22/80/443. SSH hanya lewat
@@ -61,7 +61,7 @@ Panduan lengkap tersedia di
 Urutan aktivasi production:
 
 1. Deploy mode proxy dan periksa health internal.
-2. Materialisasi auth/Queue/standby/Tunnel dari OCI Vault.
+2. Materialisasi auth/Queue/PostgreSQL/Tunnel dari OCI Vault.
 3. Aktifkan `eposyandu-native-mode auth`, lalu `reads`, lalu `full`.
 4. Jalankan job ekspor uji dan pastikan status mencapai `completed`.
 5. Aktifkan Cloudflare Tunnel serta route empat hostname ke
@@ -69,6 +69,11 @@ Urutan aktivasi production:
 6. Delegasikan DNS, uji desktop/seluler, lalu bind Caddy ke loopback dan tutup
    ingress publik OCI.
 7. Hentikan consumer Render/macOS lama agar hanya satu consumer menarik Queue.
+
+Mode production aktif sejak 25 Agustus 2026 adalah `full`. Endpoint koleksi,
+sinkronisasi, dashboard, dan laporan inti memakai PostgreSQL Oracle langsung.
+Endpoint job Queue/R2 beserta endpoint internal worker tetap satu kesatuan pada
+jalur legacy sampai penyimpanan berkasnya dimigrasikan.
 
 Container service memakai filesystem read-only, pengguna non-root, seluruh
 Linux capability dibuang, batas proses/memori/CPU, dan log lokal berotasi.
@@ -163,11 +168,11 @@ Pantau setiap hari pada masa awal rilis:
 | Metrik | Lokasi | Tindakan awal |
 | --- | --- | --- |
 | Error 4xx/5xx dan latency | Cloudflare Workers > Observability | Periksa log berdasarkan `request_id`; waspadai 5xx > 1% atau p95 > 1 detik |
-| Cache hit dashboard | Log event `dashboard_cache` | Setelah cache hangat, periksa bila HIT tetap di bawah 60% |
+| Cache hit data dinamis | Log event `dynamic_redis_cache` | Setelah cache hangat, periksa bila HIT tetap di bawah 60% |
 | Request, subrequest, CPU, bandwidth | Cloudflare Workers > Metrics | Cari endpoint dengan lonjakan subrequest atau waktu CPU |
 | Egress database | Supabase > Usage | Bandingkan pemakaian harian; periksa ekspor besar dan full sync |
 | Login dibatasi | Log status 429 dan Upstash | Pastikan bukan salah konfigurasi Redis atau serangan berulang |
-| Nutrition worker | Dashboard Admin Gizi dan key KV `monitoring:nutrition-worker:v1` | Alarm setelah 3 kegagalan beruntun; periksa Oracle, Caddy, dan Queue |
+| Nutrition worker | Dashboard Admin Gizi dan key Redis `monitoring:nutrition-worker:v1` | Alarm setelah 3 kegagalan beruntun; periksa Oracle, Caddy, dan Queue |
 
 Jangan menulis NIK, KK, nama balita, token, password, atau isi formulir ke log runtime.
 
@@ -211,15 +216,15 @@ Setelah mutasi berhasil, user terkait dipaksa membaca Supabase selama 6 menit. C
 
 ### Mode baca darurat
 
-Setiap sesi yang berhasil diverifikasi oleh Supabase menyimpan salinan scope akses ke KV menggunakan hash SHA-256 token, bukan token mentah. Salinan hanya berisi user ID, role, desa, dan posyandu yang diperlukan untuk pembatasan data. Masa berlakunya mengikuti waktu kedaluwarsa JWT dengan batas maksimum satu jam dan terus diperbarui selama Supabase sehat.
+Setiap sesi yang berhasil diverifikasi oleh Supabase menyimpan salinan scope akses ke Redis menggunakan hash SHA-256 token, bukan token mentah. Salinan hanya berisi user ID, role, desa, dan posyandu yang diperlukan untuk pembatasan data. Masa berlakunya mengikuti waktu kedaluwarsa JWT dengan batas maksimum satu jam dan terus diperbarui selama Supabase sehat.
 
 Saat Supabase gagal dijangkau, mengembalikan `429`, atau `5xx`, backend boleh memakai scope tersebut hanya untuk `GET` dan query GraphQL baca. Data tetap dibatasi sesuai role serta wilayah lalu dibaca dari Neon. Scope hanya dibuat dari sesi yang sebelumnya berhasil diverifikasi Supabase. Status `401` atau `403` tidak pernah memakai fallback karena dapat menunjukkan token atau izin yang tidak sah. Login baru, refresh token, CRUD, sinkronisasi tulis, audit, dan seluruh perubahan data tetap bergantung pada Supabase serta tidak pernah dialihkan ke Neon.
 
-Mode ini menjaga daftar dan dashboard tetap dapat dibuka dalam gangguan singkat, bukan menjadikan Neon primary kedua. Bila sesi belum pernah diverifikasi, JWT sudah kedaluwarsa, KV tidak tersedia, replika belum siap, atau gangguan berlangsung lebih dari satu jam, pengguna harus menunggu Supabase pulih. Pantau event `emergency_read_session`; setiap event harus mencantumkan `writes: blocked` dan tidak boleh berisi token atau data balita.
+Mode ini menjaga daftar dan dashboard tetap dapat dibuka dalam gangguan singkat, bukan menjadikan Neon primary kedua. Bila sesi belum pernah diverifikasi, JWT sudah kedaluwarsa, Redis tidak tersedia, replika belum siap, atau gangguan berlangsung lebih dari satu jam, pengguna harus menunggu Supabase pulih. Pantau event `emergency_read_session`; setiap event harus mencantumkan `writes: blocked` dan tidak boleh berisi token atau data balita.
 
 Periksa kondisi replika dengan `npm run replica:verify`. Pantau `lastSuccessAt` dan `lagSeconds` pada health private Worker, error `replica_sync_failed`, fallback `read_router_fallback`, compute Neon, dan egress Supabase. Sinkronisasi hanya mengambil baris yang berubah dengan overlap lima detik serta aman diulang. Bila lag melebihi 15 menit, set `READ_REPLICA_MODE=primary-only` terlebih dahulu; jangan mengarahkan operasi tulis aplikasi ke Neon.
 
-Pemeriksaan terpadu tersedia pada `GET /api/v1/health/ready`. Endpoint ini memeriksa konfigurasi database, KV, Queue, R2, dan status nutrition worker tanpa membaca data balita. GitHub Actions menjalankannya pada Senin-Jumat pukul 07.07-16.00 WIB bersama pemeriksaan frontend dan health worker Oracle melalui `system-monitor.yml`. Pemeriksaan manual tetap dapat dijalankan kapan saja.
+Pemeriksaan terpadu tersedia pada `GET /api/v1/health/ready`. Endpoint ini memeriksa konfigurasi database, Redis dinamis, KV global, Queue, R2, dan status nutrition worker tanpa membaca data balita. GitHub Actions menjalankannya pada Senin-Jumat pukul 07.07-16.00 WIB bersama pemeriksaan frontend dan health worker Oracle melalui `system-monitor.yml`. Pemeriksaan manual tetap dapat dijalankan kapan saja.
 
 Jalankan pemeriksaan yang sama dari komputer pengelola dengan:
 
@@ -233,7 +238,7 @@ Error JavaScript setelah pengguna login dikirim ke `POST /api/v1/client-errors`.
 
 Pelanggaran Content Security Policy dikirim browser ke `POST /api/v1/security/csp-report`. Endpoint publik ini membatasi isi 16 KiB dan 60 laporan per IP per jam. Log hanya menyimpan directive, disposition, status HTTP, URL dokumen tanpa kredensial/query/fragment, serta origin sumber yang diblokir. IP mentah, `script-sample`, policy lengkap, referrer, NIK, dan isi form tidak dicatat.
 
-Cron memeriksa `RUST_WORKER_HEALTH_URL` setiap 10 menit pada Senin-Jumat pukul 07.00-16.00 WIB. Di luar jam tersebut Render dibiarkan sleep. Status disimpan di KV dan dibaca dashboard hanya oleh Admin Gizi. Untuk alarm di luar aplikasi, isi secret HTTPS `MONITORING_ALERT_WEBHOOK_URL`, atau isi `RESEND_API_KEY`, `MONITORING_ALERT_EMAIL_TO`, dan `ERROR_REPORT_EMAIL_FROM`. Alarm dikirim saat kegagalan ketiga dan sekali lagi saat layanan pulih, tanpa membawa data balita.
+Cron memeriksa `RUST_WORKER_HEALTH_URL` setiap 10 menit pada Senin-Jumat pukul 07.00-16.00 WIB. Di luar jam tersebut Render dibiarkan sleep. Status sementara disimpan di Redis dan dibaca dashboard hanya oleh Admin Gizi. Untuk alarm di luar aplikasi, isi secret HTTPS `MONITORING_ALERT_WEBHOOK_URL`, atau isi `RESEND_API_KEY`, `MONITORING_ALERT_EMAIL_TO`, dan `ERROR_REPORT_EMAIL_FROM`. Alarm dikirim saat kegagalan ketiga dan sekali lagi saat layanan pulih, tanpa membawa data balita.
 
 ## Backup dan uji restore
 
@@ -281,7 +286,7 @@ Setiap update dan hapus membawa `version` serta `updatedAt` yang terakhir diliha
 
 ## Penyimpanan
 
-PostgreSQL tetap menjadi sumber data tunggal. IndexedDB menyimpan cache dan antrean offline per perangkat. Cloudflare Cache API dan KV hanya menyimpan ringkasan/versi cache. Upstash Redis hanya menyimpan hash pembatas login.
+PostgreSQL tetap menjadi sumber data tunggal. IndexedDB menyimpan cache dan antrean offline per perangkat. Redis menyimpan data domain dinamis selama maksimal 60 detik, dipisahkan menurut cakupan akses, serta state backend yang memiliki TTL masing-masing. Cloudflare KV hanya menyimpan data global yang jarang berubah seperti feature flag, menu, dan referensi; KV tidak menyimpan data balita, penimbangan, sesi, atau token.
 
 Cloudflare R2 aktif untuk hasil ekspor besar dan lampiran privat. Jalur upload worker dibatasi 50 MB, berkas hanya dapat diunduh oleh pemilik job atau Admin Gizi, dan PostgreSQL hanya menyimpan metadata objek.
 

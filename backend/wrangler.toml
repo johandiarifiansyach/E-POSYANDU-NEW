@@ -18,6 +18,8 @@ crons = [
 ]
 
 [[kv_namespaces]]
+# KV hanya untuk konfigurasi global yang jarang berubah seperti feature flag,
+# menu, dan referensi. Data balita/penimbangan memakai Redis TTL 60 detik.
 binding = "E_POSYANDU_CACHE"
 id = "05421512a237477282deac4d63bd7d8e"
 
@@ -78,7 +80,7 @@ binding = "E_POSYANDU_FILES"
 bucket_name = "e-posyandu-files-development"
 
 [env.development.secrets]
-required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY"]
+required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY", "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"]
 
 [env.staging]
 name = "e-posyandu-api-staging"
@@ -116,7 +118,7 @@ binding = "NEON_READ_SERVICE"
 service = "e-posyandu-neon-read-staging"
 
 [env.staging.secrets]
-required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY"]
+required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY", "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"]
 
 [secrets]
-required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY"]
+required = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY", "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"]

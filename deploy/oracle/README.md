@@ -1,15 +1,17 @@
 # Deployment Platform Oracle
 
-Oracle menjalankan frontend, `oracle-api`, dan `nutrition-grpc` sebagai origin
-produksi utama. Supabase tetap menjadi **satu-satunya database writable** dan
-layanan identitas; PostgreSQL Oracle hanya standby baca berkala, bukan primary
-kedua. Cloudflare berada di depan Oracle untuk DNS, proxy/WAF, DDoS, Turnstile,
+Cloudflare Pages menjalankan frontend, sedangkan Oracle menjalankan `oracle-api`
+dan `nutrition-grpc` sebagai origin backend produksi. PostgreSQL native pada
+OCI Block Volume adalah primary writable untuk data inti aplikasi. Supabase
+masih menyediakan Auth serta jalur legacy untuk Queue/R2 dan job berkas selama
+masa transisi; tabel inti tidak lagi ditulis melalui Supabase.
+Cloudflare berada di depan Oracle untuk DNS, proxy/WAF, DDoS, Turnstile,
 Tunnel, Queue, R2, serta jalur rollback Worker/Pages. Tidak ada failover tulis
 otomatis ke database Oracle.
 
 Urutan migrasi yang aman:
 
-1. Deploy Oracle dengan mode `proxy`, lalu uji frontend/API internal.
+1. Deploy Oracle dengan mode `proxy`, lalu uji API internal.
 2. Materialisasi seluruh secret dari OCI Vault dan aktifkan mode `auth`,
    `reads`, lalu `full`; setiap tahap memiliki health check dan rollback.
 3. Buat Cloudflare Tunnel menuju listener internal `health-proxy:8088`.
@@ -19,28 +21,32 @@ Urutan migrasi yang aman:
    pertahankan Worker/Pages dalam keadaan tidak menerima trafik normal sebagai
    rollback darurat.
 
+Status produksi sejak 25 Agustus 2026 adalah mode `full`: autentikasi gateway,
+pembacaan, dan penulisan data inti memakai backend Oracle dengan koneksi
+PostgreSQL native. Endpoint job internal tetap diproksikan sebagai satu unit ke
+jalur legacy agar metadata Queue dan berkas R2 tidak terpecah antar-database.
+
 Jangan menghapus Worker Cloudflare atau Pages. Keduanya adalah rollback
 darurat, sedangkan Queue dan R2 tetap komponen produksi yang aktif. Pastikan
 hanya satu consumer Queue (`nutrition-grpc` Oracle) yang berjalan.
 
-Image frontend juga dibangun di VM dan hanya diterbitkan pada loopback
-`127.0.0.1:8082` untuk pemeriksaan internal. Nilai awal
-`ORACLE_FRONTEND_SITE=http://frontend.invalid` sengaja membuatnya tidak dapat
-diakses dari internet. Jangan mengganti nilai tersebut dengan `eposyandu.app`
-sebelum DNS, daftar hostname widget Turnstile, CORS backend, dan uji rollback
-selesai. Browser mengakses API melalui origin yang sama sehingga token sesi
-tidak perlu dikirim lintas-origin.
+Frontend tidak dibangun atau dijalankan pada VM Oracle. `eposyandu.app` dan
+`www.eposyandu.app` dilayani oleh Cloudflare Pages; hanya hostname API dan
+nutrition yang diarahkan melalui Tunnel ke Oracle.
 
-`ORACLE_FRONTEND_TURNSTILE_SITE_KEY` adalah site key publik, bukan secret. Jika
-nilai itu belum ada pada konfigurasi deployment privat, script deploy membaca
-`VITE_TURNSTILE_SITE_KEY` dari `frontend/.env` tanpa mencetak nilainya. Secret
-key Turnstile tetap hanya boleh disimpan di backend/Vault.
+## Cache Redis privat
 
-Saat cutover, isi `ORACLE_FRONTEND_SITE=eposyandu.app`,
-`ORACLE_FRONTEND_WWW_SITE=www.eposyandu.app`, dan
-`ORACLE_FRONTEND_CANONICAL_ORIGIN=https://eposyandu.app`. Hostname `www`
-selalu dialihkan permanen ke apex agar sesi, Turnstile, dan URL kanonis hanya
-memakai satu origin.
+Deployment menjalankan `redis-cache` pada bridge privat terpisah tanpa port
+host. `oracle-api` menyimpan hasil baca balita, penimbangan, dashboard, dan
+koleksi dinamis selama 60 detik. Key menyertakan versi serta hash cakupan
+peran/desa/posyandu; mutasi data menaikkan versi sehingga hasil lama langsung
+ditinggalkan. Redis dibatasi 128 MB dengan kebijakan `volatile-lru` dan tidak
+memakai persistence karena PostgreSQL native tetap sumber data utama.
+
+Cloudflare KV tidak digunakan untuk cache domain dinamis. KV hanya menyimpan
+konfigurasi global yang jarang berubah seperti feature flag, menu, dan referensi.
+Health `GET /api/v1/health/ready` menampilkan keterjangkauan Redis dan akan
+berstatus `degraded` bila cache tidak tersedia tanpa mengalihkan sumber data.
 
 Proxy Pages membaca environment variable non-secret `PRODUCTION_API_ORIGIN`.
 Nilai default tetap Worker lama. Saat cutover, isi dengan
@@ -115,13 +121,11 @@ Jalankan ulang materializer Vault. Token akan berada di tmpfs
 `/run/e-posyandu/cloudflare-tunnel-token` dengan mode `0600` dan dibaca
 `cloudflared` melalui `TUNNEL_TOKEN_FILE`.
 
-Tambahkan empat published application route pada tunnel. Semua memakai service
+Tambahkan dua published application route pada tunnel. Keduanya memakai service
 internal yang sama, tetapi **HTTP Host Header harus sama dengan hostname**:
 
 | Public hostname | Service | HTTP Host Header |
 | --- | --- | --- |
-| `eposyandu.app` | `http://health-proxy:8088` | `eposyandu.app` |
-| `www.eposyandu.app` | `http://health-proxy:8088` | `www.eposyandu.app` |
 | `api.eposyandu.app` | `http://health-proxy:8088` | `api.eposyandu.app` |
 | `nutrition.eposyandu.app` | `http://health-proxy:8088` | `nutrition.eposyandu.app` |
 
@@ -157,14 +161,20 @@ npm run oracle:cutover:check -- eposyandu-oracle eposyandu.app
 ```
 
 Untuk rollback trafik, arahkan route Cloudflare ke Worker/Pages lama atau
-nonaktifkan proxy DNS sesuai runbook. Jangan mempromosikan standby PostgreSQL
-Oracle menjadi writable saat rollback.
+nonaktifkan proxy DNS sesuai runbook. Rollback database dilakukan melalui
+backup terverifikasi, bukan dengan mempromosikan resource Oracle yang sudah
+dihapus.
 
-## Backup konfigurasi terenkripsi
+## Backup terenkripsi
 
 Backup Oracle hanya berisi konfigurasi deployment, Caddyfile, unit systemd,
 manifest rilis, dan metadata operasional. Backup tidak berisi database dump,
 NIK, data kesehatan, payload Queue, file secret runtime, atau data TLS Caddy.
+
+Database native memiliki timer terpisah
+`eposyandu-postgresql-backup.timer`. Timer membuat dump custom PostgreSQL,
+memverifikasinya dengan `pg_restore --list`, mengenkripsi hasilnya dengan GPG
+AES-256, lalu mengunggah objek write-only ke prefix `production/oracle/`.
 
 Buat bucket Object Storage **private** bernama, misalnya,
 `eposyandu-oracle-backups`. Namespace Object Storage akun ini adalah
@@ -198,6 +208,8 @@ Pemeriksaan backup tanpa membuka isinya:
 ```bash
 sudo systemctl status eposyandu-backup.timer --no-pager
 sudo journalctl -u eposyandu-backup.service -n 30 --no-pager
+sudo systemctl status eposyandu-postgresql-backup.timer --no-pager
+sudo journalctl -u eposyandu-postgresql-backup.service -n 30 --no-pager
 ```
 
 Untuk pemulihan, unduh objek dari bucket melalui akun administrator, ambil
@@ -253,56 +265,10 @@ Hapus layanan Render/macOS lama hanya setelah Oracle sehat, job uji selesai,
 dan status dashboard stabil. Jangan menjalankan dua Queue consumer dalam waktu
 lama karena keduanya akan saling mengambil pesan.
 
-## PostgreSQL standby read-only
+## Tahap 2 selesai
 
-Standby Oracle adalah salinan baca berkala dari empat tabel laporan
-(`children`, `measurements`, `mpasi_logs`, dan `eposyandu_growth_lms`). Supabase
-tetap menjadi primary tunggal untuk login dan seluruh operasi tulis. Desain ini
-bukan multi-primary: aplikasi tidak boleh menulis ke PostgreSQL Oracle karena
-dua primary tanpa konsensus berisiko menimbulkan konflik dan kehilangan data.
-
-Database standby tidak menerbitkan port ke host maupun internet. Hanya jaringan
-container internal yang dapat menjangkaunya. Volume OCI mengenkripsi data saat
-tersimpan; role `eposyandu_reader` juga dipaksa memakai
-`default_transaction_read_only=on` dan hanya memperoleh `SELECT`.
-
-Buat tiga secret terpisah di OCI Vault:
-
-- `E_POSYANDU_STANDBY_SOURCE_DATABASE_URL`: URL direct atau Session Pooler
-  Supabase production port 5432.
-- `E_POSYANDU_STANDBY_POSTGRES_PASSWORD`: password acak minimal 32 karakter
-  untuk pemilik sinkronisasi lokal.
-- `E_POSYANDU_STANDBY_READER_PASSWORD`: password acak berbeda minimal 32
-  karakter untuk role aplikasi read-only.
-
-Tambahkan OCID ketiganya ke `/etc/e-posyandu/vault.env` memakai nama variabel
-berikut (file hanya berisi OCID, bukan nilai secret):
-
-```dotenv
-OCI_SECRET_ORACLE_STANDBY_SOURCE_DATABASE_URL_ID=ocid1.vaultsecret...
-OCI_SECRET_ORACLE_STANDBY_POSTGRES_PASSWORD_ID=ocid1.vaultsecret...
-OCI_SECRET_ORACLE_STANDBY_READER_PASSWORD_ID=ocid1.vaultsecret...
-```
-
-Dynamic group instance harus mempunyai izin `read secret-bundles` yang dibatasi
-ke ketiga OCID tersebut. Setelah itu, pasang standby dari komputer pengelola:
-
-```bash
-npm run oracle:standby:deploy -- eposyandu-oracle
-```
-
-Perintah tersebut mengambil secret melalui instance principal, membuat snapshot
-awal, memverifikasi role read-only, dan memasang sinkronisasi setiap 15 menit.
-Secret hanya dimaterialisasi ke `/run/e-posyandu` (tmpfs, mode `0600`). Snapshot
-tidak pernah diunggah ke Object Storage dan PostgreSQL tidak membuka port
-publik. Status dapat diperiksa tanpa menampilkan data pasien:
-
-```bash
-ssh eposyandu-oracle \
-  'sudo systemctl status eposyandu-oracle-standby-sync.timer --no-pager'
-ssh eposyandu-oracle \
-  'sudo /usr/local/libexec/e-posyandu/eposyandu-oracle-standby verify'
-```
-
-Jangan mengarahkan bacaan produksi ke standby sebelum sinkronisasi awal,
-verifikasi selisih data, pemantauan lag, dan uji fallback selesai.
+Replika PostgreSQL standby Oracle telah dihentikan dan dihapus setelah dump
+terenkripsi diverifikasi serta diunggah ke OCI Object Storage. Supabase tetap
+menjadi satu-satunya sumber database aplikasi; Oracle hanya menjalankan API,
+nutrition worker, dan health proxy. Jangan memasang kembali standby tanpa
+keputusan migrasi baru yang terdokumentasi.

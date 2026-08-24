@@ -36,6 +36,7 @@ const NUTRITION_BATCH_MAX_ITEMS: usize = 10_000;
 const NUTRITION_WORKER_HEALTH_KEY: &str = "monitoring:nutrition-worker:v1";
 const NUTRITION_WORKER_FAILURE_THRESHOLD: u32 = 3;
 const R2_STORAGE_STATE_KEY: &str = "monitoring:r2-storage:v1";
+const MONITORING_STATE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 const R2_CLEANUP_PREFIX: &str = "jobs/";
 const R2_SOFT_LIMIT_BYTES: u64 = 9 * 1024 * 1024 * 1024;
 const R2_CLEANUP_TARGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -359,9 +360,9 @@ fn normalize_origin(value: &str) -> Option<String> {
     }
 
     let host = parsed.host_str()?.to_ascii_lowercase();
-    let port = parsed.port().filter(|port| {
-        !((*port == 80 && scheme == "http") || (*port == 443 && scheme == "https"))
-    });
+    let port = parsed
+        .port()
+        .filter(|port| !((*port == 80 && scheme == "http") || (*port == 443 && scheme == "https")));
     let authority = if host.contains(':') {
         format!("[{host}]")
     } else {
@@ -524,50 +525,46 @@ fn openapi_document() -> ApiResult<serde_json::Value> {
 }
 
 async fn read_nutrition_worker_health(env: &Env) -> Option<NutritionWorkerHealth> {
-    let cache = env.kv("E_POSYANDU_CACHE").ok()?;
-    let stored = cache.get(NUTRITION_WORKER_HEALTH_KEY).text().await.ok()??;
+    let stored = redis_get_text(env, NUTRITION_WORKER_HEALTH_KEY).await?;
     serde_json::from_str(&stored).ok()
 }
 
 async fn write_nutrition_worker_health(env: &Env, state: &NutritionWorkerHealth) {
-    let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
-        worker::console_warn!("KV monitoring nutrition worker belum tersedia.");
-        return;
-    };
     let Ok(payload) = serde_json::to_string(state) else {
         worker::console_warn!("Status nutrition worker tidak dapat diserialisasi.");
         return;
     };
-    let Ok(write) = cache.put(NUTRITION_WORKER_HEALTH_KEY, payload) else {
-        worker::console_warn!("Status nutrition worker tidak dapat disiapkan untuk KV.");
-        return;
-    };
-    if write.execute().await.is_err() {
-        worker::console_warn!("Status nutrition worker tidak dapat disimpan ke KV.");
+    if !redis_set_text(
+        env,
+        NUTRITION_WORKER_HEALTH_KEY,
+        payload,
+        MONITORING_STATE_TTL_SECONDS,
+    )
+    .await
+    {
+        worker::console_warn!("Status nutrition worker tidak dapat disimpan ke Redis.");
     }
 }
 
 async fn read_r2_storage_state(env: &Env) -> Option<R2StorageState> {
-    let cache = env.kv("E_POSYANDU_CACHE").ok()?;
-    let stored = cache.get(R2_STORAGE_STATE_KEY).text().await.ok()??;
+    let stored = redis_get_text(env, R2_STORAGE_STATE_KEY).await?;
     serde_json::from_str(&stored).ok()
 }
 
 async fn write_r2_storage_state(env: &Env, state: &R2StorageState) {
-    let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
-        worker::console_warn!("KV monitoring R2 belum tersedia.");
-        return;
-    };
     let Ok(payload) = serde_json::to_string(state) else {
         worker::console_warn!("Status penyimpanan R2 tidak dapat diserialisasi.");
         return;
     };
-    let Ok(write) = cache.put(R2_STORAGE_STATE_KEY, payload) else {
-        worker::console_warn!("Status penyimpanan R2 tidak dapat disiapkan untuk KV.");
-        return;
-    };
-    if write.execute().await.is_err() {
-        worker::console_warn!("Status penyimpanan R2 tidak dapat disimpan ke KV.");
+    if !redis_set_text(
+        env,
+        R2_STORAGE_STATE_KEY,
+        payload,
+        MONITORING_STATE_TTL_SECONDS,
+    )
+    .await
+    {
+        worker::console_warn!("Status penyimpanan R2 tidak dapat disimpan ke Redis.");
     }
 }
 
@@ -828,7 +825,8 @@ async fn monitoring_status(request: Request, env: &Env) -> ApiResult<serde_json:
 async fn readiness_status(env: &Env) -> ApiResult<serde_json::Value> {
     let database_configured = optional_secret(env, "SUPABASE_URL").is_some()
         && optional_secret(env, "SUPABASE_SECRET_KEY").is_some();
-    let cache_configured = env.kv("E_POSYANDU_CACHE").is_ok();
+    let dynamic_cache_configured = redis_configured(env);
+    let global_cache_configured = env.kv("E_POSYANDU_CACHE").is_ok();
     let queue_configured = env.queue("E_POSYANDU_JOBS").is_ok();
     let storage_configured = env.bucket("E_POSYANDU_FILES").is_ok();
     let read_replica_configured = read_replica_configured(env);
@@ -837,8 +835,9 @@ async fn readiness_status(env: &Env) -> ApiResult<serde_json::Value> {
         .as_ref()
         .map(|state| state.status.as_str())
         .unwrap_or("unknown");
-    let core_ready = database_configured && cache_configured;
-    let degraded = !queue_configured
+    let core_ready = database_configured && dynamic_cache_configured;
+    let degraded = !global_cache_configured
+        || !queue_configured
         || !storage_configured
         || !matches!(worker_status, "healthy" | "unconfigured");
     Ok(json!({
@@ -860,7 +859,18 @@ async fn readiness_status(env: &Env) -> ApiResult<serde_json::Value> {
                 "maximumScopeCacheSeconds": VERIFIED_SCOPE_MAX_TTL_SECONDS,
                 "writes": "primary-only",
             },
-            "cache": { "configured": cache_configured },
+            "cache": {
+                "dynamic": {
+                    "configured": dynamic_cache_configured,
+                    "provider": "upstash-redis",
+                    "ttlSeconds": 60,
+                },
+                "global": {
+                    "configured": global_cache_configured,
+                    "provider": "cloudflare-kv",
+                    "content": "menu-reference-feature-flags",
+                },
+            },
             "queue": { "configured": queue_configured },
             "storage": { "configured": storage_configured },
             "nutritionWorker": {
@@ -1198,7 +1208,10 @@ pub(crate) fn hashed_key(prefix: &str, value: &str) -> String {
     format!("{prefix}:{}", hex::encode(digest))
 }
 
-async fn redis_commands(env: &Env, commands: serde_json::Value) -> Option<serde_json::Value> {
+pub(crate) async fn redis_commands(
+    env: &Env,
+    commands: serde_json::Value,
+) -> Option<serde_json::Value> {
     let url = optional_secret(env, "UPSTASH_REDIS_REST_URL")?;
     let token = optional_secret(env, "UPSTASH_REDIS_REST_TOKEN")?;
     let headers = Headers::new();
@@ -1215,6 +1228,37 @@ async fn redis_commands(env: &Env, commands: serde_json::Value) -> Option<serde_
     .await
     .ok()?;
     (status < 300).then_some(payload)
+}
+
+fn redis_configured(env: &Env) -> bool {
+    optional_secret(env, "UPSTASH_REDIS_REST_URL").is_some()
+        && optional_secret(env, "UPSTASH_REDIS_REST_TOKEN").is_some()
+}
+
+fn redis_command_result(payload: &serde_json::Value, index: usize) -> Option<&serde_json::Value> {
+    payload.as_array()?.get(index)?.get("result")
+}
+
+async fn redis_get_text(env: &Env, key: &str) -> Option<String> {
+    redis_commands(env, json!([["GET", key]]))
+        .await
+        .as_ref()
+        .and_then(|payload| redis_command_result(payload, 0))
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
+}
+
+async fn redis_set_text(env: &Env, key: &str, value: String, ttl_seconds: u64) -> bool {
+    redis_commands(env, json!([["SET", key, value, "EX", ttl_seconds]]))
+        .await
+        .as_ref()
+        .and_then(|payload| redis_command_result(payload, 0))
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("OK"))
+}
+
+async fn redis_delete(env: &Env, key: &str) {
+    let _ = redis_commands(env, json!([["DEL", key]])).await;
 }
 
 async fn redis_login_attempt_counts(env: &Env, ip: &str, username: &str) -> Option<[u64; 3]> {
@@ -1541,7 +1585,7 @@ fn read_replica_configured(env: &Env) -> bool {
 }
 
 fn emergency_read_configured(env: &Env) -> bool {
-    env.kv("E_POSYANDU_CACHE").is_ok()
+    redis_configured(env)
         && read_replica_configured(env)
         && optional_secret(env, "READ_REPLICA_MODE").as_deref() != Some("primary-only")
 }
@@ -1569,9 +1613,6 @@ async fn persist_verified_scope(env: &Env, token: &str, scope: &AccessScope) {
     if ttl < VERIFIED_SCOPE_MIN_TTL_SECONDS {
         return;
     }
-    let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
-        return;
-    };
     let record = VerifiedScopeRecord {
         scope: scope.clone(),
         token_expires_at,
@@ -1581,11 +1622,8 @@ async fn persist_verified_scope(env: &Env, token: &str, scope: &AccessScope) {
         return;
     };
     let key = hashed_key(VERIFIED_SCOPE_CACHE_PREFIX, token);
-    let Ok(builder) = cache.put(&key, payload) else {
-        return;
-    };
-    if builder.expiration_ttl(ttl).execute().await.is_err() {
-        worker::console_warn!("Scope terverifikasi tidak dapat disimpan ke KV.");
+    if !redis_set_text(env, &key, payload, ttl).await {
+        worker::console_warn!("Scope terverifikasi tidak dapat disimpan ke Redis.");
     }
 }
 
@@ -1594,12 +1632,7 @@ async fn load_verified_scope(env: &Env, token: &str) -> Option<AccessScope> {
     if token_expires_at <= now_seconds() {
         return None;
     }
-    let cache = env.kv("E_POSYANDU_CACHE").ok()?;
-    let payload = cache
-        .get(&hashed_key(VERIFIED_SCOPE_CACHE_PREFIX, token))
-        .text()
-        .await
-        .ok()??;
+    let payload = redis_get_text(env, &hashed_key(VERIFIED_SCOPE_CACHE_PREFIX, token)).await?;
     let record = serde_json::from_str::<VerifiedScopeRecord>(&payload).ok()?;
     if record.token_expires_at != token_expires_at || !verified_scope_is_valid(&record.scope) {
         return None;
@@ -1747,35 +1780,29 @@ async fn write_browser_session(
     identifier: &str,
     session: &BrowserSession,
 ) -> ApiResult<()> {
-    let cache = env
-        .kv("E_POSYANDU_CACHE")
-        .map_err(|_| ApiFailure::new(503, "Penyimpanan sesi aman belum tersedia."))?;
     let payload = serde_json::to_string(session)
         .map_err(|_| ApiFailure::new(500, "Sesi aman tidak dapat disimpan."))?;
-    cache
-        .put(&browser_session_key(identifier), payload)
-        .map_err(|_| ApiFailure::new(503, "Penyimpanan sesi aman belum tersedia."))?
-        .expiration_ttl(BROWSER_SESSION_TTL_SECONDS)
-        .execute()
-        .await
-        .map_err(|_| ApiFailure::new(503, "Sesi aman tidak dapat disimpan."))
+    if redis_set_text(
+        env,
+        &browser_session_key(identifier),
+        payload,
+        BROWSER_SESSION_TTL_SECONDS,
+    )
+    .await
+    {
+        Ok(())
+    } else {
+        Err(ApiFailure::new(503, "Sesi aman tidak dapat disimpan."))
+    }
 }
 
 async fn read_browser_session(env: &Env, identifier: &str) -> Option<BrowserSession> {
-    let cache = env.kv("E_POSYANDU_CACHE").ok()?;
-    let payload = cache
-        .get(&browser_session_key(identifier))
-        .text()
-        .await
-        .ok()??;
+    let payload = redis_get_text(env, &browser_session_key(identifier)).await?;
     serde_json::from_str(&payload).ok()
 }
 
 async fn delete_browser_session(env: &Env, identifier: &str) {
-    let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
-        return;
-    };
-    let _ = cache.delete(&browser_session_key(identifier)).await;
+    redis_delete(env, &browser_session_key(identifier)).await;
 }
 
 async fn refresh_browser_session(

@@ -1,0 +1,26 @@
+[Unit]
+Description=Encrypted E-Posyandu native PostgreSQL backup to OCI Object Storage
+RequiresMountsFor=/var/lib/pgsql
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/libexec/e-posyandu/eposyandu-postgresql-backup.py
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/etc/e-posyandu/backup.env
+ReadWritePaths=/var/lib/pgsql/backup
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# The PostgreSQL volume is intentionally owned by postgres (0700). The
+# orchestrator runs as root so it can fetch OCI secrets, then drops to
+# postgres for pg_dump and owns the encryption/upload lifecycle.
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native

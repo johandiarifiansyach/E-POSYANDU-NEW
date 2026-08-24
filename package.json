@@ -1,7 +1,7 @@
 {
   "name": "e-posyandu",
   "private": true,
-  "version": "3.6.0",
+  "version": "3.7.0",
   "type": "module",
   "scripts": {
     "dev": "npm --prefix frontend run dev",
@@ -35,7 +35,6 @@
     "oracle:api:test": "cargo test --locked --manifest-path services/oracle-api/Cargo.toml",
     "oracle:deploy": "./scripts/services/deploy-oracle-nutrition-worker.sh",
     "oracle:cutover:check": "./scripts/operations/check-oracle-cutover.sh",
-    "oracle:standby:deploy": "./scripts/database/deploy-oracle-read-standby.sh",
     "replica:check": "npm --prefix services/neon-read-worker run typecheck",
     "replica:dev": "npm --prefix services/neon-read-worker run dev",
     "replica:bootstrap": "./scripts/database/bootstrap-neon-read-replica.sh",

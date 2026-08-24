@@ -61,8 +61,8 @@ test "$(stat -c %a /run/e-posyandu/cloudflare-tunnel-token)" = 600
 echo "Secret persisten: bersih; runtime tmpfs: siap."
 REMOTE
 
-echo "[4/8] Health API internal dan frontend loopback"
-ssh "$ssh_host" 'curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8081/api/v1/health/ready | python3 -c '\''import json,sys; data=json.load(sys.stdin); print("status=" + str(data.get("status"))); raise SystemExit(0 if data.get("ok") is True else 1)'\'' && curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8082/ >/dev/null'
+echo "[4/8] Health API internal"
+ssh "$ssh_host" 'curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8081/api/v1/health/ready | python3 -c '\''import json,sys; data=json.load(sys.stdin); print("status=" + str(data.get("status"))); raise SystemExit(0 if data.get("ok") is True else 1)'\'''
 
 echo "[5/8] Cloudflare Tunnel dan penutupan bind origin"
 ssh "$ssh_host" 'sudo bash -s' <<'REMOTE'
@@ -84,17 +84,16 @@ case ",${profiles// /,}," in
 esac
 REMOTE
 
-echo "[6/8] Timer operasional dan standby read-only"
+echo "[6/8] Timer operasional"
 ssh "$ssh_host" 'sudo bash -s' <<'REMOTE'
 set -euo pipefail
 for unit in \
   eposyandu-oci-metrics.timer \
   eposyandu-backup.timer \
-  eposyandu-oracle-standby-sync.timer; do
+  eposyandu-postgresql-backup.timer; do
   systemctl is-enabled --quiet "$unit"
 done
-/usr/local/libexec/e-posyandu/eposyandu-oracle-standby verify >/dev/null
-echo "Monitoring, backup, dan standby: siap."
+echo "Monitoring dan backup: siap."
 REMOTE
 
 echo "[7/8] HTTPS publik dan security headers"

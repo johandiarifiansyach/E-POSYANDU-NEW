@@ -181,6 +181,36 @@ if [[ -f "$backup_dir/eposyandu-backup.py" && -f "$backup_dir/eposyandu-backup.s
   fi
 fi
 
+postgresql_dir="$release_dir/deploy/oracle/postgresql"
+if [[ -f "$postgresql_dir/eposyandu-postgresql-migrate.py" \
+  && -x /usr/bin/pg_dump \
+  && -x /usr/bin/pg_restore ]]; then
+  install -d -o root -g root -m 0750 /usr/local/libexec/e-posyandu
+  install -d -o postgres -g postgres -m 0700 /var/lib/pgsql/migration
+  install -o root -g root -m 0750 \
+    "$postgresql_dir/eposyandu-postgresql-migrate.py" \
+    /usr/local/libexec/e-posyandu/eposyandu-postgresql-migrate.py
+fi
+if [[ -f "$postgresql_dir/eposyandu-postgresql-backup.py" \
+  && -f "$postgresql_dir/eposyandu-postgresql-backup.service" \
+  && -f "$postgresql_dir/eposyandu-postgresql-backup.timer" \
+  && -f /etc/e-posyandu/backup.env \
+  && -x /usr/bin/pg_dump ]]; then
+  install -d -o root -g root -m 0750 /usr/local/libexec/e-posyandu
+  install -d -o postgres -g postgres -m 0700 /var/lib/pgsql/backup
+  install -o root -g root -m 0750 \
+    "$postgresql_dir/eposyandu-postgresql-backup.py" \
+    /usr/local/libexec/e-posyandu/eposyandu-postgresql-backup.py
+  install -o root -g root -m 0644 \
+    "$postgresql_dir/eposyandu-postgresql-backup.service" \
+    /etc/systemd/system/eposyandu-postgresql-backup.service
+  install -o root -g root -m 0644 \
+    "$postgresql_dir/eposyandu-postgresql-backup.timer" \
+    /etc/systemd/system/eposyandu-postgresql-backup.timer
+  systemctl daemon-reload
+  systemctl enable --now eposyandu-postgresql-backup.timer
+fi
+
 compose_file="$release_dir/deploy/oracle/compose.yaml"
 if [[ ! -f "$compose_file" ]]; then
   echo "Konfigurasi Compose Oracle tidak ditemukan dalam archive." >&2
@@ -252,12 +282,10 @@ else
   health_check=(curl --fail --silent --show-error --max-time 5 --resolve "$health_host:443:127.0.0.1" "https://$health_host/health")
 fi
 api_health_check=(curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8081/health)
-frontend_health_check=(curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8082/)
 
 for attempt in $(seq 1 30); do
   if "${health_check[@]}" 2>/dev/null | grep -Fq "E-Posyandu nutrition worker aktif" \
-    && "${api_health_check[@]}" 2>/dev/null | grep -Fq '"service":"e-posyandu-oracle-api"' \
-    && "${frontend_health_check[@]}" 2>/dev/null | grep -Fqi '<html'; then
+    && "${api_health_check[@]}" 2>/dev/null | grep -Fq '"service":"e-posyandu-oracle-api"'; then
     ln -sfn "$release_dir" /opt/e-posyandu/current
     release_activated=true
     echo "API dan nutrition worker Oracle aktif."
@@ -271,7 +299,7 @@ for attempt in $(seq 1 30); do
   sleep 2
 done
 
-echo "Frontend, API, atau nutrition worker belum sehat setelah 60 detik." >&2
+echo "API atau nutrition worker belum sehat setelah 60 detik." >&2
 "${compose_command[@]}" \
   --project-name e-posyandu-oracle \
   --file "$compose_file" \

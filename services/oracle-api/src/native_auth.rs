@@ -3,7 +3,7 @@ use std::{
     env, fs,
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -26,6 +26,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tracing::{error, warn};
+
+use crate::native_db::{DatabaseError, NativeDatabase};
 
 const SESSION_COOKIE: &str = "__Host-e-posyandu-session";
 const DEVELOPMENT_SESSION_COOKIE: &str = "e-posyandu-session";
@@ -148,7 +150,7 @@ struct SupabaseClient {
     http: Client,
     base_url: Url,
     publishable_key: String,
-    secret_key: String,
+    database: Arc<NativeDatabase>,
 }
 
 struct SessionStore {
@@ -172,6 +174,22 @@ fn required_env(name: &str) -> Result<String, String> {
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("{name} wajib diisi untuk API native Oracle."))
+}
+
+fn native_database_error(error: DatabaseError, message: &'static str) -> NativeError {
+    NativeError::new(
+        if matches!(error, DatabaseError::Invalid | DatabaseError::Conflict) {
+            StatusCode::UNPROCESSABLE_ENTITY
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        if matches!(error, DatabaseError::Unavailable) {
+            "database_unavailable"
+        } else {
+            "database_error"
+        },
+        message,
+    )
 }
 
 fn env_flag(name: &str, fallback: bool) -> bool {
@@ -734,14 +752,6 @@ impl SupabaseClient {
         })
     }
 
-    fn service_request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
-        self.http
-            .request(method, url)
-            .header("apikey", &self.secret_key)
-            .bearer_auth(&self.secret_key)
-            .header(header::ACCEPT, "application/json")
-    }
-
     fn public_request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
         self.http
             .request(method, url)
@@ -751,24 +761,31 @@ impl SupabaseClient {
     }
 
     async fn login_account(&self, username: &str) -> Result<Option<LoginAccount>, NativeError> {
-        let mut url = self.url("rest/v1/app_users")?;
-        url.query_pairs_mut()
-            .append_pair("select", "user_id,email,role,village,posyandu,active")
-            .append_pair("username", &format!("eq.{username}"))
-            .append_pair("limit", "1");
-        let response = self
-            .service_request(Method::GET, url)
-            .send()
+        let result = self
+            .database
+            .get(
+                "app_users",
+                &[
+                    (
+                        "select".into(),
+                        "user_id,email,role,village,posyandu,active".into(),
+                    ),
+                    ("username".into(), format!("eq.{username}")),
+                    ("limit".into(), "1".into()),
+                ],
+                false,
+            )
             .await
-            .map_err(|_| {
-                NativeError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "upstream_unavailable",
-                    "Layanan akun belum tersedia.",
-                )
+            .map_err(|error_value| {
+                native_database_error(error_value, "Layanan akun belum tersedia.")
             })?;
-        let accounts: Vec<LoginAccount> =
-            Self::response_json(response, "Layanan akun belum tersedia.").await?;
+        let accounts: Vec<LoginAccount> = serde_json::from_value(result.value).map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "invalid_database_response",
+                "Layanan akun belum tersedia.",
+            )
+        })?;
         Ok(accounts.into_iter().next())
     }
 
@@ -845,25 +862,28 @@ impl SupabaseClient {
         let identity: SupabaseUser =
             Self::response_json(response, "Sesi masuk tidak lagi valid.").await?;
 
-        let mut profile_url = self.url("rest/v1/app_users")?;
-        profile_url
-            .query_pairs_mut()
-            .append_pair("select", "role,village,posyandu,active")
-            .append_pair("user_id", &format!("eq.{}", identity.id))
-            .append_pair("limit", "1");
-        let response = self
-            .service_request(Method::GET, profile_url)
-            .send()
+        let result = self
+            .database
+            .get(
+                "app_users",
+                &[
+                    ("select".into(), "role,village,posyandu,active".into()),
+                    ("user_id".into(), format!("eq.{}", identity.id)),
+                    ("limit".into(), "1".into()),
+                ],
+                false,
+            )
             .await
-            .map_err(|_| {
-                NativeError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "upstream_unavailable",
-                    "Layanan profil akun belum tersedia.",
-                )
+            .map_err(|error_value| {
+                native_database_error(error_value, "Layanan profil akun belum tersedia.")
             })?;
-        let profiles: Vec<AppUser> =
-            Self::response_json(response, "Layanan profil akun belum tersedia.").await?;
+        let profiles: Vec<AppUser> = serde_json::from_value(result.value).map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "invalid_database_response",
+                "Layanan profil akun belum tersedia.",
+            )
+        })?;
         let profile = profiles
             .into_iter()
             .next()
@@ -892,32 +912,34 @@ impl SupabaseClient {
         action: &str,
         outcome: &str,
     ) {
-        let Ok(url) = self
-            .url("rest/v1/audit_events?on_conflict=idempotency_key,action,resource,document_id")
-        else {
-            return;
-        };
         let account_key = sha256_hex(&format!("account:{username}"));
         let response = self
-            .service_request(Method::POST, url)
-            .header("Prefer", "resolution=ignore-duplicates,return=minimal")
-            .json(&json!({
-                "request_id": request_id,
-                "idempotency_key": Value::Null,
-                "actor_user_id": account.map(|value| value.user_id.as_str()).unwrap_or("anonymous"),
-                "actor_role": account.map(|value| value.role.as_str()).unwrap_or("anonymous"),
-                "action": action,
-                "resource": "authentication",
-                "document_id": account_key,
-                "village": account.and_then(|value| value.village.as_deref()),
-                "posyandu": account.and_then(|value| value.posyandu.as_deref()),
-                "before_data": Value::Null,
-                "after_data": Value::Null,
-                "metadata": { "outcome": outcome, "origin": "oracle-native" }
-            }))
-            .send()
+            .database
+            .write(
+                &Method::POST,
+                "audit_events",
+                &[(
+                    "on_conflict".into(),
+                    "idempotency_key,action,resource,document_id".into(),
+                )],
+                Some(&json!({
+                    "request_id": request_id,
+                    "idempotency_key": Value::Null,
+                    "actor_user_id": account.map(|value| value.user_id.as_str()).unwrap_or("anonymous"),
+                    "actor_role": account.map(|value| value.role.as_str()).unwrap_or("anonymous"),
+                    "action": action,
+                    "resource": "authentication",
+                    "document_id": account_key,
+                    "village": account.and_then(|value| value.village.as_deref()),
+                    "posyandu": account.and_then(|value| value.posyandu.as_deref()),
+                    "before_data": Value::Null,
+                    "after_data": Value::Null,
+                    "metadata": { "outcome": outcome, "origin": "oracle-native" }
+                })),
+                Some("resolution=ignore-duplicates,return=minimal"),
+            )
             .await;
-        if !response.is_ok_and(|value| value.status().is_success()) {
+        if response.is_err() {
             warn!(%request_id, %action, "audit autentikasi native gagal ditulis");
         }
     }
@@ -961,10 +983,16 @@ fn validate_profile(
 }
 
 impl NativeAuth {
-    pub(crate) fn from_env(http: Client) -> Result<Option<Self>, String> {
+    pub(crate) fn from_env(
+        http: Client,
+        database: Option<Arc<NativeDatabase>>,
+    ) -> Result<Option<Self>, String> {
         if !env_flag("ORACLE_API_NATIVE_AUTH_ENABLED", false) {
             return Ok(None);
         }
+        let database = database.ok_or_else(|| {
+            "PostgreSQL native wajib tersedia saat autentikasi Oracle aktif.".to_string()
+        })?;
 
         let configured_url = required_env("SUPABASE_URL")?;
         let mut base_url =
@@ -1012,7 +1040,7 @@ impl NativeAuth {
                 http,
                 base_url,
                 publishable_key: required_env("SUPABASE_PUBLISHABLE_KEY")?,
-                secret_key: required_env("SUPABASE_SECRET_KEY")?,
+                database,
             },
             sessions,
             turnstile_secret: required_env("TURNSTILE_SECRET_KEY")?,

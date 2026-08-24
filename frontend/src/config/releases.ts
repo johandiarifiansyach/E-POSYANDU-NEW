@@ -11,6 +11,19 @@ export type AppRelease = {
 export const RELEASE_HISTORY: AppRelease[] = [
   {
     version: APP_VERSION,
+    releaseDate: '25 Agustus 2026',
+    releaseDateIso: '2026-08-25',
+    title: 'Cache Redis dan Platform Native Lebih Stabil',
+    changes: [
+      'Data balita, penimbangan, dashboard, ASI, dan koleksi dinamis kini menggunakan Redis dengan TTL 60 detik agar pembacaan berulang lebih ringan.',
+      'Cache dinamis dipisahkan berdasarkan role, desa, dan posyandu serta langsung diinvalisasi setelah perubahan data.',
+      'Cloudflare KV dibatasi untuk konfigurasi global yang jarang berubah seperti menu, referensi, dan feature flag.',
+      'Oracle menjalankan Redis privat tanpa port host, sementara PostgreSQL native tetap menjadi sumber data utama.',
+      'Backend Worker tetap dikompilasi sebagai WebAssembly dan API Oracle sebagai binary native ARM64 dengan health check yang lebih jelas.'
+    ]
+  },
+  {
+    version: '3.6.0',
     releaseDate: '22 Agustus 2026',
     releaseDateIso: '2026-08-22',
     title: 'Platform Oracle dan Sesi Lebih Aman',

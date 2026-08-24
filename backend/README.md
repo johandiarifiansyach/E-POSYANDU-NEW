@@ -14,7 +14,7 @@ Alamat produksi:
 - Daftar Balita, daftar masalah gizi, dan ASI Eksklusif memakai pagination maksimal 10 data serta pencarian manual.
 - Dashboard dan seluruh daftar laporan memakai tanggal acuan, cakupan wilayah, relasi data, serta aturan umur 0-59 bulan yang sama.
 - Dashboard dihitung oleh fungsi PostgreSQL dan mengirim angka ringkasan, bukan seluruh data balita.
-- Ringkasan dashboard yang sama dicache di Cloudflare Cache API selama 60 detik. Versi invalidasi disimpan di KV dan dinaikkan setiap ada perubahan data.
+- Ringkasan dashboard, daftar balita, penimbangan, dan koleksi dinamis dicache di Upstash Redis selama 60 detik. Cache dipisahkan menurut peran/desa/posyandu dan versi invalidasinya dinaikkan setiap ada perubahan data.
 - Perubahan offline dikirim maksimal 25 item melalui `POST /api/v1/sync`; pengambilan delta memakai cursor `updated_at` dan tombstone penghapusan.
 - Setiap mutasi memakai idempotency key, optimistic version, request ID, dan audit backend.
 - Ekspor mengambil seluruh data hanya setelah pengguna meminta ekspor dan tetap dibatasi desa/posyandu sesuai peran.
@@ -34,13 +34,12 @@ Schema GraphQL dapat dibaca melalui `GET /api/v1/graphql/schema`. Service gRPC l
 | Layanan | Tugas | Jenis data |
 | --- | --- | --- |
 | Supabase PostgreSQL | Sumber data utama | Balita, penimbangan, ASI, PMT, akun, dan audit |
-| Cloudflare Cache API | Cache ringkasan | Angka dashboard tanpa identitas balita, diisolasi per cakupan dan maksimal 60 detik |
-| Cloudflare KV | Metadata cache dan feature flag | Versi invalidasi dashboard dan konfigurasi fitur tanpa token atau hak akses pengguna |
-| Upstash Redis | Pembatas login lintas Worker | Hash IP, username, dan pasangan IP-akun dengan masa 1-10 menit |
+| Cloudflare KV | Cache global | Feature flag, menu, dan referensi global yang jarang berubah; tidak menyimpan data balita, penimbangan, sesi, atau token |
+| Upstash Redis | Cache dinamis dan state sementara | Respons balita/penimbangan/dashboard maksimal 60 detik, sesi backend, scope baca darurat, status operasional, dan pembatas login |
 | Cloudflare R2 | Berkas privat | Hasil XLSX/PDF background job serta lampiran bila fiturnya diaktifkan |
 | Cloudflare Queue | Antrean | ID job validasi impor, laporan besar, ekspor, dan sinkronisasi antarsistem |
 
-Data medis per balita tidak dicache di KV atau Redis, dan tidak dipindahkan ke R2. PostgreSQL tetap menjadi sumber kebenaran.
+Data medis per balita tidak pernah dicache di KV atau dipindahkan ke R2. Redis hanya menyimpan salinan sementara maksimal 60 detik dengan key yang di-hash dan dipisah menurut cakupan akses. PostgreSQL tetap menjadi sumber kebenaran dan setiap mutasi menaikkan versi cache agar data lama tidak dibaca kembali.
 
 ## Migrasi Database
 
@@ -57,7 +56,7 @@ npx wrangler secret put UPSTASH_REDIS_REST_URL
 npx wrangler secret put UPSTASH_REDIS_REST_TOKEN
 ```
 
-Tanpa kedua secret tersebut, login tetap berjalan dengan pembatas lokal. Setelah diisi, pembatas login otomatis memakai Redis.
+Kedua secret wajib tersedia pada setiap environment Worker. Redis dipakai untuk cache dinamis TTL 60 detik, sesi backend, state operasional sementara, serta pembatas login. KV tetap khusus data global seperti feature flag/menu/referensi.
 
 ### Mengaktifkan R2
 

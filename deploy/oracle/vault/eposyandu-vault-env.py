@@ -8,6 +8,7 @@ import os
 import stat
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 import oci
 from oci.auth.signers import InstancePrincipalsSecurityTokenSigner
@@ -29,23 +30,6 @@ ORACLE_API_SECRET_SPECS = (
     ("SUPABASE_SECRET_KEY", "OCI_SECRET_SUPABASE_SECRET_KEY_ID"),
     ("TURNSTILE_SECRET_KEY", "OCI_SECRET_TURNSTILE_SECRET_KEY_ID"),
     ("ORACLE_API_SESSION_KEY", "OCI_SECRET_ORACLE_API_SESSION_KEY_ID"),
-)
-OPTIONAL_SECRET_FILES = (
-    (
-        "OCI_SECRET_ORACLE_STANDBY_SOURCE_DATABASE_URL_ID",
-        Path("/run/e-posyandu/oracle-standby-source-database-url"),
-        "Oracle standby source database URL",
-    ),
-    (
-        "OCI_SECRET_ORACLE_STANDBY_POSTGRES_PASSWORD_ID",
-        Path("/run/e-posyandu/oracle-standby-postgres-password"),
-        "Oracle standby PostgreSQL password",
-    ),
-    (
-        "OCI_SECRET_ORACLE_STANDBY_READER_PASSWORD_ID",
-        Path("/run/e-posyandu/oracle-standby-reader-password"),
-        "Oracle standby reader password",
-    ),
 )
 
 
@@ -162,6 +146,20 @@ def main() -> None:
     oracle_api_values["CLOUDFLARE_QUEUES_API_TOKEN"] = nutrition_values[
         "CLOUDFLARE_QUEUES_API_TOKEN"
     ]
+    database_password_secret_id = config.get(
+        "OCI_SECRET_ORACLE_DATABASE_PASSWORD_ID"
+    )
+    if database_password_secret_id:
+        database_password = fetch_secret(
+            client,
+            database_password_secret_id,
+            "Oracle PostgreSQL application password",
+        )
+        oracle_api_values["ORACLE_DATABASE_URL"] = (
+            "postgresql://eposyandu_api:"
+            + quote(database_password, safe="")
+            + "@host.containers.internal:5432/eposyandu?sslmode=disable"
+        )
     # Compose requires this file even while native auth is still disabled.
     write_env_file(ORACLE_API_OUTPUT_FILE, oracle_api_values)
 
@@ -179,26 +177,9 @@ def main() -> None:
         write_secret_file(CLOUDFLARE_TUNNEL_TOKEN_FILE, "")
         tunnel_count = 0
 
-    configured_optional = [
-        config_key for config_key, _, _ in OPTIONAL_SECRET_FILES if config.get(config_key)
-    ]
-    if configured_optional and len(configured_optional) != len(OPTIONAL_SECRET_FILES):
-        raise RuntimeError(
-            "Konfigurasi Vault standby harus berisi ketiga OCID secret atau tidak sama sekali"
-        )
-
-    optional_count = 0
-    for config_key, output_path, label in OPTIONAL_SECRET_FILES:
-        secret_id = config.get(config_key)
-        if not secret_id:
-            continue
-        write_secret_file(output_path, fetch_secret(client, secret_id, label))
-        optional_count += 1
-
     print(
         "Secret runtime OCI berhasil disiapkan "
         f"({len(oracle_api_values)} secret API dan "
-        f"{optional_count} secret standby serta "
         f"{tunnel_count} token Tunnel materialized)."
     )
 

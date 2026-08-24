@@ -19,7 +19,7 @@ Fitur AI tetap nonaktif. Jika kelak diaktifkan, backend hanya boleh menerima umu
 | Internal | konfigurasi operasional tanpa secret, statistik agregat yang tidak dapat mengidentifikasi anak | Hanya personel berwenang |
 | Publik | aset aplikasi, dokumentasi umum, standar WHO yang tidak memuat data pasien | Dapat didistribusikan |
 
-Kata sandi, access/refresh token Supabase, kunci enkripsi, dan service-role key tidak boleh disimpan di database aplikasi, log, source code, artifact build, atau browser JavaScript. Token Supabase hanya berada di sesi KV backend; browser menerima cookie sesi `HttpOnly`.
+Kata sandi, access/refresh token Supabase, kunci enkripsi, dan service-role key tidak boleh disimpan di database aplikasi, log, source code, artifact build, atau browser JavaScript. Token Supabase hanya berada sementara di sesi Redis backend; browser menerima cookie sesi `HttpOnly`. Cloudflare KV hanya berisi konfigurasi global tanpa token.
 
 ## Cakupan akses
 
@@ -39,7 +39,7 @@ Pembatasan wajib diterapkan berlapis pada UI, Worker/API, dan Row Level Security
 | Audit perubahan rekam dan akses istimewa | Mengikuti rekam terkait, paling singkat 25 tahun sejak kunjungan terakhir | Pemusnahan bersama rekam terkait setelah persetujuan |
 | Profil akun aktif | Selama penugasan | Akses dinonaktifkan segera; jejak audit lama tetap mengikuti retensi rekam |
 | Cookie sesi backend | Maksimum 8 jam, dengan logout otomatis setelah 30 menit tanpa aktivitas | Kedaluwarsa/dihapus saat logout; logout juga mengirim `Clear-Site-Data` |
-| Cache scope baca darurat | Maksimum 1 jam dan tidak melampaui JWT | Kedaluwarsa otomatis di KV |
+| Cache scope baca darurat | Maksimum 1 jam dan tidak melampaui JWT | Kedaluwarsa otomatis di Redis |
 | Cache offline browser | Hanya untuk kelangsungan sesi dan antrean sinkronisasi | Dienkripsi per akun; dihapus saat logout, pergantian akun, sesi hilang, atau inisialisasi berikutnya tanpa kunci sesi |
 | File job/ekspor sementara di R2 | 7 hari | Dihapus otomatis; dapat lebih cepat oleh pengaman kapasitas |
 | Artifact monitoring dan backup terenkripsi GitHub | 14 hari | Dihapus oleh retensi GitHub; bukan salinan arsip legal utama |

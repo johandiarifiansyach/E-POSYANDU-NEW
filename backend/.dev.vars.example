@@ -18,8 +18,7 @@ RUST_WORKER_HEALTH_URL=https://your-nutrition-worker.example/health
 # Opsional. Alarm eksternal hanya dikirim saat worker gagal tiga kali berturut-
 # turut dan saat kembali normal. Status tetap terlihat di dashboard Admin Gizi.
 MONITORING_ALERT_WEBHOOK_URL=https://your-alert-webhook.example/worker-health
-# Opsional. Upstash Redis dipakai untuk pembatasan percobaan login lintas
-# instance Worker. Bila belum diisi, Worker memakai pembatas lokal sebagai
-# cadangan sehingga login tetap dapat digunakan.
+# Wajib untuk Worker. Upstash Redis menyimpan cache data dinamis TTL 60 detik,
+# sesi/state sementara, dan pembatasan percobaan login lintas instance Worker.
 UPSTASH_REDIS_REST_URL=https://your-redis.upstash.io
 UPSTASH_REDIS_REST_TOKEN=replace-with-upstash-rest-token

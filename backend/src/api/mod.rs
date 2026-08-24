@@ -1,12 +1,13 @@
 use crate::{
-    AccessScope, ApiFailure, ApiResult, hashed_key, optional_secret, require_scope, secret,
+    AccessScope, ApiFailure, ApiResult, hashed_key, optional_secret, redis_commands, require_scope,
+    secret,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use worker::{
-    Cache, Env, Fetch, Headers, HttpMetadata, Method, Request, RequestInit, Response,
+    Env, Fetch, Headers, HttpMetadata, Method, Request, RequestInit, Response,
     wasm_bindgen::JsValue,
 };
 
@@ -19,10 +20,8 @@ enum Resource {
     ChangeLogs,
 }
 
-const DASHBOARD_CACHE_TTL_SECONDS: u64 = 60;
-// Dashboard aggregates are correctness-critical. Keep them on the primary
-// database so the cards cannot lag behind the paginated read replica.
-const DASHBOARD_CACHE_VERSION_KEY: &str = "dashboard:version:v3";
+const DYNAMIC_CACHE_TTL_SECONDS: u64 = 60;
+const DYNAMIC_CACHE_VERSION_KEY: &str = "dynamic:data:version:v1";
 const REPLICA_PRIMARY_PIN_SECONDS: u64 = 360;
 const FEATURE_FLAGS_KEY: &str = "feature:flags:v1";
 const CHANGE_AUDIT_MAX_DISTANCE_MS: f64 = 5.0 * 60.0 * 1_000.0;
@@ -776,76 +775,82 @@ fn first_query<'a>(query: &'a BTreeMap<String, Vec<String>>, key: &str) -> Optio
     query.get(key).and_then(|values| values.first())
 }
 
-fn dashboard_cache_key(
-    scope: &AccessScope,
-    query: &BTreeMap<String, Vec<String>>,
-    version: &str,
-) -> String {
+fn dynamic_cacheable_request(request: &Request) -> bool {
+    let path = request.path();
+    let export = request
+        .url()
+        .ok()
+        .and_then(|url| {
+            url.query_pairs()
+                .find(|(key, _)| key == "export")
+                .map(|(_, value)| value == "1")
+        })
+        .unwrap_or(false);
+    dynamic_cacheable_target(&request.method(), &path, export)
+}
+
+fn dynamic_cacheable_target(method: &Method, path: &str, export: bool) -> bool {
+    *method == Method::Get
+        && !export
+        && (matches!(
+            path,
+            "/api/v1/dashboard/stats"
+                | "/api/v1/children/page"
+                | "/api/v1/exclusive-breastfeeding/page"
+        ) || path.starts_with("/api/v1/collections/"))
+}
+
+fn dynamic_cache_key(scope: &AccessScope, request_target: &str, version: &str) -> String {
     let value = [
         version,
         scope.role.as_str(),
         scope.desa.as_deref().unwrap_or_default(),
         scope.posyandu.as_deref().unwrap_or_default(),
-        first_query(query, "monthStart")
-            .map(String::as_str)
-            .unwrap_or_default(),
-        first_query(query, "monthEnd")
-            .map(String::as_str)
-            .unwrap_or_default(),
-        first_query(query, "previousMonthStart")
-            .map(String::as_str)
-            .unwrap_or_default(),
-        first_query(query, "previousMonthEnd")
-            .map(String::as_str)
-            .unwrap_or_default(),
-        first_query(query, "village")
-            .map(String::as_str)
-            .unwrap_or_default(),
-        first_query(query, "posyandu")
-            .map(String::as_str)
-            .unwrap_or_default(),
+        request_target,
     ]
     .join("\u{1f}");
-    hashed_key("dashboard:v1", &value)
+    hashed_key("dynamic:data:v1", &value)
 }
 
-async fn dashboard_cache_version(env: &Env) -> String {
-    let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
-        return "0".into();
-    };
-    cache
-        .get(DASHBOARD_CACHE_VERSION_KEY)
-        .text()
-        .await
-        .ok()
-        .flatten()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "0".into())
+fn redis_result(payload: &Value, index: usize) -> Option<&Value> {
+    payload.as_array()?.get(index)?.get("result")
 }
 
-fn dashboard_cache_url(key: &str) -> String {
-    format!("https://cache.e-posyandu.internal/dashboard/{key}")
+async fn dynamic_cache_version(env: &Env) -> String {
+    let seed = worker::js_sys::Date::now().floor() as u64;
+    redis_commands(
+        env,
+        json!([
+            ["SET", DYNAMIC_CACHE_VERSION_KEY, seed, "NX"],
+            ["GET", DYNAMIC_CACHE_VERSION_KEY]
+        ]),
+    )
+    .await
+    .as_ref()
+    .and_then(|payload| redis_result(payload, 1))
+    .and_then(|value| match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    })
+    .unwrap_or_else(|| "0".into())
 }
 
-async fn cached_dashboard(key: &str) -> Option<Value> {
-    let mut response = Cache::default()
-        .get(dashboard_cache_url(key), true)
-        .await
-        .ok()??;
-    response.json::<Value>().await.ok()
+async fn cached_dynamic_data(env: &Env, key: &str) -> Option<Value> {
+    let payload = redis_commands(env, json!([["GET", key]])).await?;
+    let encoded = redis_result(&payload, 0)?.as_str()?;
+    serde_json::from_str(encoded).ok()
 }
 
-async fn cache_dashboard(key: &str, value: &Value) {
-    let Ok(mut response) = Response::from_json(value) else {
+async fn cache_dynamic_data(env: &Env, key: &str, value: &Value) {
+    let Ok(encoded) = serde_json::to_string(value) else {
         return;
     };
-    let _ = response.headers_mut().set(
-        "Cache-Control",
-        &format!("public, max-age={DASHBOARD_CACHE_TTL_SECONDS}"),
-    );
-    let _ = Cache::default()
-        .put(dashboard_cache_url(key), response)
-        .await;
+    let _ = redis_commands(
+        env,
+        json!([["SET", key, encoded, "EX", DYNAMIC_CACHE_TTL_SECONDS]]),
+    )
+    .await;
 }
 
 fn replica_primary_pin_key(user_id: &str) -> String {
@@ -853,30 +858,29 @@ fn replica_primary_pin_key(user_id: &str) -> String {
 }
 
 async fn replica_reads_pinned_to_primary(env: &Env, user_id: &str) -> bool {
-    let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
-        return false;
-    };
-    cache
-        .get(&replica_primary_pin_key(user_id))
-        .text()
+    redis_commands(env, json!([["GET", replica_primary_pin_key(user_id)]]))
         .await
-        .ok()
-        .flatten()
+        .as_ref()
+        .and_then(|payload| redis_result(payload, 0))
+        .filter(|value| !value.is_null())
         .is_some()
 }
 
-async fn invalidate_dashboard_cache(env: &Env, user_id: &str) {
-    let Ok(cache) = env.kv("E_POSYANDU_CACHE") else {
-        return;
-    };
-    if let Ok(builder) = cache.put(&replica_primary_pin_key(user_id), "primary") {
-        let write = builder.expiration_ttl(REPLICA_PRIMARY_PIN_SECONDS);
-        let _ = write.execute().await;
-    }
-    let Ok(write) = cache.put(DASHBOARD_CACHE_VERSION_KEY, now_iso()) else {
-        return;
-    };
-    let _ = write.execute().await;
+async fn invalidate_dynamic_cache(env: &Env, user_id: &str) {
+    let _ = redis_commands(
+        env,
+        json!([
+            [
+                "SET",
+                replica_primary_pin_key(user_id),
+                "primary",
+                "EX",
+                REPLICA_PRIMARY_PIN_SECONDS
+            ],
+            ["INCR", DYNAMIC_CACHE_VERSION_KEY]
+        ]),
+    )
+    .await;
 }
 
 async fn feature_flags(request: Request, env: &Env) -> ApiResult<Value> {
@@ -1056,7 +1060,7 @@ async fn client_error(mut request: Request, env: &Env) -> ApiResult<Value> {
     Ok(json!({ "accepted": true, "requestId": request_id }))
 }
 
-fn log_dashboard_cache(env: &Env, request: &Request, status: &str) {
+fn log_dynamic_cache(env: &Env, request: &Request, status: &str) {
     let environment = env
         .var("ENVIRONMENT")
         .map(|value| value.to_string())
@@ -1066,7 +1070,7 @@ fn log_dashboard_cache(env: &Env, request: &Request, status: &str) {
         "{}",
         json!({
             "level": "info",
-            "event": "dashboard_cache",
+            "event": "dynamic_redis_cache",
             "cache_status": status,
             "request_id": request_id,
             "environment": environment,
@@ -1464,24 +1468,15 @@ async fn dashboard(request: Request, env: &Env) -> ApiResult<Value> {
     }) {
         return Err(api_error(422, "Periode dashboard tidak valid."));
     }
-    let version = dashboard_cache_version(env).await;
-    let cache_key = dashboard_cache_key(&scope, &query, &version);
-    if let Some(value) = cached_dashboard(&cache_key).await {
-        log_dashboard_cache(env, &request, "HIT");
-        return Ok(value);
-    }
-    log_dashboard_cache(env, &request, "MISS");
     // The dashboard must agree with writes immediately. Other read-heavy
     // pages may use Neon, but these aggregate counters stay on Supabase.
-    let value = rpc(env, "eposyandu_dashboard_stats", json!({
+    rpc(env, "eposyandu_dashboard_stats", json!({
         "p_month_start": first_query(&query, "monthStart"), "p_month_end": first_query(&query, "monthEnd"),
         "p_previous_month_start": first_query(&query, "previousMonthStart"), "p_previous_month_end": first_query(&query, "previousMonthEnd"),
         "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
         "p_posyandu": first_query(&query, "posyandu").map(|value| value.trim()).filter(|value| !value.is_empty()),
         "p_role": scope.role, "p_scope_village": scope.desa, "p_scope_posyandu": scope.posyandu,
-    })).await?;
-    cache_dashboard(&cache_key, &value).await;
-    Ok(value)
+    })).await
 }
 
 async fn sigizi_measurement_export(request: Request, env: &Env) -> ApiResult<Value> {
@@ -2742,7 +2737,7 @@ async fn collection_create(
         created_document.get("data").cloned(),
     )
     .await?;
-    invalidate_dashboard_cache(env, &scope.user_id).await;
+    invalidate_dynamic_cache(env, &scope.user_id).await;
     Ok(created_document)
 }
 
@@ -2919,7 +2914,7 @@ async fn collection_update(
         updated_document.get("data").cloned(),
     )
     .await?;
-    invalidate_dashboard_cache(env, &scope.user_id).await;
+    invalidate_dynamic_cache(env, &scope.user_id).await;
     Ok(updated_document)
 }
 
@@ -3020,7 +3015,7 @@ async fn collection_delete(
         None,
     )
     .await?;
-    invalidate_dashboard_cache(env, &scope.user_id).await;
+    invalidate_dynamic_cache(env, &scope.user_id).await;
     Ok(json!({}))
 }
 
@@ -3669,7 +3664,28 @@ async fn collections(request: Request, env: &Env) -> ApiResult<Value> {
 }
 
 pub async fn dispatch(request: Request, env: &Env) -> ApiResult<Value> {
-    match (request.method(), request.path().as_str()) {
+    let cache_key = if dynamic_cacheable_request(&request) {
+        let scope = require_scope(&request, env).await?;
+        let url = request
+            .url()
+            .map_err(|_| api_error(400, "Alamat API tidak valid."))?;
+        let request_target = match url.query() {
+            Some(query) => format!("{}?{query}", url.path()),
+            None => url.path().to_owned(),
+        };
+        let version = dynamic_cache_version(env).await;
+        let key = dynamic_cache_key(&scope, &request_target, &version);
+        if let Some(value) = cached_dynamic_data(env, &key).await {
+            log_dynamic_cache(env, &request, "HIT");
+            return Ok(value);
+        }
+        log_dynamic_cache(env, &request, "MISS");
+        Some(key)
+    } else {
+        None
+    };
+
+    let value = match (request.method(), request.path().as_str()) {
         (Method::Post, "/api/v1/sync") => sync_batch(request, env).await,
         (Method::Post, "/api/v1/jobs") => create_background_job(request, env).await,
         (Method::Post, "/api/v1/client-errors") => client_error(request, env).await,
@@ -3697,12 +3713,80 @@ pub async fn dispatch(request: Request, env: &Env) -> ApiResult<Value> {
         }
         _ if request.path().starts_with("/api/v1/collections/") => collections(request, env).await,
         _ => Err(api_error(404, "Rute API tidak ditemukan.")),
+    }?;
+    if let Some(key) = cache_key {
+        cache_dynamic_data(env, &key, &value).await;
     }
+    Ok(value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caches_only_dynamic_reads_for_one_minute() {
+        assert_eq!(DYNAMIC_CACHE_TTL_SECONDS, 60);
+        assert!(dynamic_cacheable_target(
+            &Method::Get,
+            "/api/v1/children/page",
+            false
+        ));
+        assert!(dynamic_cacheable_target(
+            &Method::Get,
+            "/api/v1/collections/measurements",
+            false
+        ));
+        assert!(!dynamic_cacheable_target(
+            &Method::Get,
+            "/api/v1/features",
+            false
+        ));
+        assert!(!dynamic_cacheable_target(
+            &Method::Get,
+            "/api/v1/collections/measurements",
+            true
+        ));
+        assert!(!dynamic_cacheable_target(
+            &Method::Post,
+            "/api/v1/collections/children",
+            false
+        ));
+    }
+
+    #[test]
+    fn separates_redis_cache_by_access_scope_and_version() {
+        let scope = AccessScope {
+            user_id: "user-1".into(),
+            email: None,
+            role: "Kader Posyandu".into(),
+            desa: Some("Purwoasri".into()),
+            posyandu: Some("SALAK 58".into()),
+        };
+        let base = dynamic_cache_key(
+            &scope,
+            "/api/v1/collections/measurements?filter=childId%7C%3D%3D%7C123",
+            "7",
+        );
+        let mut another_scope = scope.clone();
+        another_scope.posyandu = Some("MELATI 01".into());
+        assert_ne!(
+            base,
+            dynamic_cache_key(
+                &another_scope,
+                "/api/v1/collections/measurements?filter=childId%7C%3D%3D%7C123",
+                "7"
+            )
+        );
+        assert_ne!(
+            base,
+            dynamic_cache_key(
+                &scope,
+                "/api/v1/collections/measurements?filter=childId%7C%3D%3D%7C123",
+                "8"
+            )
+        );
+    }
 
     #[test]
     fn creates_temporary_identity_for_child_without_documents() {

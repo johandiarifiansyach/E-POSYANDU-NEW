@@ -25,9 +25,9 @@ tests/                 Pengujian kontrak lintas komponen
 | Pekerjaan berat | Rust `nutrition-grpc` di Oracle Compute + Cloudflare Queue |
 | Rollback darurat | Cloudflare Pages + Worker lama, tetap tersedia tetapi bukan jalur normal |
 | File job privat | Cloudflare R2 |
-| Cache ringkasan | Cloudflare Cache API |
-| Metadata invalidasi cache | Cloudflare KV |
-| Pembatas login | Upstash Redis |
+| Cache data dinamis (TTL 60 detik) | Redis |
+| Cache menu/referensi/feature flag global | Cloudflare KV |
+| Sesi sementara dan pembatas login Worker | Upstash Redis |
 
 - Frontend utama: https://eposyandu.app
 - Frontend fallback: https://e-posyandu.pages.dev

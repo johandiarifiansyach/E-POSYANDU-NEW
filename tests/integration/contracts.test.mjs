@@ -324,7 +324,7 @@ test('Neon mengambil alih baca hanya untuk sesi Supabase yang pernah diverifikas
 
   assert.match(worker, /VERIFIED_SCOPE_CACHE_PREFIX/);
   assert.match(worker, /hashed_key\(VERIFIED_SCOPE_CACHE_PREFIX, token\)/);
-  assert.match(worker, /expiration_ttl\(ttl\)/);
+  assert.match(worker, /redis_set_text\(env, &key, payload, ttl\)/);
   assert.match(worker, /jwt_expiration_seconds/);
   assert.match(worker, /fn is_emergency_read_route/);
   assert.match(worker, /path == "\/api\/v1\/graphql"/);
@@ -334,7 +334,7 @@ test('Neon mengambil alih baca hanya untuk sesi Supabase yang pernah diverifikas
   assert.match(worker, /Layanan utama sedang tidak tersedia\. Perubahan data belum dapat dikirim/);
 });
 
-test('ringkasan dashboard memakai primary dan cache browser terversi', async () => {
+test('data dinamis memakai primary dan cache Redis terversi selama satu menit', async () => {
   const worker = await readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8');
   const dashboard = await readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8');
   const dashboardStart = worker.indexOf('async fn dashboard(');
@@ -345,25 +345,52 @@ test('ringkasan dashboard memakai primary dan cache browser terversi', async () 
   );
 
   assert.ok(dashboardStart >= 0, 'route dashboard tidak ditemukan');
-  assert.match(dashboardRoute, /let value = rpc\(env, "eposyandu_dashboard_stats"/);
+  assert.match(dashboardRoute, /rpc\(env, "eposyandu_dashboard_stats"/);
   assert.doesNotMatch(dashboardRoute, /read_rpc\(env/);
-  assert.match(worker, /DASHBOARD_CACHE_VERSION_KEY: &str = "dashboard:version:v3"/);
+  assert.match(worker, /DYNAMIC_CACHE_TTL_SECONDS: u64 = 60/);
+  assert.match(worker, /DYNAMIC_CACHE_VERSION_KEY/);
+  assert.match(worker, /dynamic_cache_key/);
+  assert.match(worker, /redis_commands/);
+  assert.match(worker, /\/api\/v1\/collections\//);
   assert.match(dashboard, /e-posyandu:dashboard-stats:v4/);
   assert.match(dashboard, /isDashboardTab/);
 });
 
-test('monitoring worker tersimpan di KV dan MQTT ditunda sampai ada IoT', async () => {
+test('monitoring worker tersimpan di Redis dan MQTT ditunda sampai ada IoT', async () => {
   const worker = await readFile(resolve(root, 'backend/src/lib.rs'), 'utf8');
   const decision = await readFile(resolve(root, 'docs/decisions/001-mqtt-deferred.md'), 'utf8');
   const r2 = await readFile(resolve(root, 'scripts/storage/prepare-r2.sh'), 'utf8');
 
   assert.match(worker, /NUTRITION_WORKER_FAILURE_THRESHOLD/);
   assert.match(worker, /monitoring:nutrition-worker:v1/);
+  assert.match(worker, /redis_set_text/);
   assert.match(worker, /send_monitoring_alert/);
   assert.match(worker, /R2_SOFT_LIMIT_BYTES/);
   assert.match(worker, /monitor_and_cleanup_r2/);
   assert.match(decision, /MQTT baru dievaluasi ketika tersedia perangkat IoT nyata/);
   assert.match(r2, /e-posyandu-files/);
+});
+
+test('KV hanya memuat cache global dan Redis memuat data dinamis', async () => {
+  const [worker, api, wrangler, compose, nativeCache] = await Promise.all([
+    readFile(resolve(root, 'backend/src/lib.rs'), 'utf8'),
+    readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8'),
+    readFile(resolve(root, 'backend/wrangler.toml'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/compose.yaml'), 'utf8'),
+    readFile(resolve(root, 'services/oracle-api/src/native_cache.rs'), 'utf8')
+  ]);
+
+  const kvUses = `${worker}\n${api}`.match(/\.kv\("E_POSYANDU_CACHE"\)/g) ?? [];
+  assert.equal(kvUses.length, 2, 'KV hanya boleh dipakai untuk status konfigurasi dan feature flag global');
+  assert.match(api, /const FEATURE_FLAGS_KEY: &str = "feature:flags:v1"/);
+  assert.match(wrangler, /Data balita\/penimbangan memakai Redis TTL 60 detik/);
+  assert.match(compose, /ORACLE_REDIS_URL: redis:\/\/redis-cache:6379/);
+  assert.match(compose, /redis:7\.4\.10-alpine/);
+  assert.match(compose, /--maxmemory-policy\s+- volatile-lru/);
+  assert.match(compose, /subnet: 10\.89\.0\.0\/24/);
+  assert.match(compose, /subnet: 10\.89\.1\.0\/24/);
+  assert.match(nativeCache, /DYNAMIC_CACHE_TTL_SECONDS: u64 = 60/);
+  assert.match(nativeCache, /DYNAMIC_CACHE_VERSION_KEY/);
 });
 
 test('GraphQL hanya untuk baca dan gRPC memakai kontrak internal terpisah', async () => {
@@ -419,9 +446,11 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
     envExample,
     dockerfile,
     cloudWorker,
-    frontendDockerfile,
-    frontendCaddy,
-    vaultMaterializer
+    vaultMaterializer,
+    nativeDatabase,
+    databaseMigration,
+    databaseBackup,
+    databaseBackupUnit
   ] = await Promise.all([
     readFile(resolve(root, 'deploy/oracle/compose.yaml'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/Caddyfile'), 'utf8'),
@@ -431,9 +460,11 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
     readFile(resolve(root, 'deploy/oracle/nutrition-grpc.env.example'), 'utf8'),
     readFile(resolve(root, 'services/nutrition-grpc/Dockerfile'), 'utf8'),
     readFile(resolve(root, 'services/nutrition-grpc/src/bin/cloud.rs'), 'utf8'),
-    readFile(resolve(root, 'deploy/oracle/frontend/Dockerfile'), 'utf8'),
-    readFile(resolve(root, 'deploy/oracle/frontend/Caddyfile'), 'utf8'),
-    readFile(resolve(root, 'deploy/oracle/vault/eposyandu-vault-env.py'), 'utf8')
+    readFile(resolve(root, 'deploy/oracle/vault/eposyandu-vault-env.py'), 'utf8'),
+    readFile(resolve(root, 'services/oracle-api/src/native_db.rs'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/postgresql/eposyandu-postgresql-migrate.py'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/postgresql/eposyandu-postgresql-backup.py'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/postgresql/eposyandu-postgresql-backup.service'), 'utf8')
   ]);
 
   assert.match(compose, /GRPC_ADDR: 127\.0\.0\.1:50051/);
@@ -441,8 +472,8 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(compose, /read_only: true/g);
   assert.match(compose, /cap_drop:\s+- ALL/g);
   assert.match(compose, /no-new-privileges:true/g);
-  assert.match(compose, /127\.0\.0\.1:8082:8080/);
-  assert.match(compose, /ORACLE_FRONTEND_SITE:-http:\/\/frontend\.invalid/);
+  assert.doesNotMatch(compose, /^\s{2}frontend:/m);
+  assert.doesNotMatch(compose, /e-posyandu-frontend|ORACLE_FRONTEND_/);
   assert.match(compose, /cloudflare\/cloudflared:2026\.7\.2/);
   assert.match(compose, /profiles:\s+- cloudflare-tunnel/);
   assert.match(compose, /TUNNEL_TOKEN_FILE: \/run\/secrets\/cloudflare-tunnel-token/);
@@ -451,11 +482,9 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.doesNotMatch(compose, /-\s*["']?(?:50051|8080):/);
   assert.match(caddy, /@health path \/health/);
   assert.match(caddy, /respond "Rute tidak ditemukan" 404/);
-  assert.match(caddy, /Reporting-Endpoints "csp-endpoint=/);
-  assert.match(caddy, /report-to csp-endpoint/);
   assert.match(caddy, /:8088/);
   assert.match(caddy, /host api\.eposyandu\.app/);
-  assert.match(caddy, /host eposyandu\.app/);
+  assert.doesNotMatch(caddy, /host (?:www\.)?eposyandu\.app|reverse_proxy frontend/);
   assert.match(caddy, /header_up -CF-Connecting-IP/);
   assert.match(bootstrap, /install -m 0600 .*nutrition-grpc\.env/);
   assert.match(bootstrap, /ORACLE_API_NATIVE_AUTH_ENABLED/);
@@ -480,8 +509,7 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(deploy, /--no-xattrs/);
   assert.match(deploy, /--no-mac-metadata/);
   assert.match(deploy, /--no-fflags/);
-  assert.match(deploy, /VITE_TURNSTILE_SITE_KEY/);
-  assert.match(deploy, /ORACLE_FRONTEND_TURNSTILE_SITE_KEY/);
+  assert.doesNotMatch(deploy, /ORACLE_FRONTEND_|\bfrontend\b/);
   assert.match(connector, /secret put RUST_WORKER_HEALTH_URL/);
   assert.doesNotMatch(envExample, /RUST_WORKER_SHARED_SECRET=/);
   assert.match(dockerfile, /USER eposyandu/);
@@ -489,13 +517,19 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(dockerfile, /FROM docker\.io\/library\/debian:bookworm-slim/);
   assert.match(cloudWorker, /SignalKind::terminate\(\)/);
   assert.match(cloudWorker, /nutrition worker menerima sinyal shutdown/);
-  assert.match(frontendDockerfile, /RUN npm ci/);
-  assert.match(frontendDockerfile, /RUN setcap -r \/usr\/bin\/caddy/);
-  assert.match(frontendDockerfile, /USER 10001:10001/);
-  assert.match(frontendCaddy, /try_files \{path\} \/index\.html/);
   assert.match(vaultMaterializer, /OCI_SECRET_CLOUDFLARE_TUNNEL_TOKEN_ID/);
   assert.match(vaultMaterializer, /cloudflare-tunnel-token/);
-  assert.doesNotMatch(`${compose}\n${dockerfile}\n${frontendDockerfile}`, /CLOUDFLARE_QUEUES_API_TOKEN=/);
+  assert.match(vaultMaterializer, /ORACLE_DATABASE_URL/);
+  assert.match(nativeDatabase, /deadpool_postgres/);
+  assert.match(nativeDatabase, /ORACLE_DATABASE_POOL_SIZE/);
+  assert.match(databaseMigration, /--format=custom/);
+  assert.match(databaseMigration, /fingerprints_source/);
+  assert.match(databaseMigration, /alter database.*rename to/si);
+  assert.match(databaseBackup, /--compress=zstd:9/);
+  assert.match(databaseBackup, /pg_restore/);
+  assert.match(databaseBackup, /--cipher-algo/);
+  assert.match(databaseBackupUnit, /ReadWritePaths=\/var\/lib\/pgsql\/backup/);
+  assert.doesNotMatch(`${compose}\n${dockerfile}`, /CLOUDFLARE_QUEUES_API_TOKEN=/);
   assert.doesNotMatch(compose, /TUNNEL_TOKEN:/);
 });
 

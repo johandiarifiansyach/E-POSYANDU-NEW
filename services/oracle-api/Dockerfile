@@ -1,4 +1,4 @@
-FROM docker.io/library/rust:1.89-bookworm AS builder
+FROM docker.io/library/rust:1.97-bookworm AS builder
 
 WORKDIR /app
 COPY services/oracle-api services/oracle-api

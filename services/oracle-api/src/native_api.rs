@@ -11,7 +11,11 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::native_auth::{AccessScope, NativeAuth};
+use crate::{
+    native_auth::{AccessScope, NativeAuth},
+    native_cache::NativeCache,
+    native_db::{DatabaseError, NativeDatabase},
+};
 
 const ORACLE_ORIGIN_HEADER: &str = "x-e-posyandu-origin";
 const COLLECTION_MUTATION_MAX_BODY_BYTES: usize = 256 * 1024;
@@ -104,9 +108,9 @@ impl ApiError {
 
 pub(crate) struct NativeApi {
     http: Client,
-    supabase_url: Url,
-    supabase_secret_key: String,
+    database: Arc<NativeDatabase>,
     auth: Arc<NativeAuth>,
+    cache: Option<NativeCache>,
     queue: Option<CloudflareQueueConfig>,
     reads_enabled: bool,
     writes_enabled: bool,
@@ -126,12 +130,24 @@ struct MutationContext {
     idempotency_key: Option<String>,
 }
 
-fn required_env(name: &str) -> Result<String, String> {
-    env::var(name)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{name} wajib diisi untuk API native Oracle."))
+fn native_database_error(error: DatabaseError) -> ApiError {
+    match error {
+        DatabaseError::Conflict => ApiError::new(
+            StatusCode::CONFLICT,
+            "database_error",
+            "Data bertentangan dengan perubahan lain.",
+        ),
+        DatabaseError::Invalid => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "database_error",
+            "Data tidak dapat diproses oleh PostgreSQL.",
+        ),
+        DatabaseError::Unavailable => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "database_unavailable",
+            "Database utama sementara tidak dapat dijangkau.",
+        ),
+    }
 }
 
 fn optional_queue_config() -> Result<Option<CloudflareQueueConfig>, String> {
@@ -223,6 +239,30 @@ fn query_pairs(request: &Request) -> Vec<(String, String)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn dynamic_cacheable_request(path: &str, query: &BTreeMap<String, String>) -> bool {
+    query.get("export").is_none_or(|value| value != "1")
+        && (matches!(
+            path,
+            "/api/v1/dashboard/stats"
+                | "/api/v1/children/page"
+                | "/api/v1/exclusive-breastfeeding/page"
+        ) || path.starts_with("/api/v1/collections/"))
+}
+
+fn dynamic_cache_table(table: &str) -> bool {
+    matches!(
+        table,
+        "children"
+            | "measurements"
+            | "mpasi_logs"
+            | "pmt_programs"
+            | "pmt_monitorings"
+            | "change_logs"
+            | "change_log_entries"
+            | "sync_tombstones"
+    )
 }
 
 fn value<'a>(query: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
@@ -1199,39 +1239,29 @@ impl NativeApi {
         self.queue.is_some()
     }
 
-    pub(crate) async fn database_ready(&self) -> bool {
-        self.rest_get(
-            "schema_migrations",
-            &[
-                ("select".into(), "version".into()),
-                ("order".into(), "version.desc".into()),
-                ("limit".into(), "1".into()),
-            ],
-            false,
-        )
-        .await
-        .is_ok()
+    pub(crate) fn cache_configured(&self) -> bool {
+        self.cache.is_some()
     }
 
-    pub(crate) fn from_env(
+    pub(crate) async fn cache_ready(&self) -> bool {
+        match self.cache.as_ref() {
+            Some(cache) => cache.ready().await,
+            None => false,
+        }
+    }
+
+    pub(crate) async fn from_env(
         http: Client,
         auth: Arc<NativeAuth>,
+        database: Arc<NativeDatabase>,
         reads_enabled: bool,
         writes_enabled: bool,
     ) -> Result<Self, String> {
-        let mut supabase_url = Url::parse(&required_env("SUPABASE_URL")?)
-            .map_err(|_| "SUPABASE_URL bukan URL valid.".to_string())?;
-        if supabase_url.scheme() != "https" {
-            return Err("SUPABASE_URL wajib memakai HTTPS.".into());
-        }
-        supabase_url.set_path("");
-        supabase_url.set_query(None);
-        supabase_url.set_fragment(None);
         Ok(Self {
             http,
-            supabase_url,
-            supabase_secret_key: required_env("SUPABASE_SECRET_KEY")?,
+            database,
             auth,
+            cache: NativeCache::from_env().await?,
             queue: optional_queue_config()?,
             reads_enabled,
             writes_enabled,
@@ -1249,11 +1279,9 @@ impl NativeApi {
                     | "/api/v1/exports/sigizi-measurements"
                     | "/api/v1/children/page"
                     | "/api/v1/exclusive-breastfeeding/page"
-            ) || path.starts_with("/api/v1/collections/")
-                || (path.starts_with("/api/v1/jobs/") && !path.ends_with("/file")));
+            ) || path.starts_with("/api/v1/collections/"));
         let write = self.writes_enabled
-            && (((path == "/api/v1/sync" || path == "/api/v1/jobs")
-                && request.method() == Method::POST)
+            && ((path == "/api/v1/sync" && request.method() == Method::POST)
                 || (path.starts_with("/api/v1/collections/")
                     && matches!(
                         *request.method(),
@@ -1276,6 +1304,12 @@ impl NativeApi {
 
     async fn read_result(&self, request: Request) -> Result<(StatusCode, Value), ApiError> {
         let path = request.uri().path().to_owned();
+        let request_target = request
+            .uri()
+            .path_and_query()
+            .map(|value| value.as_str())
+            .unwrap_or(path.as_str())
+            .to_owned();
         let query = query_values(&request);
         let pairs = query_pairs(&request);
         let session = self
@@ -1291,6 +1325,34 @@ impl NativeApi {
             })?;
         let _access_token = session.access_token;
         let scope = session.scope;
+        let cache_scope = (
+            scope.role.clone(),
+            scope.desa.clone(),
+            scope.posyandu.clone(),
+        );
+        let cacheable = dynamic_cacheable_request(&path, &query);
+        let cache_key = if cacheable {
+            match self.cache.as_ref() {
+                Some(cache) => {
+                    cache
+                        .request_key(
+                            &cache_scope.0,
+                            cache_scope.1.as_deref(),
+                            cache_scope.2.as_deref(),
+                            &request_target,
+                        )
+                        .await
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        if let (Some(cache), Some(key)) = (self.cache.as_ref(), cache_key.as_deref())
+            && let Some(value) = cache.get(key).await
+        {
+            return Ok((StatusCode::OK, value));
+        }
 
         let value = match path.as_str() {
             "/api/v1/features" => Ok(json!({
@@ -1318,6 +1380,9 @@ impl NativeApi {
                 "Rute API tidak ditemukan.",
             )),
         }?;
+        if let (Some(cache), Some(key)) = (self.cache.as_ref(), cache_key.as_deref()) {
+            cache.put(key, &value).await;
+        }
         Ok((StatusCode::OK, value))
     }
 
@@ -1680,76 +1745,17 @@ impl NativeApi {
         payload: Option<&Value>,
         prefer: Option<&str>,
     ) -> Result<Value, ApiError> {
-        let mut endpoint = self
-            .supabase_url
-            .join(&format!("rest/v1/{table}"))
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "database_unavailable",
-                    "Konfigurasi database tidak valid.",
-                )
-            })?;
-        endpoint
-            .query_pairs_mut()
-            .extend_pairs(parameters.iter().map(|(key, value)| (key, value)));
-        let mut request = self
-            .http
-            .request(method, endpoint)
-            .header("apikey", &self.supabase_secret_key)
-            .bearer_auth(&self.supabase_secret_key)
-            .header(header::ACCEPT, "application/json");
-        if let Some(prefer) = prefer {
-            request = request.header("Prefer", prefer);
+        let result = self
+            .database
+            .write(&method, table, parameters, payload, prefer)
+            .await
+            .map_err(native_database_error)?;
+        if dynamic_cache_table(table)
+            && let Some(cache) = self.cache.as_ref()
+        {
+            cache.invalidate().await;
         }
-        if let Some(payload) = payload {
-            request = request.json(payload);
-        }
-        let response = request.send().await.map_err(|_| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "database_unavailable",
-                "Database utama sementara tidak dapat dijangkau.",
-            )
-        })?;
-        let status = response.status();
-        let bytes = response.bytes().await.map_err(|_| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "database_unavailable",
-                "Respons database tidak dapat dibaca.",
-            )
-        })?;
-        if !status.is_success() {
-            let payload: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-            let detail = payload
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("Data tidak dapat diproses.");
-            return Err(ApiError::new(
-                if status == reqwest::StatusCode::CONFLICT {
-                    StatusCode::CONFLICT
-                } else if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY
-                    || status == reqwest::StatusCode::BAD_REQUEST
-                {
-                    StatusCode::UNPROCESSABLE_ENTITY
-                } else {
-                    StatusCode::SERVICE_UNAVAILABLE
-                },
-                "database_error",
-                detail,
-            ));
-        }
-        if bytes.is_empty() {
-            return Ok(Value::Null);
-        }
-        serde_json::from_slice(&bytes).map_err(|_| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "invalid_database_response",
-                "Respons database tidak valid.",
-            )
-        })
+        Ok(result)
     }
 
     async fn raw_document(
@@ -2518,60 +2524,10 @@ impl NativeApi {
     }
 
     async fn rpc(&self, name: &str, payload: Value) -> Result<Value, ApiError> {
-        let endpoint = self
-            .supabase_url
-            .join(&format!("rest/v1/rpc/{name}"))
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "database_unavailable",
-                    "Konfigurasi database tidak valid.",
-                )
-            })?;
-        let response = self
-            .http
-            .post(endpoint)
-            .header("apikey", &self.supabase_secret_key)
-            .bearer_auth(&self.supabase_secret_key)
-            .header(header::ACCEPT, "application/json")
-            .json(&payload)
-            .send()
+        self.database
+            .rpc(name, payload)
             .await
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "database_unavailable",
-                    "Database utama sementara tidak dapat dijangkau.",
-                )
-            })?;
-        let status = response.status();
-        let body = response.bytes().await.map_err(|_| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "database_unavailable",
-                "Respons database tidak dapat dibaca.",
-            )
-        })?;
-        if !status.is_success() {
-            return Err(ApiError::new(
-                if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY
-                    || status == reqwest::StatusCode::BAD_REQUEST
-                {
-                    StatusCode::UNPROCESSABLE_ENTITY
-                } else {
-                    StatusCode::SERVICE_UNAVAILABLE
-                },
-                "database_error",
-                "Database utama belum dapat melayani permintaan.",
-            ));
-        }
-        serde_json::from_slice(&body).map_err(|_| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "invalid_database_response",
-                "Respons database tidak valid.",
-            )
-        })
+            .map_err(native_database_error)
     }
 
     async fn rest_get(
@@ -2580,63 +2536,12 @@ impl NativeApi {
         parameters: &[(String, String)],
         count: bool,
     ) -> Result<(Value, Option<String>), ApiError> {
-        let mut endpoint = self
-            .supabase_url
-            .join(&format!("rest/v1/{table}"))
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "database_unavailable",
-                    "Konfigurasi database tidak valid.",
-                )
-            })?;
-        endpoint
-            .query_pairs_mut()
-            .extend_pairs(parameters.iter().map(|(key, value)| (key, value)));
-        let mut request = self
-            .http
-            .get(endpoint)
-            .header("apikey", &self.supabase_secret_key)
-            .bearer_auth(&self.supabase_secret_key)
-            .header(header::ACCEPT, "application/json");
-        if count {
-            request = request.header("Prefer", "count=exact");
-        }
-        let response = request.send().await.map_err(|_| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "database_unavailable",
-                "Database utama sementara tidak dapat dijangkau.",
-            )
-        })?;
-        let status = response.status();
-        let content_range = response
-            .headers()
-            .get("content-range")
-            .and_then(|value| value.to_str().ok())
-            .map(ToOwned::to_owned);
-        let bytes = response.bytes().await.map_err(|_| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "database_unavailable",
-                "Respons database tidak dapat dibaca.",
-            )
-        })?;
-        if !status.is_success() {
-            return Err(ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "database_error",
-                "Database utama belum dapat melayani permintaan.",
-            ));
-        }
-        let value = serde_json::from_slice(&bytes).map_err(|_| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "invalid_database_response",
-                "Respons database tidak valid.",
-            )
-        })?;
-        Ok((value, content_range))
+        let result = self
+            .database
+            .get(table, parameters, count)
+            .await
+            .map_err(native_database_error)?;
+        Ok((result.value, result.content_range))
     }
 
     fn location_parameters(

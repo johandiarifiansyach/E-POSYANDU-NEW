@@ -26,9 +26,12 @@ use tracing::{error, info};
 
 mod native_api;
 mod native_auth;
+mod native_cache;
+mod native_db;
 
 use native_api::NativeApi;
 use native_auth::NativeAuth;
+use native_db::NativeDatabase;
 
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:8081";
 const DEFAULT_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
@@ -46,6 +49,7 @@ struct AppState {
     nutrition_health_url: Url,
     public_origin: Url,
     migration_proxy_enabled: bool,
+    native_database: Option<Arc<NativeDatabase>>,
     native_auth: Option<Arc<NativeAuth>>,
     native_api: Option<Arc<NativeApi>>,
 }
@@ -158,7 +162,11 @@ fn hop_by_hop_header(name: &HeaderName) -> bool {
     )
 }
 
-async fn liveness() -> impl IntoResponse {
+async fn liveness(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let native_writes = state
+        .native_api
+        .as_ref()
+        .is_some_and(|api| api.writes_enabled());
     (
         StatusCode::OK,
         [
@@ -168,8 +176,16 @@ async fn liveness() -> impl IntoResponse {
         axum::Json(HealthPayload {
             ok: true,
             service: "e-posyandu-oracle-api",
-            database: "supabase",
-            mode: "hybrid-native-proxy",
+            database: if native_writes {
+                "oracle-postgresql"
+            } else {
+                "supabase"
+            },
+            mode: if native_writes {
+                "oracle-native-core"
+            } else {
+                "hybrid-native-proxy"
+            },
             version: env!("CARGO_PKG_VERSION"),
         }),
     )
@@ -192,13 +208,21 @@ fn native_json(payload: Value, cache_control: &'static str) -> Response {
     response
 }
 
-async fn api_health() -> Response {
+async fn api_health(State(state): State<Arc<AppState>>) -> Response {
+    let native_reads = state
+        .native_api
+        .as_ref()
+        .is_some_and(|api| api.reads_enabled());
+    let native_writes = state
+        .native_api
+        .as_ref()
+        .is_some_and(|api| api.writes_enabled());
     native_json(
         json!({
             "ok": true,
             "service": "e-posyandu-oracle-api",
-            "database": "supabase",
-            "mode": "hybrid-native-proxy",
+            "database": if native_writes { "oracle-postgresql" } else { "supabase" },
+            "mode": if native_reads && native_writes { "oracle-native-core" } else { "hybrid-native-proxy" },
             "version": env!("CARGO_PKG_VERSION")
         }),
         "public, max-age=60",
@@ -329,21 +353,28 @@ async fn check_nutrition_worker(state: &AppState) -> OperationalCheck {
 
 async fn readiness(State(state): State<Arc<AppState>>) -> Response {
     let database_check = async {
-        match state.native_api.as_ref() {
-            Some(api) if api.native_core_enabled() => api.database_ready().await,
+        match state.native_database.as_ref() {
+            Some(database) => database.ready().await,
             _ => false,
         }
     };
-    let (legacy, nutrition, native_database_ready) = tokio::join!(
+    let cache_check = async {
+        match state.native_api.as_ref() {
+            Some(api) if api.cache_configured() => api.cache_ready().await,
+            _ => false,
+        }
+    };
+    let (legacy, nutrition, native_database_ready, native_cache_ready) = tokio::join!(
         check_legacy_readiness(state.as_ref()),
         check_nutrition_worker(state.as_ref()),
-        database_check
+        database_check,
+        cache_check
     );
     let checked_at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
     let database_configured = component_configured(legacy.payload.as_ref(), "database");
-    let cache_configured = component_configured(legacy.payload.as_ref(), "cache");
+    let legacy_cache_configured = component_configured(legacy.payload.as_ref(), "cache");
     let queue_configured = component_configured(legacy.payload.as_ref(), "queue");
     let storage_configured = component_configured(legacy.payload.as_ref(), "storage");
     let native_auth_configured = state
@@ -362,16 +393,24 @@ async fn readiness(State(state): State<Arc<AppState>>) -> Response {
         .native_api
         .as_ref()
         .is_some_and(|api| api.writes_enabled());
+    let native_mode_configured =
+        native_auth_configured || native_reads_enabled || native_writes_enabled;
     let native_queue_configured = state
         .native_api
         .as_ref()
         .is_some_and(|api| api.queue_configured());
-    let core_ok = if native_core_enabled {
+    let native_cache_configured = state
+        .native_api
+        .as_ref()
+        .is_some_and(|api| api.cache_configured());
+    let core_ok = if native_mode_configured {
         native_auth_configured && native_database_ready
     } else {
         legacy.ok
     };
-    let optional_ok = nutrition.ok && (!state.migration_proxy_enabled || legacy.ok);
+    let optional_ok = nutrition.ok
+        && (!state.migration_proxy_enabled || legacy.ok)
+        && (!native_cache_configured || native_cache_ready);
     let status = readiness_state(core_ok, optional_ok);
 
     native_json(
@@ -386,9 +425,9 @@ async fn readiness(State(state): State<Arc<AppState>>) -> Response {
                     "origin": "oracle-native"
                 },
                 "database": {
-                    "configured": if native_core_enabled { native_database_ready } else { database_configured },
-                    "primary": "supabase",
-                    "accessPath": if native_core_enabled { "oracle-native" } else if native_auth_configured { "oracle-native-and-legacy" } else { "legacy-cloudflare" }
+                    "configured": if native_mode_configured { native_database_ready } else { database_configured },
+                    "primary": if native_writes_enabled { "oracle-postgresql" } else { "supabase" },
+                    "accessPath": if native_core_enabled { "oracle-native" } else if native_mode_configured { "oracle-native-and-legacy" } else { "legacy-cloudflare" }
                 },
                 "authentication": {
                     "configured": native_auth_configured,
@@ -396,19 +435,19 @@ async fn readiness(State(state): State<Arc<AppState>>) -> Response {
                     "sessionStorage": if native_auth_configured { "oracle-encrypted-sqlite" } else { "cloudflare-kv" }
                 },
                 "readStandby": {
-                    "configured": true,
-                    "provider": "oracle-postgresql",
-                    "mode": "snapshot-read-only",
-                    "maximumLagSeconds": 900,
-                    "monitoring": "oci-custom-metrics"
+                    "configured": false,
+                    "provider": null,
+                    "mode": "removed-stage-2"
                 },
                 "cache": {
-                    "configured": cache_configured,
-                    "managedBy": "legacy-cloudflare"
+                    "configured": if native_mode_configured { native_cache_configured } else { legacy_cache_configured },
+                    "reachable": if native_mode_configured { native_cache_ready } else { legacy_cache_configured },
+                    "managedBy": if native_cache_configured { "oracle-redis" } else { "legacy-cloudflare-global-kv" },
+                    "dynamicTtlSeconds": if native_cache_configured { Some(60) } else { None }
                 },
                 "queue": {
-                    "configured": if native_core_enabled { native_queue_configured } else { queue_configured },
-                    "managedBy": if native_core_enabled && native_queue_configured { "oracle-native-cloudflare-queue" } else { "legacy-cloudflare" }
+                    "configured": queue_configured || native_queue_configured,
+                    "managedBy": "legacy-cloudflare"
                 },
                 "storage": {
                     "configured": storage_configured,
@@ -656,22 +695,35 @@ async fn main() {
         .timeout(Duration::from_secs(120))
         .build()
         .expect("HTTP client tidak dapat dibuat");
-    let native_auth = NativeAuth::from_env(client.clone())
-        .expect("konfigurasi autentikasi native Oracle tidak valid")
-        .map(Arc::new);
+    let native_auth_enabled = env_flag("ORACLE_API_NATIVE_AUTH_ENABLED", false);
     let native_reads_enabled = env_flag("ORACLE_API_NATIVE_READS_ENABLED", false);
     let native_writes_enabled = env_flag("ORACLE_API_NATIVE_WRITES_ENABLED", false);
+    let native_database = if native_auth_enabled || native_reads_enabled || native_writes_enabled {
+        Some(Arc::new(
+            NativeDatabase::from_env().expect("konfigurasi PostgreSQL native Oracle tidak valid"),
+        ))
+    } else {
+        None
+    };
+    let native_auth = NativeAuth::from_env(client.clone(), native_database.clone())
+        .expect("konfigurasi autentikasi native Oracle tidak valid")
+        .map(Arc::new);
     let native_api = if native_reads_enabled || native_writes_enabled {
         let auth = native_auth.as_ref().expect(
             "ORACLE_API_NATIVE_READS_ENABLED/WRITES_ENABLED membutuhkan ORACLE_API_NATIVE_AUTH_ENABLED=true",
         );
+        let database = native_database
+            .as_ref()
+            .expect("PostgreSQL native wajib tersedia untuk API native Oracle");
         Some(Arc::new(
             NativeApi::from_env(
                 client.clone(),
                 auth.clone(),
+                database.clone(),
                 native_reads_enabled,
                 native_writes_enabled,
             )
+            .await
             .expect("konfigurasi endpoint baca native Oracle tidak valid"),
         ))
     } else {
@@ -688,6 +740,7 @@ async fn main() {
         .expect("konfigurasi URL health worker nutrisi tidak valid"),
         public_origin: public_origin().expect("konfigurasi public origin tidak valid"),
         migration_proxy_enabled: env_flag("ORACLE_API_MIGRATION_PROXY_ENABLED", true),
+        native_database,
         native_auth,
         native_api,
     });

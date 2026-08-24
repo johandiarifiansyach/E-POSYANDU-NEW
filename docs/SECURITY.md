@@ -6,7 +6,7 @@ Klasifikasi, tujuan pemrosesan, retensi, hak subjek, dan prosedur insiden dijela
 
 - Data sesi dan respons API tidak boleh disimpan oleh service worker.
 - Cache offline sensitif dienkripsi, terikat ke ID akun, dan dihapus saat logout atau saat sesi akun berubah.
-- Token Supabase hanya tersimpan di KV backend. Browser memakai cookie sesi `HttpOnly`, `Secure`, `SameSite=Strict` melalui proxy same-origin Pages dan tidak dapat membaca access/refresh token.
+- Token Supabase hanya tersimpan sementara di Redis backend sesuai TTL sesi. Browser memakai cookie sesi `HttpOnly`, `Secure`, `SameSite=Strict` melalui proxy same-origin Pages dan tidak dapat membaca access/refresh token. Cloudflare KV hanya untuk konfigurasi global tanpa token.
 - Sesi pengguna dikunci setelah 30 menit tanpa aktivitas. Waktu aktivitas dibagikan antar-tab, sedangkan penanda kedaluwarsa mencegah cookie lama memulihkan sesi ketika logout server belum dapat dijangkau.
 - Verifikasi dua langkah tidak digunakan. Login tetap melewati Worker, Turnstile, pembatasan percobaan per IP/akun, cookie sesi `HttpOnly`, validasi akun aktif, serta pembatasan role/wilayah. Migration `027` mencabut RPC browser lama agar kontrol tersebut tidak dapat dilewati.
 - CSP membatasi skrip ke aplikasi dan Cloudflare Turnstile. SheetJS 0.20.3 ikut dibundel ke aset aplikasi sehingga browser tidak memuat kode Excel dari CDN pihak ketiga. Pelanggaran CSP dilaporkan ke endpoint same-origin yang dibatasi laju dan membuang query, referrer, contoh skrip, serta IP mentah sebelum logging.

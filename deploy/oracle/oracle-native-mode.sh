@@ -66,6 +66,7 @@ if [[ "$mode" != "proxy" ]]; then
     SUPABASE_SECRET_KEY
     TURNSTILE_SECRET_KEY
     ORACLE_API_SESSION_KEY
+    ORACLE_DATABASE_URL
   )
   if [[ ! -s "$runtime_env" ]]; then
     echo "Secret runtime Oracle API belum tersedia dari OCI Vault." >&2

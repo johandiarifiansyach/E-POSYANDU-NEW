@@ -20,6 +20,14 @@ Konfigurasi:
   `http://nutrition-worker:8080/health`; jangan diarahkan ke URL dari input pengguna.
 - `ORACLE_API_MIGRATION_PROXY_ENABLED`: `true` selama fase transisi.
 - `ORACLE_API_LISTEN_ADDR`: default `0.0.0.0:8081`.
+- `ORACLE_REDIS_URL`: koneksi Redis privat untuk cache data dinamis. Jika
+  dikonfigurasi, daftar balita, penimbangan, dashboard, dan koleksi dinamis
+  dicache selama 60 detik dengan key terpisah per cakupan akses.
+
+Redis bersifat cache sementara, bukan sumber data. Mutasi data menaikkan versi
+cache dan PostgreSQL native tetap menjadi satu-satunya sumber kebenaran. Kegagalan
+operasi Redis setelah proses berjalan tidak menggagalkan baca/tulis PostgreSQL;
+readiness berubah menjadi `degraded` agar gangguan cache tetap terlihat.
 
 Jalankan secara lokal:
 
