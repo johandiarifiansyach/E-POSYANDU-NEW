@@ -4,10 +4,15 @@ const frontendBase = process.env.SMOKE_FRONTEND_URL?.trim();
 const apiBase = process.env.SMOKE_API_URL?.trim();
 const accessToken = process.env.SMOKE_ACCESS_TOKEN?.trim();
 const sessionCookie = process.env.SMOKE_SESSION_COOKIE?.trim();
+const expectedDatabase = process.env.SMOKE_EXPECTED_DATABASE?.trim() || 'oracle-postgresql';
 const requireSecurityHeaders = process.env.SMOKE_REQUIRE_SECURITY_HEADERS !== 'false';
 
 assert(frontendBase, 'SMOKE_FRONTEND_URL wajib diisi.');
 assert(apiBase, 'SMOKE_API_URL wajib diisi.');
+assert(
+  ['oracle-postgresql', 'supabase'].includes(expectedDatabase),
+  'SMOKE_EXPECTED_DATABASE harus oracle-postgresql atau supabase.'
+);
 
 const timeoutMs = 20_000;
 const checked = [];
@@ -69,7 +74,7 @@ if (requireSecurityHeaders) {
 const healthResponse = await request(endpoint(apiBase, '/api/v1/health'));
 const health = await healthResponse.json();
 assert.equal(health.ok, true, 'Health check API tidak sehat.');
-assert.equal(health.database, 'supabase', 'API tidak terhubung ke database yang diharapkan.');
+assert.equal(health.database, expectedDatabase, 'API tidak terhubung ke database yang diharapkan.');
 checked.push('api-health');
 
 const openApiResponse = await request(endpoint(apiBase, '/api/v1/openapi.json'));

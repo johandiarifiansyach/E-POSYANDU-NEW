@@ -336,6 +336,75 @@
   box-shadow: none;
 }
 
+.admin-mfa-card {
+  max-width: 470px;
+}
+
+.admin-mfa-panel {
+  gap: 14px;
+}
+
+.admin-mfa-help {
+  margin: 0;
+  color: rgba(28, 28, 30, 0.7);
+  font-size: 13px;
+  line-height: 1.55;
+  text-align: center;
+}
+
+.admin-mfa-secondary {
+  border-color: rgba(0, 102, 204, 0.18);
+  background: rgba(0, 102, 204, 0.08);
+  box-shadow: none;
+  color: #005eb8;
+}
+
+.admin-mfa-secondary:hover:not(:disabled) {
+  background: rgba(0, 102, 204, 0.14);
+  box-shadow: none;
+}
+
+.admin-mfa-qr {
+  width: min(230px, 100%);
+  margin: 0 auto;
+  border: 10px solid #fff;
+  border-radius: 16px;
+}
+
+.admin-mfa-secret {
+  display: grid;
+  gap: 5px;
+  text-align: center;
+}
+
+.admin-mfa-secret span,
+.admin-mfa-copy-notice {
+  color: rgba(28, 28, 30, 0.66);
+  font-size: 12px;
+}
+
+.admin-mfa-secret code,
+.admin-mfa-codes {
+  overflow-wrap: anywhere;
+  border: 1px solid rgba(60, 60, 67, 0.14);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.58);
+  padding: 12px;
+  color: var(--apple-label);
+  font: 700 13px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.admin-mfa-codes {
+  margin: 0;
+  text-align: center;
+  white-space: pre-wrap;
+}
+
+.admin-mfa-copy-notice {
+  margin: 0;
+  text-align: center;
+}
+
 .login-footer {
   position: fixed;
   right: max(18px, env(safe-area-inset-right));

@@ -87,7 +87,7 @@ export async function fetchExportDocuments({
   if (dateField && end) constraints.push(where(dateField, '<=', end));
 
   if (!options.allLocations) {
-    const scopedDesa = user?.role === roles.GIZI ? viewDesa : user?.desa;
+    const scopedDesa = (user?.role === roles.GIZI || user?.role === roles.SUPER_ADMIN) ? viewDesa : user?.desa;
     const scopedPosyandu = user?.role === roles.KADER ? user.posyandu : viewPosyandu;
     if (scopedDesa) constraints.push(where('desa', '==', scopedDesa));
     if (scopedPosyandu) constraints.push(where('posyandu', '==', scopedPosyandu));

@@ -9,7 +9,7 @@ Dokumen ini membedakan komponen yang sudah aktif, fondasi yang sudah tersedia, d
 | 3 | Audit Log | Aktif | Login, CRUD, ekspor XLS, dan perubahan role/wilayah dicatat. |
 | 4 | Request ID dan structured logging | Aktif | `X-Request-ID`, latency, route, status, dan environment. |
 | 5 | Testing | Aktif | Unit Rust, integration contract, E2E desktop/ponsel, serta smoke test deployment setiap enam jam. |
-| 6 | Monitoring | Aktif | Error, latency, cache hit, readiness seluruh komponen setiap 30 menit, status KV, peringatan Admin Gizi, dan alarm eksternal opsional. |
+| 6 | Monitoring | Aktif | Error, latency, cache hit, readiness seluruh komponen setiap 30 menit, status KV, peringatan Ahli Gizi, dan alarm eksternal opsional. |
 | 7 | Backup dan restore | Siap diaktifkan | Backup terenkripsi, verifikasi archive, dan restore drill tersedia; jadwal menunggu secret database production/staging. |
 | 8 | CI/CD | Siap diaktifkan | Build, test, migration, dan deploy otomatis tersedia; membutuhkan GitHub secrets dan `AUTO_DEPLOY=true`. |
 | 9 | Feature flag | Aktif | Konfigurasi KV dapat diubah tanpa deploy untuk fitur yang sudah ditanam dalam kode. |
@@ -21,7 +21,7 @@ Dokumen ini membedakan komponen yang sudah aktif, fondasi yang sudah tersedia, d
 | 15 | Error tracking | Aktif | Error frontend terautentikasi masuk structured log backend tanpa data formulir. |
 | 16 | Background job/queue | Siap deploy Oracle | Cloudflare Queue dan worker gRPC menangani validasi impor, laporan, ekspor, dan sinkronisasi berat; deployment Oracle ARM64 sudah disiapkan dan menunggu koneksi SSH/DNS. |
 | 17 | Cloudflare R2 | Aktif | Upload/download privat, retensi 7 hari, dan pengaman kapasitas 9 GiB ke 8 GiB aktif. |
-| 18 | Notification system | Aktif terbatas | Peringatan worker tersedia untuk Admin Gizi; webhook/email eksternal bersifat opsional. |
+| 18 | Notification system | Aktif terbatas | Peringatan worker tersedia untuk Ahli Gizi; webhook/email eksternal bersifat opsional. |
 | 19 | Webhook | Ditunda | Memerlukan sistem tujuan, signing secret, retry, dan allowlist. |
 | 20 | Multi-language | Ditunda | Bahasa Indonesia tetap bahasa tunggal sampai kebutuhan pengguna terkonfirmasi. |
 | 21 | Data export | Aktif | XLS/XLSX dan CSV aktif; permintaan data ekspornya diaudit serta tetap dibatasi cakupan wilayah akun. |

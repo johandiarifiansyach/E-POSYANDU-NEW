@@ -930,7 +930,7 @@ fn enforce_import_scope(
     let normalized_role = actor_role.trim().to_ascii_lowercase();
     let expected_village = village.unwrap_or_default().trim();
     let expected_posyandu = posyandu.unwrap_or_default().trim();
-    if normalized_role == "ahli gizi" {
+    if matches!(normalized_role.as_str(), "ahli gizi" | "super_admin") {
         return Ok(());
     }
     for row in rows {

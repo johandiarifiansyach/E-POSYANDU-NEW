@@ -1,7 +1,7 @@
 // @ts-nocheck
 import Native from '../runtime/dom';
 import { Clock, ChevronDown, Filter, MapPin, RotateCcw } from './icons';
-import { DATA_WILAYAH, MONTHS, ROLES, YEARS } from '../config/dashboard';
+import { DATA_WILAYAH, isFullAccessRole, MONTHS, ROLES, YEARS } from '../config/dashboard';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
 import { Badge, KenaikanBadge, StatusBadge } from '../components/Badge';
@@ -18,7 +18,7 @@ export const InputGroup = ({ label, children, error }) => Native.createElement("
     error && Native.createElement("p", { className: "text-xs text-rose-500" }, error));
 
 export const LocationFilterPanel = ({ draftDesa, draftPosyandu, filterMonth, filterYear, onApply, onReset, role, setDraftDesa, setDraftPosyandu, setFilterMonth, setFilterYear, user }) => {
-    const isGizi = role === ROLES.GIZI;
+    const isGizi = isFullAccessRole(role);
     const hasLocationFilter = role !== ROLES.KADER;
     const activeDesa = isGizi ? draftDesa : (user.desa || '');
     const posyanduOptions = activeDesa ? DATA_WILAYAH[activeDesa] || [] : [];

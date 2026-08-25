@@ -14,10 +14,12 @@ type UserRole = {
   role: string;
   desa: string | null;
   posyandu: string | null;
+  accessMode: 'read' | 'write';
 };
 
 type Cleanup = () => void;
 type DashboardModule = typeof import('./pages/DashboardApp');
+type AdminActivationTokens = { accessToken: string; refreshToken: string };
 
 const auth = getAuth(initializeApp({
   projectId: import.meta.env.VITE_APP_ID || 'siposyandu-377b6'
@@ -33,7 +35,8 @@ function isUserRole(value: unknown): value is UserRole {
   return (
     typeof candidate.role === 'string' &&
     (typeof candidate.desa === 'string' || candidate.desa === null) &&
-    (typeof candidate.posyandu === 'string' || candidate.posyandu === null)
+    (typeof candidate.posyandu === 'string' || candidate.posyandu === null) &&
+    (candidate.accessMode === undefined || candidate.accessMode === 'read' || candidate.accessMode === 'write')
   );
 }
 
@@ -42,7 +45,7 @@ function loadStoredUser(): UserRole | null {
     const raw = window.localStorage.getItem(STORED_USER_KEY);
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
-    return isUserRole(parsed) ? parsed : null;
+    return isUserRole(parsed) ? { ...parsed, accessMode: parsed.accessMode === 'read' ? 'read' : 'write' } : null;
   } catch {
     return null;
   }
@@ -54,6 +57,20 @@ function saveStoredUser(user: UserRole) {
 
 function clearStoredUser() {
   window.localStorage.removeItem(STORED_USER_KEY);
+}
+
+function consumeAdminActivationTokens(): AdminActivationTokens | null {
+  if (!window.location.hash.startsWith('#')) return null;
+  const parameters = new URLSearchParams(window.location.hash.slice(1));
+  const callbackType = parameters.get('type');
+  const isInvite = callbackType === 'invite';
+  const isAdminRecovery = callbackType === 'recovery' && window.location.pathname === '/admin/activate';
+  if (!isInvite && !isAdminRecovery) return null;
+  const accessToken = parameters.get('access_token') || '';
+  const refreshToken = parameters.get('refresh_token') || '';
+  window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
+  if (!accessToken || !refreshToken) return null;
+  return { accessToken, refreshToken };
 }
 
 function showLoading(container: HTMLElement) {
@@ -189,11 +206,64 @@ export function mountApp(container: HTMLElement): Cleanup {
       onLogin: async (username, password, turnstileToken) => {
         const dashboardModule = import('./pages/DashboardApp');
         const login = await signInWithPassword(auth, username, password, turnstileToken);
+        if (login.mfaRequired) {
+          await renderMfa(login, dashboardModule);
+          return;
+        }
         const profile = login.profile || await getCurrentAccessProfile();
-        const user = { role: profile.role, desa: profile.desa, posyandu: profile.posyandu };
+        const user = { role: profile.role, desa: profile.desa, posyandu: profile.posyandu, accessMode: profile.accessMode || 'write' };
         window.localStorage.removeItem(IDLE_EXPIRED_KEY);
         saveStoredUser(user);
         await renderDashboard(user, dashboardModule);
+      }
+    }));
+  };
+
+  const renderMfa = async (
+    pending: import('./api/authApi').MfaPendingSignIn,
+    preload?: Promise<DashboardModule>
+  ) => {
+    if (disposed) return;
+    showLoading(container);
+    const { mountMfaPage } = await import('./pages/MfaPage');
+    if (disposed) return;
+    replaceView(() => mountMfaPage(container, {
+      auth,
+      pending,
+      onAuthenticated: async (result) => {
+        const profile = result.profile || await getCurrentAccessProfile();
+        const user = { role: profile.role, desa: profile.desa, posyandu: profile.posyandu, accessMode: profile.accessMode || 'write' };
+        window.localStorage.removeItem(IDLE_EXPIRED_KEY);
+        saveStoredUser(user);
+        await renderDashboard(user, preload);
+      },
+      onCancel: async () => {
+        clearStoredUser();
+        await renderLogin();
+      }
+    }));
+  };
+
+  const renderAdminInvite = async (tokens: AdminActivationTokens) => {
+    if (disposed) return;
+    showLoading(container);
+    const { mountAdminInvitePage } = await import('./pages/AdminInvitePage');
+    if (disposed) return;
+    replaceView(() => mountAdminInvitePage(container, {
+      ...tokens,
+      onComplete: async (result) => {
+        if (result.mfaRequired) {
+          await renderMfa(result, import('./pages/DashboardApp'));
+          return;
+        }
+        const profile = result.profile || await getCurrentAccessProfile();
+        const user = { role: profile.role, desa: profile.desa, posyandu: profile.posyandu, accessMode: profile.accessMode || 'write' };
+        window.localStorage.removeItem(IDLE_EXPIRED_KEY);
+        saveStoredUser(user);
+        await renderDashboard(user, import('./pages/DashboardApp'));
+      },
+      onCancel: async () => {
+        await renderLogin();
       }
     }));
   };
@@ -241,6 +311,11 @@ export function mountApp(container: HTMLElement): Cleanup {
 
   const initialize = async () => {
     showLoading(container);
+    const activation = consumeAdminActivationTokens();
+    if (activation) {
+      await renderAdminInvite(activation);
+      return;
+    }
     if (window.localStorage.getItem(IDLE_EXPIRED_KEY)) {
       await expireSession();
       await renderLogin();
@@ -260,7 +335,7 @@ export function mountApp(container: HTMLElement): Cleanup {
     }
     try {
       const profile = await getCurrentAccessProfile();
-      const user = { role: profile.role, desa: profile.desa, posyandu: profile.posyandu };
+      const user = { role: profile.role, desa: profile.desa, posyandu: profile.posyandu, accessMode: profile.accessMode || 'write' };
       saveStoredUser(user);
       await renderDashboard(user);
     } catch (error) {

@@ -281,11 +281,11 @@ else
   health_host="$health_site"
   health_check=(curl --fail --silent --show-error --max-time 5 --resolve "$health_host:443:127.0.0.1" "https://$health_host/health")
 fi
-api_health_check=(curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8081/health)
+api_health_check=(curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8081/api/v1/health/ready)
 
 for attempt in $(seq 1 30); do
   if "${health_check[@]}" 2>/dev/null | grep -Fq "E-Posyandu nutrition worker aktif" \
-    && "${api_health_check[@]}" 2>/dev/null | grep -Fq '"service":"e-posyandu-oracle-api"'; then
+    && "${api_health_check[@]}" 2>/dev/null | grep -Fq '"ok":true'; then
     ln -sfn "$release_dir" /opt/e-posyandu/current
     release_activated=true
     echo "API dan nutrition worker Oracle aktif."

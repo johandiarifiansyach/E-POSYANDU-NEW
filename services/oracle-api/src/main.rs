@@ -1,18 +1,26 @@
 use std::{
+    convert::Infallible,
     env,
     net::{SocketAddr, TcpStream},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use axum::{
     Router,
     body::Body,
-    extract::{DefaultBodyLimit, Request, State},
+    extract::{DefaultBodyLimit, Path, Request, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header},
-    response::{IntoResponse, Response},
-    routing::{any, get},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
+    routing::{any, get, patch},
 };
+use futures_util::stream;
 use reqwest::{Client, Url, redirect::Policy};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -28,16 +36,20 @@ mod native_api;
 mod native_auth;
 mod native_cache;
 mod native_db;
+mod system_metrics;
 
 use native_api::NativeApi;
 use native_auth::NativeAuth;
 use native_db::NativeDatabase;
+use system_metrics::SystemMetricsSampler;
 
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:8081";
 const DEFAULT_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const ORACLE_ORIGIN_HEADER: &str = "x-e-posyandu-origin";
 const OPERATIONAL_CHECK_TIMEOUT: Duration = Duration::from_secs(8);
+const ADMIN_MONITORING_INTERVAL: Duration = Duration::from_secs(5);
+const ADMIN_MONITORING_CONNECTION_LIMIT: usize = 4;
 const GRAPHQL_SCHEMA: &str = include_str!("../../../backend/graphql-schema.graphql");
 const OPENAPI_DOCUMENT: &str = include_str!("../../../backend/openapi.json");
 
@@ -52,6 +64,34 @@ struct AppState {
     native_database: Option<Arc<NativeDatabase>>,
     native_auth: Option<Arc<NativeAuth>>,
     native_api: Option<Arc<NativeApi>>,
+    monitoring_connections: Arc<AtomicUsize>,
+}
+
+struct MonitoringConnectionGuard {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for MonitoringConnectionGuard {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn acquire_monitoring_connection(active: Arc<AtomicUsize>) -> Option<MonitoringConnectionGuard> {
+    active
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            (current < ADMIN_MONITORING_CONNECTION_LIMIT).then_some(current + 1)
+        })
+        .ok()?;
+    Some(MonitoringConnectionGuard { active })
+}
+
+struct MonitoringStreamState {
+    app: Arc<AppState>,
+    sampler: SystemMetricsSampler,
+    sequence: u64,
+    first: bool,
+    _connection: MonitoringConnectionGuard,
 }
 
 #[derive(Serialize)]
@@ -483,6 +523,50 @@ async fn auth_login(State(state): State<Arc<AppState>>, request: Request) -> Res
     }
 }
 
+async fn auth_mfa_enroll(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    match state.native_auth.as_ref() {
+        Some(auth) => auth.mfa_enroll(request).await,
+        None => failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "mfa_unavailable",
+            "Verifikasi administrator hanya tersedia pada API utama.",
+        ),
+    }
+}
+
+async fn auth_complete_invite(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    match state.native_auth.as_ref() {
+        Some(auth) => auth.complete_invite(request).await,
+        None => failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "invite_unavailable",
+            "Aktivasi administrator hanya tersedia pada API utama.",
+        ),
+    }
+}
+
+async fn auth_mfa_challenge(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    match state.native_auth.as_ref() {
+        Some(auth) => auth.mfa_challenge(request).await,
+        None => failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "mfa_unavailable",
+            "Verifikasi administrator hanya tersedia pada API utama.",
+        ),
+    }
+}
+
+async fn auth_mfa_verify(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    match state.native_auth.as_ref() {
+        Some(auth) => auth.mfa_verify(request).await,
+        None => failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "mfa_unavailable",
+            "Verifikasi administrator hanya tersedia pada API utama.",
+        ),
+    }
+}
+
 async fn auth_logout(State(state): State<Arc<AppState>>, request: Request) -> Response {
     match state.native_auth.as_ref() {
         Some(auth) => auth.logout(request).await,
@@ -494,6 +578,173 @@ async fn auth_session(State(state): State<Arc<AppState>>, request: Request) -> R
     match state.native_auth.as_ref() {
         Some(auth) => auth.session(request).await,
         None => migration_proxy(State(state), request).await,
+    }
+}
+
+async fn auth_presence(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    match state.native_auth.as_ref() {
+        Some(auth) => auth.presence(request).await,
+        None => failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "presence_unavailable",
+            "Pemantauan status akun hanya tersedia pada API utama.",
+        ),
+    }
+}
+
+async fn admin_accounts(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let headers = request.headers().clone();
+    drop(request);
+    match state.native_auth.as_ref() {
+        Some(auth) => match auth.admin_accounts(headers).await {
+            Ok(payload) => native_json(payload, "no-store"),
+            Err(response) => response,
+        },
+        None => failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "admin_unavailable",
+            "Administrasi backend hanya tersedia pada API utama.",
+        ),
+    }
+}
+
+async fn monitoring_stream_payload(
+    state: &AppState,
+    sampler: &mut SystemMetricsSampler,
+    sequence: u64,
+) -> Value {
+    let system = sampler.sample();
+    let database_check = async {
+        match state.native_database.as_ref() {
+            Some(database) => database.ready().await,
+            None => false,
+        }
+    };
+    let cache_check = async {
+        match state.native_api.as_ref() {
+            Some(api) if api.cache_configured() => api.cache_ready().await,
+            _ => false,
+        }
+    };
+    let (database_online, cache_online, nutrition) =
+        tokio::join!(database_check, cache_check, check_nutrition_worker(state));
+    json!({
+        "sequence": sequence,
+        "timestamp": system.timestamp.clone(),
+        "intervalSeconds": system.interval_seconds,
+        "system": system,
+        "services": {
+            "api": "online",
+            "database": if database_online { "online" } else { "offline" },
+            "redis": if cache_online { "online" } else { "offline" },
+            "nutritionWorker": if nutrition.ok { "online" } else { "offline" }
+        }
+    })
+}
+
+async fn admin_monitoring_stream(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let headers = request.headers().clone();
+    drop(request);
+    let Some(auth) = state.native_auth.as_ref() else {
+        return failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "monitoring_unavailable",
+            "Monitoring realtime hanya tersedia pada API utama.",
+        );
+    };
+    if let Err(response) = auth.require_verified_admin(headers).await {
+        return response;
+    }
+    let Some(connection) = acquire_monitoring_connection(state.monitoring_connections.clone())
+    else {
+        return failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "monitoring_connection_limit",
+            "Terlalu banyak koneksi monitoring aktif. Tutup tab monitoring lain lalu coba kembali.",
+        );
+    };
+    let stream_state = MonitoringStreamState {
+        app: state,
+        sampler: SystemMetricsSampler::new(),
+        sequence: 0,
+        first: true,
+        _connection: connection,
+    };
+    let events = stream::unfold(stream_state, |mut current| async move {
+        tokio::time::sleep(if current.first {
+            Duration::from_secs(1)
+        } else {
+            ADMIN_MONITORING_INTERVAL
+        })
+        .await;
+        current.first = false;
+        current.sequence = current.sequence.saturating_add(1);
+        let payload =
+            monitoring_stream_payload(current.app.as_ref(), &mut current.sampler, current.sequence)
+                .await;
+        let event = Event::default()
+            .event("metrics")
+            .id(current.sequence.to_string())
+            .retry(Duration::from_secs(3))
+            .data(payload.to_string());
+        Some((Ok::<Event, Infallible>(event), current))
+    });
+    let mut response = Sse::new(events)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("monitoring-keepalive"),
+        )
+        .into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    response.headers_mut().insert(
+        HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    response
+}
+
+async fn admin_account_create(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    match state.native_auth.as_ref() {
+        Some(auth) => auth.create_admin_account(request).await,
+        None => failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "admin_unavailable",
+            "Administrasi akun hanya tersedia pada API utama.",
+        ),
+    }
+}
+
+async fn admin_account_update(
+    State(state): State<Arc<AppState>>,
+    Path(user_id): Path<String>,
+    request: Request,
+) -> Response {
+    match state.native_auth.as_ref() {
+        Some(auth) => auth.update_admin_account(request, user_id).await,
+        None => failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "admin_unavailable",
+            "Administrasi akun hanya tersedia pada API utama.",
+        ),
+    }
+}
+
+async fn admin_account_delete(
+    State(state): State<Arc<AppState>>,
+    Path(user_id): Path<String>,
+    request: Request,
+) -> Response {
+    match state.native_auth.as_ref() {
+        Some(auth) => auth.delete_admin_account(request, user_id).await,
+        None => failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "admin_unavailable",
+            "Administrasi akun hanya tersedia pada API utama.",
+        ),
     }
 }
 
@@ -743,6 +994,7 @@ async fn main() {
         native_database,
         native_auth,
         native_api,
+        monitoring_connections: Arc::new(AtomicUsize::new(0)),
     });
 
     let request_id_header = HeaderName::from_static(REQUEST_ID_HEADER);
@@ -754,8 +1006,37 @@ async fn main() {
         .route("/api/v1/openapi.json", get(openapi_document))
         .route("/api/v1/graphql/schema", get(graphql_schema))
         .route("/api/v1/auth/login", axum::routing::post(auth_login))
+        .route(
+            "/api/v1/auth/invite/complete",
+            axum::routing::post(auth_complete_invite),
+        )
+        .route(
+            "/api/v1/auth/mfa/enroll",
+            axum::routing::post(auth_mfa_enroll),
+        )
+        .route(
+            "/api/v1/auth/mfa/challenge",
+            axum::routing::post(auth_mfa_challenge),
+        )
+        .route(
+            "/api/v1/auth/mfa/verify",
+            axum::routing::post(auth_mfa_verify),
+        )
         .route("/api/v1/auth/logout", axum::routing::post(auth_logout))
         .route("/api/v1/auth/session", get(auth_session))
+        .route("/api/v1/auth/presence", axum::routing::post(auth_presence))
+        .route(
+            "/api/v1/admin/accounts",
+            get(admin_accounts).post(admin_account_create),
+        )
+        .route(
+            "/api/v1/admin/accounts/{user_id}",
+            patch(admin_account_update).delete(admin_account_delete),
+        )
+        .route(
+            "/api/v1/admin/monitoring/stream",
+            get(admin_monitoring_stream),
+        )
         .route("/api/v1/me", get(current_profile))
         .route("/api/{*path}", any(api_dispatch))
         .route("/internal/{*path}", any(migration_proxy))
@@ -824,5 +1105,20 @@ mod tests {
         assert!(component_configured(Some(&payload), "database"));
         assert!(!component_configured(Some(&payload), "queue"));
         assert!(!component_configured(None, "database"));
+    }
+
+    #[test]
+    fn realtime_monitoring_connections_are_bounded_and_released() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let guards: Vec<_> = (0..ADMIN_MONITORING_CONNECTION_LIMIT)
+            .map(|_| acquire_monitoring_connection(active.clone()).expect("connection slot"))
+            .collect();
+        assert_eq!(
+            active.load(Ordering::Acquire),
+            ADMIN_MONITORING_CONNECTION_LIMIT
+        );
+        assert!(acquire_monitoring_connection(active.clone()).is_none());
+        drop(guards);
+        assert_eq!(active.load(Ordering::Acquire), 0);
     }
 }

@@ -32,6 +32,11 @@ services:
     depends_on:
       redis-cache:
         condition: service_healthy
+    # Podman memilih gateway dari network terakhir untuk host.containers.internal.
+    # Kunci nama host database ke bridge aplikasi tempat PostgreSQL mendengar.
+    extra_hosts:
+      - "host.containers.internal:10.89.0.1"
+      - "host.docker.internal:10.89.0.1"
     networks:
       - default
       - dynamic-cache

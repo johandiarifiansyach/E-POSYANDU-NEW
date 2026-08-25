@@ -75,6 +75,59 @@ sinkronisasi, dashboard, dan laporan inti memakai PostgreSQL Oracle langsung.
 Endpoint job Queue/R2 beserta endpoint internal worker tetap satu kesatuan pada
 jalur legacy sampai penyimpanan berkasnya dimigrasikan.
 
+### Aktivasi akun `super_admin`
+
+Akun `super_admin` baru dibuat melalui undangan Supabase Auth dan profil
+`app_users` Oracle dengan scope global. Jangan membuat password sementara atau
+mengirim password melalui chat. Pemilik akun melakukan aktivasi berikut:
+
+1. Buka email undangan dan pastikan tautan menuju domain `eposyandu.app`.
+2. Tetapkan password unik minimal 14 karakter dengan huruf besar, huruf kecil,
+   angka, dan simbol.
+3. Daftarkan TOTP dari halaman MFA, kemudian verifikasi kode enam digit pertama.
+4. Simpan 10 recovery code yang hanya ditampilkan sekali pada media offline.
+5. Login ulang dan pastikan nama `Administrator` tampil di pojok kanan atas.
+
+Passkey dapat dijadikan metode utama setelah Passkeys diaktifkan pada Supabase
+Dashboard. Selama pengaturan project itu masih nonaktif, gunakan TOTP. Login
+password `super_admin` hanya menghasilkan session MFA sementara selama lima
+menit; session tersebut tidak boleh membaca data sampai MFA berhasil. Recovery
+code bersifat satu kali pakai dan hanya hash-nya yang disimpan terenkripsi pada
+session store Oracle.
+
+Pada Supabase production, `Authentication > URL Configuration` wajib memakai:
+
+- Site URL: `https://eposyandu.app`
+- Redirect URL aktivasi undangan: `https://eposyandu.app/`
+- Redirect URL pemulihan admin: `https://eposyandu.app/admin/activate`
+
+Gunakan URL persis tersebut agar callback tidak kembali ke nilai default
+`http://localhost:3000`. Callback `recovery` hanya diterima frontend pada path
+khusus `/admin/activate`; fragment token dihapus dari address bar sebelum form
+password ditampilkan.
+
+Untuk audit aktivasi, periksa keberadaan tepat satu profil `super_admin`, status
+email/MFA pada Auth, event login/MFA, dan jumlah role akun lama. Jangan mencetak
+JWT, secret TOTP, QR, recovery code, atau isi file `/run/e-posyandu/*.env` ke log.
+
+### Administrasi backend dan presence akun
+
+Halaman penuh `Administrasi Backend` hanya muncul pada menu profil
+`Administrator`, tepat di atas `Keluar Sistem`. Backend endpoint
+`GET /api/v1/admin/accounts` tetap memeriksa role `super_admin` dan sesi MFA
+terverifikasi, sehingga menyembunyikan menu bukan satu-satunya pengamanan.
+Halaman menampilkan kesiapan layanan backend, cakupan akses global, jumlah akun,
+serta status aktivitas tiap akun. Halaman ini tidak membuka shell, secret, token,
+atau konsol SQL langsung.
+
+Frontend mengirim heartbeat terautentikasi ke `POST /api/v1/auth/presence` setiap
+60 detik ketika tab terlihat dan perangkat online. Akun dinyatakan `online` jika
+aktif dan memiliki aktivitas dalam 180 detik terakhir; selain itu ditampilkan
+`offline`. Oracle menyimpan hash ID akun dan hash sesi beserta waktu aktivitas
+terakhir di SQLite operasional; identifier presence hanya berupa hash, sedangkan
+payload sesi disimpan terenkripsi AES-256-GCM. Presence lebih lama dari 90 hari
+dibersihkan otomatis dan baris sesi aktif dihapus saat logout.
+
 Container service memakai filesystem read-only, pengguna non-root, seluruh
 Linux capability dibuang, batas proses/memori/CPU, dan log lokal berotasi.
 File persisten `/etc/e-posyandu/*.env` hanya berisi konfigurasi non-secret dan
@@ -91,6 +144,14 @@ worker hanya boleh memakai namespace metrik tersebut melalui policy:
 ```text
 Allow dynamic-group eposyandu-grpc-worker-dg to use metrics in tenancy where target.metrics.namespace='eposyandu'
 ```
+
+Halaman `Akses Backend Penuh > Monitoring` memakai SSE terautentikasi pada
+`GET /api/v1/admin/monitoring/stream`. Stream hanya dapat dibuka oleh
+`super_admin` dengan MFA aktif, dibatasi empat koneksi, dan mengambil sampel
+CPU, memori, load, disk, jaringan, serta health layanan setiap lima detik.
+Frontend membuka stream hanya saat tab Monitoring terlihat dan langsung
+menutupnya saat pengguna berpindah tab, browser disembunyikan, jaringan offline,
+atau halaman dilepas. Stream tidak memuat data kesehatan maupun identitas akun.
 
 Buat topic OCI Notifications khusus operasional, lalu buat alarm berikut pada
 Monitoring dengan topic tersebut sebagai destination:
@@ -135,6 +196,10 @@ SMOKE_API_URL='https://api.eposyandu.app' \
 npm run deployment:smoke
 ```
 
+Primary production yang diharapkan secara default adalah `oracle-postgresql`.
+Untuk menguji Worker rollback secara khusus, tambahkan
+`SMOKE_EXPECTED_DATABASE=supabase` dan arahkan `SMOKE_API_URL` ke Worker tersebut.
+
 Untuk staging, `SMOKE_SESSION_COOKIE` opsional dapat diisi sesaat dengan pasangan nama/nilai cookie sesi, misalnya `__Host-e-posyandu-session=...`. Alternatif kompatibilitasnya adalah `SMOKE_ACCESS_TOKEN`. Keduanya menambahkan pemeriksaan endpoint sesi serta riwayat terautentikasi dan memastikan token tidak muncul di respons. Kredensial ini berumur pendek: jangan simpan sebagai file, log, atau secret jangka panjang. Workflow terjadwal tetap menguji penolakan sesi anonim ketika secret tidak tersedia.
 
 ## Audit dan dokumentasi API
@@ -172,7 +237,7 @@ Pantau setiap hari pada masa awal rilis:
 | Request, subrequest, CPU, bandwidth | Cloudflare Workers > Metrics | Cari endpoint dengan lonjakan subrequest atau waktu CPU |
 | Egress database | Supabase > Usage | Bandingkan pemakaian harian; periksa ekspor besar dan full sync |
 | Login dibatasi | Log status 429 dan Upstash | Pastikan bukan salah konfigurasi Redis atau serangan berulang |
-| Nutrition worker | Dashboard Admin Gizi dan key Redis `monitoring:nutrition-worker:v1` | Alarm setelah 3 kegagalan beruntun; periksa Oracle, Caddy, dan Queue |
+| Nutrition worker | Dashboard Ahli Gizi dan key Redis `monitoring:nutrition-worker:v1` | Alarm setelah 3 kegagalan beruntun; periksa Oracle, Caddy, dan Queue |
 
 Jangan menulis NIK, KK, nama balita, token, password, atau isi formulir ke log runtime.
 
@@ -238,7 +303,7 @@ Error JavaScript setelah pengguna login dikirim ke `POST /api/v1/client-errors`.
 
 Pelanggaran Content Security Policy dikirim browser ke `POST /api/v1/security/csp-report`. Endpoint publik ini membatasi isi 16 KiB dan 60 laporan per IP per jam. Log hanya menyimpan directive, disposition, status HTTP, URL dokumen tanpa kredensial/query/fragment, serta origin sumber yang diblokir. IP mentah, `script-sample`, policy lengkap, referrer, NIK, dan isi form tidak dicatat.
 
-Cron memeriksa `RUST_WORKER_HEALTH_URL` setiap 10 menit pada Senin-Jumat pukul 07.00-16.00 WIB. Di luar jam tersebut Render dibiarkan sleep. Status sementara disimpan di Redis dan dibaca dashboard hanya oleh Admin Gizi. Untuk alarm di luar aplikasi, isi secret HTTPS `MONITORING_ALERT_WEBHOOK_URL`, atau isi `RESEND_API_KEY`, `MONITORING_ALERT_EMAIL_TO`, dan `ERROR_REPORT_EMAIL_FROM`. Alarm dikirim saat kegagalan ketiga dan sekali lagi saat layanan pulih, tanpa membawa data balita.
+Cron memeriksa `RUST_WORKER_HEALTH_URL` setiap 10 menit pada Senin-Jumat pukul 07.00-16.00 WIB. Di luar jam tersebut Render dibiarkan sleep. Status sementara disimpan di Redis dan dibaca dashboard hanya oleh Ahli Gizi. Untuk alarm di luar aplikasi, isi secret HTTPS `MONITORING_ALERT_WEBHOOK_URL`, atau isi `RESEND_API_KEY`, `MONITORING_ALERT_EMAIL_TO`, dan `ERROR_REPORT_EMAIL_FROM`. Alarm dikirim saat kegagalan ketiga dan sekali lagi saat layanan pulih, tanpa membawa data balita.
 
 ## Backup dan uji restore
 
@@ -278,7 +343,7 @@ LOAD_GRPC_ITEMS=250 \
 npm run grpc:load
 ```
 
-Alur production lengkap REST -> Queue -> worker gRPC diuji secara manual melalui workflow `load-test.yml`. Buat GitHub Environment `load-test`, lalu isi secret `LOAD_SUPABASE_URL`, `LOAD_SUPABASE_PUBLISHABLE_KEY`, `LOAD_TEST_EMAIL`, dan `LOAD_TEST_PASSWORD`. Email dan kata sandi harus milik akun khusus pengujian yang memiliki akses Admin Gizi. Workflow membuat access token baru pada awal setiap pengujian, sehingga token sesi yang kedaluwarsa tidak perlu disimpan. Setelah itu pilih **Actions > Queue and gRPC Load Test > Run workflow**. Batas keras script adalah 50 job, paralel 10, dan 1.000 data sintetis per job agar pengujian tidak menghabiskan kuota gratis secara tidak sengaja.
+Alur production lengkap REST -> Queue -> worker gRPC diuji secara manual melalui workflow `load-test.yml`. Buat GitHub Environment `load-test`, lalu isi secret `LOAD_SUPABASE_URL`, `LOAD_SUPABASE_PUBLISHABLE_KEY`, `LOAD_TEST_EMAIL`, dan `LOAD_TEST_PASSWORD`. Email dan kata sandi harus milik akun khusus pengujian yang memiliki akses Ahli Gizi. Workflow membuat access token baru pada awal setiap pengujian, sehingga token sesi yang kedaluwarsa tidak perlu disimpan. Setelah itu pilih **Actions > Queue and gRPC Load Test > Run workflow**. Batas keras script adalah 50 job, paralel 10, dan 1.000 data sintetis per job agar pengujian tidak menghabiskan kuota gratis secara tidak sengaja.
 
 ## Konflik sinkronisasi offline
 
@@ -288,7 +353,7 @@ Setiap update dan hapus membawa `version` serta `updatedAt` yang terakhir diliha
 
 PostgreSQL tetap menjadi sumber data tunggal. IndexedDB menyimpan cache dan antrean offline per perangkat. Redis menyimpan data domain dinamis selama maksimal 60 detik, dipisahkan menurut cakupan akses, serta state backend yang memiliki TTL masing-masing. Cloudflare KV hanya menyimpan data global yang jarang berubah seperti feature flag, menu, dan referensi; KV tidak menyimpan data balita, penimbangan, sesi, atau token.
 
-Cloudflare R2 aktif untuk hasil ekspor besar dan lampiran privat. Jalur upload worker dibatasi 50 MB, berkas hanya dapat diunduh oleh pemilik job atau Admin Gizi, dan PostgreSQL hanya menyimpan metadata objek.
+Cloudflare R2 aktif untuk hasil ekspor besar dan lampiran privat. Jalur upload worker dibatasi 50 MB, berkas hanya dapat diunduh oleh pemilik job atau Ahli Gizi, dan PostgreSQL hanya menyimpan metadata objek.
 
 Bucket memakai kelas Standard. Objek sementara `jobs/` kedaluwarsa setelah 7 hari. Cron Worker memeriksa kapasitas bersama jadwal jam kerja; ketika total mencapai 9 GiB, file job tertua dihapus sampai kapasitas turun ke 8 GiB. Batas pengaman ini sengaja lebih rendah dari jatah gratis 10 GB. Lampiran permanen tidak dihapus otomatis.
 
@@ -298,6 +363,6 @@ Saat membuat environment Cloudflare baru, aktivasi akun R2 dilakukan satu kali m
 npm run r2:prepare
 ```
 
-Kemudian deploy Worker dan pastikan endpoint monitoring menampilkan `r2Configured: true`. Admin Gizi menerima peringatan bila kapasitas tidak dapat diturunkan karena file yang tersisa bukan file sementara.
+Kemudian deploy Worker dan pastikan endpoint monitoring menampilkan `r2Configured: true`. Ahli Gizi menerima peringatan bila kapasitas tidak dapat diturunkan karena file yang tersisa bukan file sementara.
 
 MQTT sengaja tidak dipasang sebelum ada timbangan digital atau sensor IoT. Keputusan dan syarat keamanannya tercatat di `docs/decisions/001-mqtt-deferred.md`.

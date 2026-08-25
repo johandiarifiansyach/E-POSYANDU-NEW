@@ -9,8 +9,13 @@ export const DATA_WILAYAH = {
 export const ROLES = {
     KADER: "Kader Posyandu",
     BIDAN: "Bidan Desa",
-    GIZI: "Ahli Gizi"
+    GIZI: "Ahli Gizi",
+    SUPER_ADMIN: "super_admin"
 };
+
+export function isFullAccessRole(role: string): boolean {
+    return role === ROLES.GIZI || role === ROLES.SUPER_ADMIN;
+}
 
 export const DASHBOARD_TABS = [
     'dashboard',
@@ -26,7 +31,8 @@ export const DASHBOARD_TABS = [
     'change_history',
     'recycle_bin',
     'add_child',
-    'measurement'
+    'measurement',
+    'admin_backend'
 ];
 
 export const COMPACT_SIDEBAR_MEDIA_QUERY = '(min-width: 768px), (orientation: landscape) and (min-width: 560px)';

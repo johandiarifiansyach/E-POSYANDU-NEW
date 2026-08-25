@@ -34,17 +34,17 @@ const {
     getFirestore, collection, addDoc, query, where, onSnapshot, serverTimestamp,
     updateDoc, doc, deleteDoc, getDocs, getDocsForExport, getCachedChildrenPage,
     getChangeHistory, getChildDetail, getChildrenPage, getDashboardStats,
-    getMonitoringStatus, getSigiziMeasurementExport, initializeApp,
+    getMonitoringStatus, getSigiziMeasurementExport, initializeApp, reportAccountPresence,
     listSyncConflicts, resolveSyncConflict, subscribeToSyncConflicts,
     subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations,
-    orderBy, DATA_WILAYAH, ROLES, DASHBOARD_TABS, COMPACT_SIDEBAR_MEDIA_QUERY,
+    orderBy, DATA_WILAYAH, ROLES, isFullAccessRole, DASHBOARD_TABS, COMPACT_SIDEBAR_MEDIA_QUERY,
     MONTHS, YEARS, formatChildName, getKBM, formatDate, formatIndoDate,
     formatIndoDateTime, getAgeInMonths, calculateZScore, calculateGiziStatus,
     generateRandomDigits, normalizeDecimalInput, parseLocaleNumber,
     parseLocaleNumberForRange, ensureXlsx, Card, Button, InputGroup, Select,
     LocationFilterPanel, Badge, KenaikanBadge, StatusBadge,
     getPreferredColorScheme, saveColorScheme, subscribeColorScheme,
-    Ruler, LogOut, Plus, MapPin, Clock, Baby, XCircle, ChevronDown,
+    Activity, Ruler, LogOut, Plus, MapPin, Clock, Baby, XCircle, ChevronDown,
     ChevronLeft, ChevronRight, Loader2, LayoutDashboard, Users, Trash2, Menu,
     AlertTriangle, TrendingDown, AlertCircle, Minus, Utensils, Gift,
     ClipboardCheck, CheckSquare, History, Filter, RotateCcw, UserRound, X,
@@ -54,6 +54,7 @@ const {
 
 const {
     dashboard: DashboardOverviewPage,
+    admin_backend: AdminBackendPage,
     pmt_program: PmtProgramPage,
     change_history: ChangeHistoryPage,
     data_balita: ChildrenTablePage,
@@ -72,6 +73,7 @@ const EMPTY_DASHBOARD_STATS = {
 export { EMPTY_DASHBOARD_STATS };
 
 export const Dashboard = ({ user, onLogout }) => {
+    const canWrite = user.accessMode !== 'read';
     const [children, setChildren] = useState([]);
     const [monthlyMeasurements, setMonthlyMeasurements] = useState({});
     const [pmtPrograms, setPmtPrograms] = useState([]);
@@ -93,7 +95,12 @@ export const Dashboard = ({ user, onLogout }) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [searchDraft, setSearchDraft] = useState('');
     const [sortOrder, setSortOrder] = useState('recent');
-    const [activeTab, setActiveTab] = useState(() => getDashboardHashState().tab);
+    const [activeTab, setActiveTab] = useState(() => {
+        const requestedTab = getDashboardHashState().tab;
+        return requestedTab === 'admin_backend' && user.role !== ROLES.SUPER_ADMIN
+            ? 'dashboard'
+            : requestedTab;
+    });
     const [measurementChildId, setMeasurementChildId] = useState(() => getDashboardHashState().measurementChildId);
     const [selectedMeasurementChild, setSelectedMeasurementChild] = useState(null);
     const [measurementBackTab, setMeasurementBackTab] = useState('data_balita');
@@ -104,9 +111,9 @@ export const Dashboard = ({ user, onLogout }) => {
     const [colorScheme, setColorScheme] = useState(() => getPreferredColorScheme());
     const [filterMonth, setFilterMonth] = useState(new Date().getMonth() + 1);
     const [filterYear, setFilterYear] = useState(new Date().getFullYear());
-    const [viewDesa, setViewDesa] = useState(user.role === ROLES.GIZI ? '' : (user.desa || ''));
+    const [viewDesa, setViewDesa] = useState(isFullAccessRole(user.role) ? '' : (user.desa || ''));
     const [viewPosyandu, setViewPosyandu] = useState(user.role === ROLES.KADER ? (user.posyandu || '') : '');
-    const [draftDesa, setDraftDesa] = useState(user.role === ROLES.GIZI ? '' : (user.desa || ''));
+    const [draftDesa, setDraftDesa] = useState(isFullAccessRole(user.role) ? '' : (user.desa || ''));
     const [draftPosyandu, setDraftPosyandu] = useState(user.role === ROLES.KADER ? (user.posyandu || '') : '');
     const fileInputRef = useRef(null);
     const accountMenuRef = useRef(null);
@@ -133,6 +140,21 @@ export const Dashboard = ({ user, onLogout }) => {
         };
     }, [isAccountMenuOpen]);
     useEffect(() => setIsAccountMenuOpen(false), [activeTab]);
+    useEffect(() => {
+        const pulse = () => {
+            if (document.visibilityState === 'visible' && navigator.onLine)
+                void reportAccountPresence().catch(() => undefined);
+        };
+        pulse();
+        const intervalId = window.setInterval(pulse, 60_000);
+        document.addEventListener('visibilitychange', pulse);
+        window.addEventListener('online', pulse);
+        return () => {
+            window.clearInterval(intervalId);
+            document.removeEventListener('visibilitychange', pulse);
+            window.removeEventListener('online', pulse);
+        };
+    }, []);
     useEffect(() => {
         const compactLayout = window.matchMedia(COMPACT_SIDEBAR_MEDIA_QUERY);
         const handleLayoutChange = (event) => {
@@ -179,12 +201,17 @@ export const Dashboard = ({ user, onLogout }) => {
     useEffect(() => {
         const syncTabFromHash = () => {
             const hashState = getDashboardHashState();
-            setActiveTab(hashState.tab);
-            setMeasurementChildId(hashState.measurementChildId);
+            const protectedWriteTab = !canWrite && (hashState.tab === 'add_child' || hashState.tab === 'measurement');
+            const allowedTab = (hashState.tab === 'admin_backend' && user.role !== ROLES.SUPER_ADMIN) || protectedWriteTab
+                ? 'dashboard' : hashState.tab;
+            if (allowedTab !== hashState.tab)
+                window.history.replaceState(null, '', '#dashboard');
+            setActiveTab(allowedTab);
+            setMeasurementChildId(allowedTab === 'measurement' ? hashState.measurementChildId : null);
         };
         window.addEventListener('hashchange', syncTabFromHash);
         return () => window.removeEventListener('hashchange', syncTabFromHash);
-    }, []);
+    }, [user.role, canWrite]);
     useEffect(() => {
         let refreshTimer;
         const unsubscribe = subscribeToSyncedMutations(() => {
@@ -221,13 +248,13 @@ export const Dashboard = ({ user, onLogout }) => {
     // Fetch Children
     useEffect(() => {
         const hasSelectedMeasurement = activeTab === 'measurement' && selectedMeasurementChild?.id === measurementChildId;
-        if (activeTab === 'dashboard' || activeTab === 'asi_eksklusif' || isServerPagedChildTab || hasSelectedMeasurement) {
+        if (activeTab === 'dashboard' || activeTab === 'admin_backend' || activeTab === 'asi_eksklusif' || isServerPagedChildTab || hasSelectedMeasurement) {
             setChildrenPageState({ status: 'idle' });
             return;
         }
         setChildrenPageState({ status: 'loading' });
         const childrenCollection = collection(db, 'artifacts', appId, 'public', 'data', 'children');
-        const scopedDesa = user.role === ROLES.GIZI ? viewDesa : user.desa;
+        const scopedDesa = isFullAccessRole(user.role) ? viewDesa : user.desa;
         const scopedPosyandu = user.role === ROLES.KADER ? user.posyandu : viewPosyandu;
         let q = query(childrenCollection);
         if (scopedDesa && scopedPosyandu) {
@@ -292,7 +319,7 @@ export const Dashboard = ({ user, onLogout }) => {
     }, [activeTab, changeHistoryPage, changeHistoryRevision]);
     // Fetch Monthly Measurements
     useEffect(() => {
-        if (activeTab === 'dashboard' || activeTab === 'asi_eksklusif' || isServerPagedChildTab) {
+        if (activeTab === 'dashboard' || activeTab === 'admin_backend' || activeTab === 'asi_eksklusif' || isServerPagedChildTab) {
             setMonthlyMeasurements({});
             setMeasurementsPageState({ status: 'idle' });
             return;
@@ -303,7 +330,7 @@ export const Dashboard = ({ user, onLogout }) => {
         const startStr = `${y}-${m}-01`;
         const endStr = `${y}-${m}-31`;
         const measurementsCollection = collection(db, 'artifacts', appId, 'public', 'data', 'measurements');
-        const scopedDesa = user.role === ROLES.GIZI ? viewDesa : user.desa;
+        const scopedDesa = isFullAccessRole(user.role) ? viewDesa : user.desa;
         const scopedPosyandu = user.role === ROLES.KADER ? user.posyandu : viewPosyandu;
         let q = query(measurementsCollection, where('tglUkur', '>=', startStr), where('tglUkur', '<=', endStr));
         if (scopedDesa && scopedPosyandu) {
@@ -473,7 +500,7 @@ export const Dashboard = ({ user, onLogout }) => {
         };
     }, [activeTab, dataRevision, filterMonth, filterYear, viewDesa, viewPosyandu]);
     useEffect(() => {
-        if (activeTab !== 'dashboard' || user.role !== ROLES.GIZI) {
+        if (activeTab !== 'dashboard' || !isFullAccessRole(user.role)) {
             setMonitoringStatus(null);
             return;
         }
@@ -525,6 +552,8 @@ export const Dashboard = ({ user, onLogout }) => {
         setMpasiLogs({});
     }, [activeTab, filterMonth, filterYear]);
     useEffect(() => {
+        if (activeTab === 'admin_backend')
+            return;
         const timer = window.setTimeout(() => {
             void syncActiveViewFromServer().catch((error) => {
                 console.warn('Pembaruan data otomatis dilewati:', error);
@@ -568,7 +597,10 @@ export const Dashboard = ({ user, onLogout }) => {
         const message = error instanceof Error ? error.message : 'Permintaan tidak dapat diproses.';
         setErrorMsg(`Gagal ${action}: ${message}`);
     };
-    const handleDeleteConfirm = async (id, deleteData) => { try {
+    const handleDeleteConfirm = async (id, deleteData) => { if (!canWrite) {
+        setErrorMsg('Akun ini hanya memiliki hak baca.');
+        return;
+    } try {
         setErrorMsg(null);
         await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', id), { deletedAt: serverTimestamp(), ...deleteData });
         removeChildFromCurrentPage(id);
@@ -581,7 +613,10 @@ export const Dashboard = ({ user, onLogout }) => {
         setChildToDelete(null);
         childMutationError('menghapus data balita', e);
     } };
-    const handleRestore = async (id) => { if (!id)
+    const handleRestore = async (id) => { if (!canWrite) {
+        setErrorMsg('Akun ini hanya memiliki hak baca.');
+        return;
+    } if (!id)
         return; try {
         setErrorMsg(null);
         await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', id), { deletedAt: null, deleteReason: null, deathDate: null, deathCause: null, deathLocation: null });
@@ -593,7 +628,10 @@ export const Dashboard = ({ user, onLogout }) => {
         console.error('Gagal memulihkan balita:', e);
         childMutationError('memulihkan data balita', e);
     } };
-    const handlePermanentDelete = async (id) => { if (!id)
+    const handlePermanentDelete = async (id) => { if (!canWrite) {
+        setErrorMsg('Akun ini hanya memiliki hak baca.');
+        return;
+    } if (!id)
         return; try {
         setErrorMsg(null);
         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', id));
@@ -606,6 +644,10 @@ export const Dashboard = ({ user, onLogout }) => {
         childMutationError('menghapus permanen data balita', e);
     } };
     const handleOpenPmtMonitoring = async (program, availableChild) => {
+        if (!canWrite) {
+            setErrorMsg('Akun ini hanya memiliki hak baca.');
+            return false;
+        }
         try {
             setErrorMsg(null);
             let child = availableChild;
@@ -630,6 +672,10 @@ export const Dashboard = ({ user, onLogout }) => {
         }
     };
     const handleDeletePmt = async (program) => {
+        if (!canWrite) {
+            setErrorMsg('Akun ini hanya memiliki hak baca.');
+            return;
+        }
         if (!program.id || !window.confirm(`Hapus program PMT untuk ${program.childName}? Data pemantauan mingguannya juga akan dihapus.`))
             return;
         try {
@@ -646,6 +692,11 @@ export const Dashboard = ({ user, onLogout }) => {
         }
     };
     const handleImportIdentitas = async (e) => {
+        if (!canWrite) {
+            setErrorMsg('Akun ini hanya memiliki hak baca.');
+            if (e.target) e.target.value = '';
+            return;
+        }
         const file = e.target.files?.[0];
         if (!file)
             return;
@@ -674,7 +725,7 @@ export const Dashboard = ({ user, onLogout }) => {
                 throw new Error('Kolom nama_anak dan tgl_lahir wajib tersedia.');
                 let importedCount = 0;
                 let importDesa = user.desa || '', importPosyandu = user.posyandu || '';
-                if (user.role === ROLES.GIZI) {
+                if (isFullAccessRole(user.role)) {
                     if (!viewDesa || !viewPosyandu)
                         return;
                     importDesa = viewDesa;
@@ -942,11 +993,11 @@ export const Dashboard = ({ user, onLogout }) => {
         setCurrentPage(1);
     };
     const handleApplyLocationFilter = () => {
-        setViewDesa(user.role === ROLES.GIZI ? draftDesa : (user.desa || ''));
+        setViewDesa(isFullAccessRole(user.role) ? draftDesa : (user.desa || ''));
         setViewPosyandu(user.role === ROLES.KADER ? (user.posyandu || '') : draftPosyandu);
     };
     const handleResetLocationFilter = () => {
-        const defaultDesa = user.role === ROLES.GIZI ? '' : (user.desa || '');
+        const defaultDesa = isFullAccessRole(user.role) ? '' : (user.desa || '');
         const defaultPosyandu = user.role === ROLES.KADER ? (user.posyandu || '') : '';
         setDraftDesa(defaultDesa);
         setDraftPosyandu(defaultPosyandu);
@@ -959,6 +1010,10 @@ export const Dashboard = ({ user, onLogout }) => {
         return children.find((child) => child.id === measurementChildId) || null;
     }, [children, measurementChildId, selectedMeasurementChild]);
     const handleOpenMeasurementPage = (child) => {
+        if (!canWrite) {
+            setErrorMsg('Akun ini hanya memiliki hak baca.');
+            return;
+        }
         if (!child.id)
             return;
         const backTab = activeTab === 'measurement' ? measurementBackTab : activeTab;
@@ -971,6 +1026,10 @@ export const Dashboard = ({ user, onLogout }) => {
             window.location.hash = targetHash;
     };
     const handleOpenEditChild = async (child) => {
+        if (!canWrite) {
+            setErrorMsg('Akun ini hanya memiliki hak baca.');
+            return;
+        }
         if (!child?.id)
             return;
         try {
@@ -991,6 +1050,10 @@ export const Dashboard = ({ user, onLogout }) => {
             window.location.hash = backTab;
     };
     const handleOpenAddChildPage = () => {
+        if (!canWrite) {
+            setErrorMsg('Akun ini hanya memiliki hak baca.');
+            return;
+        }
         const backTab = activeTab === 'measurement' || activeTab === 'add_child' ? 'data_balita' : activeTab;
         setAddChildBackTab(backTab);
         setActiveTab('add_child');
@@ -998,17 +1061,28 @@ export const Dashboard = ({ user, onLogout }) => {
         if (window.location.hash !== '#add_child')
             window.location.hash = 'add_child';
     };
+    const handleOpenAdminBackend = () => {
+        if (user.role !== ROLES.SUPER_ADMIN)
+            return;
+        setIsAccountMenuOpen(false);
+        setActiveTab('admin_backend');
+        setMeasurementChildId(null);
+        if (window.location.hash !== '#admin_backend')
+            window.location.hash = 'admin_backend';
+    };
     const handleBackFromAddChild = () => {
         const backTab = addChildBackTab === 'add_child' || addChildBackTab === 'measurement' ? 'data_balita' : addChildBackTab;
         setActiveTab(backTab);
         if (window.location.hash !== `#${backTab}`)
             window.location.hash = backTab;
     };
-    const accountName = user.role === ROLES.KADER
+    const accountName = user.role === ROLES.SUPER_ADMIN
+        ? 'Administrator'
+        : user.role === ROLES.KADER
         ? `Posyandu ${formatChildName(user.posyandu || '')}`.trim()
         : user.role === ROLES.BIDAN
             ? user.desa || 'Desa'
-            : 'Admin Gizi';
+            : ROLES.GIZI;
     const accountDescription = user.role === ROLES.KADER
         ? user.desa || ROLES.KADER
         : user.role === ROLES.BIDAN
@@ -1028,7 +1102,8 @@ export const Dashboard = ({ user, onLogout }) => {
         recent: 'Balita Baru Diinput',
         change_history: 'Riwayat Perubahan',
         recycle_bin: 'Daftar Dihapus',
-        measurement: 'Penimbangan Balita'
+        measurement: 'Penimbangan Balita',
+        admin_backend: 'Administrasi Backend'
     };
     const pageTitle = pageTitles[activeTab] || 'E-Posyandu';
     const handleResolveSyncConflict = async (conflictId, resolution) => {
@@ -1122,7 +1197,7 @@ export const Dashboard = ({ user, onLogout }) => {
                 Native.createElement(SidebarItem, { id: "pmt_program", label: "Pemberian PMT", icon: Gift }),
                 Native.createElement("div", { className: "sidebar-nav-spacer" }),
                 Native.createElement("p", { className: "sidebar-section-label" }, "Manajemen Data"),
-                Native.createElement(SidebarItem, { id: "add_child", label: "Tambah Balita", icon: Plus, onClick: handleOpenAddChildPage }),
+                canWrite && Native.createElement(SidebarItem, { id: "add_child", label: "Tambah Balita", icon: Plus, onClick: handleOpenAddChildPage }),
                 Native.createElement(SidebarItem, { id: "recent", label: "Balita Baru Diinput", icon: Clock }),
                 Native.createElement(SidebarItem, { id: "change_history", label: "Riwayat Perubahan", icon: History }),
                 Native.createElement(SidebarItem, { id: "recycle_bin", label: "Daftar Dihapus", icon: Trash2 }))),
@@ -1154,6 +1229,9 @@ export const Dashboard = ({ user, onLogout }) => {
                                 Native.createElement("p", { className: "truncate text-xs text-slate-500" }, accountDescription),
                                 Native.createElement("span", { className: "account-role-badge" }, user.role))),
                         Native.createElement("div", { className: "account-menu-divider" }),
+                        user.role === ROLES.SUPER_ADMIN && Native.createElement("button", { type: "button", role: "menuitem", className: "account-admin-button", onClick: handleOpenAdminBackend },
+                            Native.createElement(Activity, { className: "h-4 w-4" }),
+                            Native.createElement("span", null, "Akses Backend Penuh")),
                         Native.createElement("button", { type: "button", role: "menuitem", className: "account-logout-button", onClick: () => {
                                 setIsAccountMenuOpen(false);
                                 onLogout();
@@ -1161,6 +1239,11 @@ export const Dashboard = ({ user, onLogout }) => {
                             Native.createElement(LogOut, { className: "h-4 w-4" }),
                             Native.createElement("span", null, "Keluar Sistem"))))))),
             Native.createElement("main", { className: "app-content flex-1 p-4 sm:p-6 lg:p-8 overflow-x-hidden" },
+                !canWrite && Native.createElement("div", { role: "status", className: "read-only-access-banner mb-6" },
+                    Native.createElement(AlertCircle, { className: "h-5 w-5" }),
+                    Native.createElement("div", null,
+                        Native.createElement("strong", null, "Mode Hanya Baca"),
+                        Native.createElement("p", null, "Anda dapat melihat data sesuai wilayah akun, tetapi tidak dapat menambah, mengubah, atau menghapus data."))),
                 errorMsg && (!isDashboardTab || !errorMsg.startsWith("Gagal memuat ringkasan dashboard:")) && (Native.createElement("div", { role: "alert", className: "ios-inline-notification ios-inline-notification-error mb-6 flex items-center gap-3" },
                     Native.createElement(AlertTriangle, { className: "w-5 h-5 flex-shrink-0" }),
                     Native.createElement("p", { className: "text-sm font-medium" }, errorMsg))),
@@ -1174,15 +1257,15 @@ export const Dashboard = ({ user, onLogout }) => {
                             Native.createElement("div", { className: "mt-3 flex flex-wrap gap-2" },
                                 Native.createElement("button", { type: "button", className: "apple-button apple-button-primary bg-blue-600 px-4 py-2 text-sm font-semibold text-white", onClick: () => void handleResolveSyncConflict(syncConflicts[0].id, 'keep-local') }, "Gunakan Data Saya"),
                                 Native.createElement("button", { type: "button", className: "apple-button apple-button-secondary px-4 py-2 text-sm font-semibold", onClick: () => void handleResolveSyncConflict(syncConflicts[0].id, 'accept-server') }, "Gunakan Data Server")))))),
-                activeTab !== 'add_child' && activeTab !== 'measurement' && activeTab !== 'change_history' && (Native.createElement("div", { className: "mb-6" },
+                activeTab !== 'add_child' && activeTab !== 'measurement' && activeTab !== 'change_history' && activeTab !== 'admin_backend' && (Native.createElement("div", { className: "mb-6" },
                     Native.createElement(LocationFilterPanel, { draftDesa: draftDesa, draftPosyandu: draftPosyandu, filterMonth: filterMonth, filterYear: filterYear, onApply: handleApplyLocationFilter, onReset: handleResetLocationFilter, role: user.role, setDraftDesa: setDraftDesa, setDraftPosyandu: setDraftPosyandu, setFilterMonth: setFilterMonth, setFilterYear: setFilterYear, user: user }))),
-                Native.createElement(Native.Suspense, { fallback: Native.createElement(DashboardPageSkeleton, null) }, activeTab === 'add_child' ? (Native.createElement(AddChildPage, { allChildren: children, onBack: handleBackFromAddChild, onSuccess: handleBackFromAddChild, user: user })) : activeTab === 'measurement' ? (measurementChild ? (Native.createElement(MeasurementPage, { child: measurementChild, onBack: handleBackFromMeasurement })) : (Native.createElement(Card, { className: "p-8 text-center text-slate-500" }, childrenLoading ? 'Memuat data balita...' : 'Data balita tidak ditemukan atau tidak dapat diakses.'))) : activeTab === 'dashboard' ? (Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, pageState: dashboardPageState, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'asi_eksklusif' ? (Native.createElement(ExclusiveBreastfeedingPage, { filterMonth: filterMonth, filterYear: filterYear, refreshKey: dataRevision, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'pmt_program' ? (Native.createElement(PmtProgramPage, { childrenData: children, pmtPrograms: pmtPrograms, pageState: pmtPageState, onExportPmt: handleExportPmt, onDeleteProgram: handleDeletePmt, onOpenMonitoring: handleOpenPmtMonitoring })) : activeTab === 'change_history' ? (Native.createElement(ChangeHistoryPage, { changeLogs: changeLogs, loading: changeHistoryLoading, error: changeHistoryError, pageState: changeHistoryPageState, currentPage: changeHistoryPage, total: changeHistoryTotal, pageSize: 10, onPageChange: setChangeHistoryPage, onRetry: () => setChangeHistoryRevision((revision) => revision + 1) })) : (Native.createElement(ChildrenTablePage, { activeTab: activeTab, currentFilterDate: currentFilterDate, currentPage: currentPage, displayData: tableDisplayData, fileInputRef: fileInputRef, filterMonth: filterMonth, filterYear: filterYear, handleExportMpasi: handleExportMpasi, handleExportPengukuranSigizi: handleExportPengukuranSigizi, handleExportTable: handleExportTable, handleImportIdentitas: handleImportIdentitas, handlePermanentDelete: handlePermanentDelete, handleRestore: handleRestore, itemsPerPage: itemsPerPage, loading: tableLoading, pageState: pagedChildrenPageState, monthlyMeasurements: tableMeasurements, mpasiLogs: tableMpasiLogs, paginatedData: tablePaginatedData, searchTerm: searchTerm, searchDraft: searchDraft, setChildToDelete: setChildToDelete, setChildToMpasi: setChildToMpasi, setCurrentPage: setCurrentPage, onEditChild: handleOpenEditChild, setPmtModalData: setPmtModalData, setSearchDraft: setSearchDraft, onClearSearch: handleClearSearch, onSubmitSearch: handleSearchSubmit, onOpenMeasurement: handleOpenMeasurementPage, onOpenAddChild: handleOpenAddChildPage, setSortOrder: setSortOrder, sortOrder: sortOrder, totalDataCount: tableTotalCount, user: user })))),
+                Native.createElement(Native.Suspense, { fallback: Native.createElement(DashboardPageSkeleton, null) }, activeTab === 'admin_backend' ? (user.role === ROLES.SUPER_ADMIN ? Native.createElement(AdminBackendPage, null) : Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, pageState: dashboardPageState, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'add_child' ? (Native.createElement(AddChildPage, { allChildren: children, onBack: handleBackFromAddChild, onSuccess: handleBackFromAddChild, user: user })) : activeTab === 'measurement' ? (measurementChild ? (Native.createElement(MeasurementPage, { child: measurementChild, onBack: handleBackFromMeasurement })) : (Native.createElement(Card, { className: "p-8 text-center text-slate-500" }, childrenLoading ? 'Memuat data balita...' : 'Data balita tidak ditemukan atau tidak dapat diakses.'))) : activeTab === 'dashboard' ? (Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, pageState: dashboardPageState, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'asi_eksklusif' ? (Native.createElement(ExclusiveBreastfeedingPage, { filterMonth: filterMonth, filterYear: filterYear, refreshKey: dataRevision, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'pmt_program' ? (Native.createElement(PmtProgramPage, { childrenData: children, pmtPrograms: pmtPrograms, pageState: pmtPageState, onExportPmt: handleExportPmt, onDeleteProgram: handleDeletePmt, onOpenMonitoring: handleOpenPmtMonitoring })) : activeTab === 'change_history' ? (Native.createElement(ChangeHistoryPage, { changeLogs: changeLogs, loading: changeHistoryLoading, error: changeHistoryError, pageState: changeHistoryPageState, currentPage: changeHistoryPage, total: changeHistoryTotal, pageSize: 10, onPageChange: setChangeHistoryPage, onRetry: () => setChangeHistoryRevision((revision) => revision + 1) })) : (Native.createElement(ChildrenTablePage, { activeTab: activeTab, currentFilterDate: currentFilterDate, currentPage: currentPage, displayData: tableDisplayData, fileInputRef: fileInputRef, filterMonth: filterMonth, filterYear: filterYear, handleExportMpasi: handleExportMpasi, handleExportPengukuranSigizi: handleExportPengukuranSigizi, handleExportTable: handleExportTable, handleImportIdentitas: handleImportIdentitas, handlePermanentDelete: handlePermanentDelete, handleRestore: handleRestore, itemsPerPage: itemsPerPage, loading: tableLoading, pageState: pagedChildrenPageState, monthlyMeasurements: tableMeasurements, mpasiLogs: tableMpasiLogs, paginatedData: tablePaginatedData, searchTerm: searchTerm, searchDraft: searchDraft, setChildToDelete: setChildToDelete, setChildToMpasi: setChildToMpasi, setCurrentPage: setCurrentPage, onEditChild: handleOpenEditChild, setPmtModalData: setPmtModalData, setSearchDraft: setSearchDraft, onClearSearch: handleClearSearch, onSubmitSearch: handleSearchSubmit, onOpenMeasurement: handleOpenMeasurementPage, onOpenAddChild: handleOpenAddChildPage, setSortOrder: setSortOrder, sortOrder: sortOrder, totalDataCount: tableTotalCount, user: user, readOnly: !canWrite })))),
             Native.createElement("footer", { className: "app-footer" },
                 Native.createElement("p", null, "\u00A9 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach"),
                 Native.createElement("button", { type: "button", className: "app-version-button", onClick: openReleaseNotes, "aria-haspopup": "dialog", title: "Lihat apa yang baru" }, `E-Posyandu v${APP_VERSION}`))),
-        editingChild && (Native.createElement(AddChildModal, { user: user, isEdit: true, initialData: editingChild, onClose: () => setEditingChild(null), onSuccess: () => setEditingChild(null), allChildren: children })),
-        childToDelete && (Native.createElement(DeleteChildModal, { child: childToDelete, onClose: () => setChildToDelete(null), onConfirm: handleDeleteConfirm })),
-        childToMpasi && (Native.createElement(MpasiModal, { child: childToMpasi, onClose: () => setChildToMpasi(null) })),
-        pmtModalData && (Native.createElement(PmtModal, { child: pmtModalData.child, category: pmtModalData.category, onClose: () => setPmtModalData(null) })),
-        pmtMonitoringData && (Native.createElement(PmtMonitoringModal, { program: pmtMonitoringData.program, child: pmtMonitoringData.child, onClose: () => setPmtMonitoringData(null) }))));
+        canWrite && editingChild && (Native.createElement(AddChildModal, { user: user, isEdit: true, initialData: editingChild, onClose: () => setEditingChild(null), onSuccess: () => setEditingChild(null), allChildren: children })),
+        canWrite && childToDelete && (Native.createElement(DeleteChildModal, { child: childToDelete, onClose: () => setChildToDelete(null), onConfirm: handleDeleteConfirm })),
+        canWrite && childToMpasi && (Native.createElement(MpasiModal, { child: childToMpasi, onClose: () => setChildToMpasi(null) })),
+        canWrite && pmtModalData && (Native.createElement(PmtModal, { child: pmtModalData.child, category: pmtModalData.category, onClose: () => setPmtModalData(null) })),
+        canWrite && pmtMonitoringData && (Native.createElement(PmtMonitoringModal, { program: pmtMonitoringData.program, child: pmtMonitoringData.child, onClose: () => setPmtMonitoringData(null) }))));
 };

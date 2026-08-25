@@ -50,6 +50,12 @@ struct AccessScope {
     role: String,
     desa: Option<String>,
     posyandu: Option<String>,
+    #[serde(default = "default_access_mode")]
+    access_mode: String,
+}
+
+fn default_access_mode() -> String {
+    "write".into()
 }
 
 struct CachedScope {
@@ -163,6 +169,8 @@ struct LoginAccount {
     village: Option<String>,
     posyandu: Option<String>,
     active: bool,
+    #[serde(default = "default_access_mode")]
+    access_mode: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -184,6 +192,8 @@ struct AppUser {
     village: Option<String>,
     posyandu: Option<String>,
     active: bool,
+    #[serde(default = "default_access_mode")]
+    access_mode: String,
 }
 
 #[derive(Deserialize)]
@@ -763,10 +773,10 @@ async fn send_monitoring_alert(env: &Env, state: &NutritionWorkerHealth, recover
 
 async fn monitoring_status(request: Request, env: &Env) -> ApiResult<serde_json::Value> {
     let scope = require_scope(&request, env).await?;
-    if scope.role != "Ahli Gizi" {
+    if !is_full_access_role(&scope.role) {
         return Err(ApiFailure::new(
             403,
-            "Status infrastruktur hanya tersedia untuk Admin Gizi.",
+            "Status infrastruktur hanya tersedia untuk Ahli Gizi.",
         ));
     }
     let worker = read_nutrition_worker_health(env)
@@ -1558,8 +1568,24 @@ fn jwt_expiration_seconds(token: &str) -> Option<u64> {
     jwt_payload(token)?.get("exp")?.as_u64()
 }
 
+fn jwt_aal(token: &str) -> Option<String> {
+    jwt_payload(token)?
+        .get("aal")?
+        .as_str()
+        .map(ToOwned::to_owned)
+}
+
+fn is_full_access_role(role: &str) -> bool {
+    matches!(role, "Ahli Gizi" | "super_admin")
+}
+
 fn verified_scope_is_valid(scope: &AccessScope) -> bool {
     if scope.user_id.trim().is_empty() {
+        return false;
+    }
+    if !matches!(scope.access_mode.as_str(), "read" | "write")
+        || (scope.role == "super_admin" && scope.access_mode != "write")
+    {
         return false;
     }
     let village_configured = scope
@@ -1571,7 +1597,7 @@ fn verified_scope_is_valid(scope: &AccessScope) -> bool {
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty());
     match scope.role.as_str() {
-        "Ahli Gizi" => true,
+        "Ahli Gizi" | "super_admin" => true,
         "Bidan Desa" => village_configured,
         "Kader Posyandu" => village_configured && posyandu_configured,
         _ => false,
@@ -2024,7 +2050,7 @@ async fn login(
         url::form_urlencoded::byte_serialize(username.as_bytes()).collect::<String>();
     let (status, payload) = request_value(
         format!(
-            "{supabase_url}/rest/v1/app_users?select=user_id,email,role,village,posyandu,active&username=ilike.{encoded_username}&limit=1"
+            "{supabase_url}/rest/v1/app_users?select=user_id,email,role,village,posyandu,active,access_mode&username=ilike.{encoded_username}&limit=1"
         ),
         Method::Get,
         supabase_headers(&secret_key, None)
@@ -2113,7 +2139,23 @@ async fn login(
         role: account.role.clone(),
         desa: account.village.clone(),
         posyandu: account.posyandu.clone(),
+        access_mode: account.access_mode.clone(),
     };
+    if profile.role == "super_admin" {
+        schedule_login_audit(
+            context,
+            env,
+            &audit_request_id,
+            &username,
+            Some(&account),
+            "login_failure",
+            "admin_requires_oracle_mfa",
+        );
+        return Err(ApiFailure::new(
+            503,
+            "Akun administrator wajib masuk melalui API utama dengan verifikasi dua langkah.",
+        ));
+    }
     cache_scope(session.access_token.clone(), profile.clone());
     schedule_verified_scope_cache(context, env, &session.access_token, &profile);
     schedule_login_attempt_clear(context, env, &remote_ip, &username);
@@ -2144,7 +2186,8 @@ async fn login(
                 "email": profile.email,
                 "role": profile.role,
                 "desa": profile.desa,
-                "posyandu": profile.posyandu
+                "posyandu": profile.posyandu,
+                "accessMode": profile.access_mode
             }
         }),
         session_identifier,
@@ -2257,7 +2300,7 @@ async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
     let user_id = url::form_urlencoded::byte_serialize(identity.id.as_bytes()).collect::<String>();
     let profile_response = request_value(
         format!(
-            "{supabase_url}/rest/v1/app_users?select=role,village,posyandu,active&user_id=eq.{user_id}&limit=1"
+            "{supabase_url}/rest/v1/app_users?select=role,village,posyandu,active,access_mode&user_id=eq.{user_id}&limit=1"
         ),
         Method::Get,
         supabase_headers(&secret_key, None)
@@ -2287,7 +2330,7 @@ async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
     };
     if !matches!(
         profile.role.as_str(),
-        "Kader Posyandu" | "Bidan Desa" | "Ahli Gizi"
+        "Kader Posyandu" | "Bidan Desa" | "Ahli Gizi" | "super_admin"
     ) {
         return Err(ApiFailure::new(403, "Peran akun tidak valid."));
     }
@@ -2298,12 +2341,29 @@ async fn require_scope(request: &Request, env: &Env) -> ApiResult<AccessScope> {
     if profile.role == "Bidan Desa" && profile.village.is_none() {
         return Err(ApiFailure::new(403, "Wilayah bidan belum lengkap."));
     }
+    if profile.role == "super_admin" {
+        if profile.village.is_some() || profile.posyandu.is_some() {
+            return Err(ApiFailure::new(403, "Scope administrator tidak valid."));
+        }
+        if jwt_aal(&token).as_deref() != Some("aal2") {
+            return Err(ApiFailure::new(
+                401,
+                "Verifikasi dua langkah diperlukan untuk akun administrator.",
+            ));
+        }
+    }
+    if !matches!(profile.access_mode.as_str(), "read" | "write")
+        || (profile.role == "super_admin" && profile.access_mode != "write")
+    {
+        return Err(ApiFailure::new(403, "Hak akses akun tidak valid."));
+    }
     let scope = AccessScope {
         user_id: identity.id,
         email: identity.email,
         role: profile.role,
         desa: profile.village,
         posyandu: profile.posyandu,
+        access_mode: profile.access_mode,
     };
     cache_scope(token.clone(), scope.clone());
     persist_verified_scope(env, &token, &scope).await;
@@ -2331,7 +2391,8 @@ async fn dispatch(request: Request, env: &Env, _context: &Context) -> ApiResult<
                     "email": scope.email,
                     "role": scope.role,
                     "desa": scope.desa,
-                    "posyandu": scope.posyandu
+                    "posyandu": scope.posyandu,
+                    "accessMode": scope.access_mode
                 }
             }))
         }
@@ -2342,7 +2403,8 @@ async fn dispatch(request: Request, env: &Env, _context: &Context) -> ApiResult<
                 "email": scope.email,
                 "role": scope.role,
                 "desa": scope.desa,
-                "posyandu": scope.posyandu
+                "posyandu": scope.posyandu,
+                "accessMode": scope.access_mode
             }))
         }
         _ if request.path().starts_with("/api/v1/") => api::dispatch(request, env).await,
@@ -2467,6 +2529,7 @@ mod tests {
             role: "Ahli Gizi".into(),
             desa: None,
             posyandu: None,
+            access_mode: "write".into(),
         }));
         assert!(!verified_scope_is_valid(&AccessScope {
             user_id: "cadre-user".into(),
@@ -2474,6 +2537,7 @@ mod tests {
             role: "Kader Posyandu".into(),
             desa: Some("Desa Gumukmas".into()),
             posyandu: None,
+            access_mode: "write".into(),
         }));
     }
 

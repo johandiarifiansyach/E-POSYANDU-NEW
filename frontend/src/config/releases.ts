@@ -19,7 +19,11 @@ export const RELEASE_HISTORY: AppRelease[] = [
       'Cache dinamis dipisahkan berdasarkan role, desa, dan posyandu serta langsung diinvalisasi setelah perubahan data.',
       'Cloudflare KV dibatasi untuk konfigurasi global yang jarang berubah seperti menu, referensi, dan feature flag.',
       'Oracle menjalankan Redis privat tanpa port host, sementara PostgreSQL native tetap menjadi sumber data utama.',
-      'Backend Worker tetap dikompilasi sebagai WebAssembly dan API Oracle sebagai binary native ARM64 dengan health check yang lebih jelas.'
+      'Backend Worker tetap dikompilasi sebagai WebAssembly dan API Oracle sebagai binary native ARM64 dengan health check yang lebih jelas.',
+      'Akun administrator aplikasi kini memakai role super_admin, nama tampilan Administrator, MFA wajib, dan recovery code sekali pakai tanpa mengubah role akun lama.',
+      'Menu profil Administrator kini menyediakan halaman penuh Administrasi Backend untuk memantau layanan dan seluruh akun.',
+      'Status online dan offline akun diperbarui otomatis berdasarkan aktivitas aplikasi dalam tiga menit terakhir tanpa menyimpan token atau identitas sesi mentah.',
+      'Nama tampilan role gizi diperbarui menjadi Ahli Gizi tanpa mengubah role atau cakupan akses akun.'
     ]
   },
   {
@@ -74,7 +78,7 @@ export const RELEASE_HISTORY: AppRelease[] = [
       'Jalur darurat hanya menerima data penimbangan dan kolom ringkasannya sehingga tidak dapat digunakan untuk mengubah identitas balita.',
       'Perubahan lain yang belum didukung tetap aman di antrean perangkat tanpa menghambat penimbangan yang sedang disimpan.',
       'Tabel balita, masalah gizi, ASI eksklusif, detail, dan dashboard tetap memiliki jalur baca terautentikasi selama API terganggu.',
-      'Cache PWA diperbarui agar perbaikan simpan segera diterima oleh perangkat kader, desa, dan Admin Gizi.'
+      'Cache PWA diperbarui agar perbaikan simpan segera diterima oleh perangkat kader, desa, dan Ahli Gizi.'
     ]
   },
   {
@@ -87,7 +91,7 @@ export const RELEASE_HISTORY: AppRelease[] = [
       'Jalur baca darurat menggunakan sesi Supabase yang aktif dan selalu membatasi data berdasarkan role, desa, serta posyandu akun.',
       'Setiap halaman tetap mengambil maksimal 10 baris sehingga pemulihan layanan tidak menambah pembacaan data secara berlebihan.',
       'Peringatan status worker tidak lagi tampil ketika status hanya belum sempat diperiksa; gangguan nyata tetap diberitahukan.',
-      'Cache PWA diperbarui agar perbaikan tabel segera diterima oleh perangkat kader, desa, dan Admin Gizi.'
+      'Cache PWA diperbarui agar perbaikan tabel segera diterima oleh perangkat kader, desa, dan Ahli Gizi.'
     ]
   },
   {

@@ -322,8 +322,22 @@ fn positive_integer(
     Ok(parsed)
 }
 
+fn is_full_access_role(role: &str) -> bool {
+    matches!(role, "Ahli Gizi" | "super_admin")
+}
+
+// RPC lama mengenali cakupan penuh melalui Ahli Gizi. Audit dan otorisasi
+// tetap mempertahankan role super_admin yang sebenarnya.
+fn database_scope_role(role: &str) -> &str {
+    if is_full_access_role(role) {
+        "Ahli Gizi"
+    } else {
+        role
+    }
+}
+
 fn scoped_value(scope: &AccessScope, selected: Option<&str>, village: bool) -> Option<String> {
-    if scope.role == "Ahli Gizi" {
+    if is_full_access_role(&scope.role) {
         return selected.map(ToOwned::to_owned);
     }
     if village {
@@ -1157,7 +1171,7 @@ fn validate_common_data(resource: Resource, data: &Map<String, Value>) -> Result
 }
 
 fn assert_location(scope: &AccessScope, village: &str, posyandu: &str) -> Result<(), ApiError> {
-    if scope.role == "Ahli Gizi" {
+    if is_full_access_role(&scope.role) {
         return Ok(());
     }
     if scope.desa.as_deref() != Some(village) {
@@ -1405,6 +1419,13 @@ impl NativeApi {
                 "Sesi masuk diperlukan.",
             )
         })?;
+        if session.scope.access_mode != "write" {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "read_only",
+                "Akun ini hanya memiliki hak baca.",
+            ));
+        }
         let context = MutationContext {
             scope: session.scope,
             request_id,
@@ -1578,7 +1599,7 @@ impl NativeApi {
                 ApiError::new(StatusCode::NOT_FOUND, "not_found", "Job tidak ditemukan.")
             })?;
         let owner = text(row(&job)?.get("owner_user_id"));
-        if owner != scope.user_id && scope.role != "Ahli Gizi" {
+        if owner != scope.user_id && !is_full_access_role(&scope.role) {
             return Err(ApiError::new(
                 StatusCode::NOT_FOUND,
                 "not_found",
@@ -2549,7 +2570,7 @@ impl NativeApi {
         scope: &AccessScope,
         parameters: &mut Vec<(String, String)>,
     ) -> Result<(), ApiError> {
-        if scope.role == "Ahli Gizi" {
+        if is_full_access_role(&scope.role) {
             return Ok(());
         }
         let village = scope
@@ -2756,7 +2777,7 @@ impl NativeApi {
                 ("resource".into(), format!("eq.{}", resource.name())),
                 ("deleted_at".into(), format!("gt.{since}")),
             ];
-            if scope.role != "Ahli Gizi" {
+            if !is_full_access_role(&scope.role) {
                 if let Some(village) = scope.desa.as_deref() {
                     tombstone_parameters.push(("village".into(), format!("eq.{village}")));
                 }
@@ -2911,7 +2932,7 @@ impl NativeApi {
                     "p_sort": sort,
                     "p_village": village,
                     "p_posyandu": posyandu,
-                    "p_role": scope.role,
+                    "p_role": database_scope_role(&scope.role),
                     "p_scope_village": scope.desa,
                     "p_scope_posyandu": scope.posyandu
                 }),
@@ -2933,7 +2954,7 @@ impl NativeApi {
                     "p_search": value(query, "search"),
                     "p_village": village,
                     "p_posyandu": posyandu,
-                    "p_role": scope.role,
+                    "p_role": database_scope_role(&scope.role),
                     "p_scope_village": scope.desa,
                     "p_scope_posyandu": scope.posyandu
                 }),
@@ -2971,7 +2992,7 @@ impl NativeApi {
                 "p_size": positive_integer(query, "size", 10, 50)?,
                 "p_village": scoped_value(scope, value(query, "village"), true),
                 "p_posyandu": scoped_value(scope, value(query, "posyandu"), false),
-                "p_role": scope.role,
+                "p_role": database_scope_role(&scope.role),
                 "p_scope_village": scope.desa,
                 "p_scope_posyandu": scope.posyandu
             }),
@@ -2994,7 +3015,7 @@ impl NativeApi {
                 "p_previous_month_end": date_value(query, "previousMonthEnd", invalid)?,
                 "p_village": scoped_value(scope, value(query, "village"), true),
                 "p_posyandu": scoped_value(scope, value(query, "posyandu"), false),
-                "p_role": scope.role,
+                "p_role": database_scope_role(&scope.role),
                 "p_scope_village": scope.desa,
                 "p_scope_posyandu": scope.posyandu
             }),
@@ -3015,7 +3036,7 @@ impl NativeApi {
                 "p_month_end": date_value(query, "monthEnd", invalid)?,
                 "p_village": scoped_value(scope, value(query, "village"), true),
                 "p_posyandu": scoped_value(scope, value(query, "posyandu"), false),
-                "p_role": scope.role,
+                "p_role": database_scope_role(&scope.role),
                 "p_scope_village": scope.desa,
                 "p_scope_posyandu": scope.posyandu
             }),
@@ -3043,6 +3064,7 @@ mod tests {
             role: "Kader Posyandu".into(),
             desa: Some("Mayangan".into()),
             posyandu: Some("Salak 36".into()),
+            access_mode: "write".into(),
         };
         assert_eq!(
             scoped_value(&scope, Some("Desa lain"), true).as_deref(),

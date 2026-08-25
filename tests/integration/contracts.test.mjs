@@ -32,6 +32,33 @@ async function readSourceTree(path) {
   return sources.flat(Infinity).join('\n');
 }
 
+test('label akun gizi konsisten sebagai Ahli Gizi dan role lama tidak diubah', async () => {
+  const [frontend, backend, dashboard, roleMigration, adminMigration] = await Promise.all([
+    readSourceTree('frontend/src'),
+    readSourceTree('backend/src'),
+    readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8'),
+    readFile(resolve(root, 'database/migrations/003_app_users.sql'), 'utf8'),
+    readFile(resolve(root, 'database/migrations/029_super_admin_access.sql'), 'utf8')
+  ]);
+
+  assert.doesNotMatch(`${frontend}\n${backend}`, /Admin Gizi/);
+  assert.match(dashboard, /const accountName[\s\S]+: ROLES\.GIZI;/);
+  assert.match(roleMigration, /role in \('Kader Posyandu', 'Bidan Desa', 'Ahli Gizi'\)/);
+  assert.match(adminMigration, /role in \('Kader Posyandu', 'Bidan Desa', 'Ahli Gizi', 'super_admin'\)/);
+  assert.doesNotMatch(adminMigration, /update\s+(?:public\.)?app_users/i);
+});
+
+test('callback pemulihan admin hanya dipakai pada path aktivasi khusus', async () => {
+  const app = await readFile(resolve(root, 'frontend/src/App.ts'), 'utf8');
+
+  assert.match(app, /callbackType === 'invite'/);
+  assert.match(
+    app,
+    /callbackType === 'recovery' && window\.location\.pathname === '\/admin\/activate'/
+  );
+  assert.match(app, /window\.history\.replaceState/);
+});
+
 test('migration database berurutan dan tercatat sampai versi terbaru', async () => {
   const files = (await readdir(resolve(root, 'database/migrations')))
     .filter((file) => /^\d{3}_.+\.sql$/.test(file))
@@ -39,12 +66,25 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '028_remove_second_step_policies.sql');
+  assert.equal(files.at(-1), '030_account_access_management.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
     assert.match(sql, /commit;/, `${file} harus ditutup dengan commit`);
   }
+});
+
+test('mode akses akun menjaga akun lama tetap tulis dan memblokir fallback mutasi hanya-baca', async () => {
+  const migration = await readFile(
+    resolve(root, 'database/migrations/030_account_access_management.sql'),
+    'utf8'
+  );
+
+  assert.match(migration, /access_mode text not null default 'write'/);
+  assert.match(migration, /access_mode in \('read', 'write'\)/);
+  assert.match(migration, /users\.access_mode = 'write'/);
+  assert.doesNotMatch(migration, /update\s+(?:public\.)?app_users\s+set/i);
+  assert.match(migration, /after update of role, village, posyandu, access_mode, active/);
 });
 
 test('RPC profil lama tetap terkunci meskipun tidak lagi dipakai untuk melewati login utama', async () => {
@@ -264,8 +304,16 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
     '/api/v1/health',
     '/api/v1/health/ready',
     '/api/v1/auth/login',
+    '/api/v1/auth/invite/complete',
+    '/api/v1/auth/mfa/enroll',
+    '/api/v1/auth/mfa/challenge',
+    '/api/v1/auth/mfa/verify',
     '/api/v1/auth/logout',
     '/api/v1/auth/session',
+    '/api/v1/auth/presence',
+    '/api/v1/admin/accounts',
+    '/api/v1/admin/accounts/{userId}',
+    '/api/v1/admin/monitoring/stream',
     '/api/v1/graphql',
     '/api/v1/sync',
     '/api/v1/features',
@@ -282,14 +330,60 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
     document.paths['/api/v1/auth/login'].post.responses['200'].content['application/json'].schema.$ref,
     '#/components/schemas/LoginResponse'
   );
+  assert.deepEqual(Object.keys(document.paths['/api/v1/auth/session']).sort(), ['get']);
+  assert.ok(document.paths['/api/v1/admin/accounts'].get);
+  assert.ok(document.paths['/api/v1/admin/accounts'].post);
+  assert.ok(document.paths['/api/v1/admin/accounts/{userId}'].patch);
+  assert.ok(document.paths['/api/v1/admin/accounts/{userId}'].delete);
+  assert.ok(document.paths['/api/v1/admin/monitoring/stream'].get.responses['200'].content['text/event-stream']);
   assert.ok(document.components.securitySchemes.sessionCookie);
-  assert.ok(!('access_token' in document.components.schemas.LoginResponse.properties));
-  assert.ok(!('refresh_token' in document.components.schemas.LoginResponse.properties));
-  assert.ok(!('mfa' in document.components.schemas.LoginResponse.properties));
+  const authenticatedLogin = document.components.schemas.AuthenticatedLoginResponse;
+  assert.ok(!('access_token' in authenticatedLogin.properties));
+  assert.ok(!('refresh_token' in authenticatedLogin.properties));
   assert.equal(
-    document.components.schemas.LoginResponse.properties.profile.$ref,
+    authenticatedLogin.properties.profile.$ref,
     '#/components/schemas/AccessProfile'
   );
+  assert.equal(document.components.schemas.MfaPendingLoginResponse.properties.mfaRequired.const, true);
+});
+
+test('administrasi akun dan monitoring realtime hanya tersedia untuk administrator', async () => {
+  const [oracleAuth, oracleMain, metrics, dashboard, page, monitoringPanel, client] = await Promise.all([
+    readFile(resolve(root, 'services/oracle-api/src/native_auth.rs'), 'utf8'),
+    readFile(resolve(root, 'services/oracle-api/src/main.rs'), 'utf8'),
+    readFile(resolve(root, 'services/oracle-api/src/system_metrics.rs'), 'utf8'),
+    readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8'),
+    readFile(resolve(root, 'frontend/src/pages/AdminBackendPage.ts'), 'utf8'),
+    readFile(resolve(root, 'frontend/src/pages/AdminMonitoringPanel.ts'), 'utf8'),
+    readFile(resolve(root, 'frontend/src/api/legacyClient.ts'), 'utf8')
+  ]);
+
+  assert.match(oracleMain, /\/api\/v1\/admin\/accounts/);
+  assert.match(oracleMain, /\/api\/v1\/auth\/presence/);
+  assert.match(oracleMain, /\/api\/v1\/admin\/monitoring\/stream/);
+  assert.match(oracleMain, /Sse::new\(events\)/);
+  assert.match(oracleMain, /ADMIN_MONITORING_CONNECTION_LIMIT/);
+  assert.match(oracleAuth, /!is_super_admin\(&session\.profile\.role\) \|\| !session\.mfa_verified/);
+  assert.match(oracleAuth, /presence-user:\{user_id\}/);
+  assert.match(oracleAuth, /presence-session:\{session_identifier\}/);
+  assert.match(oracleAuth, /"userId": user_id/);
+  assert.match(oracleAuth, /"isCurrentAccount": user_id == session\.profile\.user_id/);
+  assert.match(dashboard, /user\.role === ROLES\.SUPER_ADMIN && Native\.createElement\("button"/);
+  assert.match(dashboard, /Administrasi Backend/);
+  assert.match(page, /data-admin-backend-page/);
+  assert.match(page, /Online berarti ada aktivitas aplikasi dalam/);
+  assert.match(page, /admin-backend-tabs/);
+  assert.match(page, /admin-account-modal-backdrop/);
+  assert.match(page, /activeSection === 'monitoring'/);
+  assert.match(monitoringPanel, /new EventSource\(getAdminMonitoringStreamUrl\(\)/);
+  assert.match(monitoringPanel, /source\?\.close\(\)/);
+  assert.match(monitoringPanel, /visibilitychange/);
+  assert.match(monitoringPanel, /MAX_POINTS = 60/);
+  assert.match(metrics, /\/proc\/stat/);
+  assert.match(metrics, /\/proc\/meminfo/);
+  assert.doesNotMatch(metrics, /environ|cmdline|app_users|health_records/);
+  assert.match(client, /reportAccountPresence/);
+  assert.match(client, /getAdminMonitoringStreamUrl/);
 });
 
 test('ringkasan AI pertumbuhan tidak diekspos sebelum layanan siap', async () => {
@@ -479,6 +573,8 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(compose, /TUNNEL_TOKEN_FILE: \/run\/secrets\/cloudflare-tunnel-token/);
   assert.match(compose, /127\.0\.0\.1:2000:2000/);
   assert.match(compose, /ORACLE_PUBLIC_BIND:-0\.0\.0\.0/);
+  assert.match(compose, /host\.containers\.internal:10\.89\.0\.1/);
+  assert.match(compose, /host\.docker\.internal:10\.89\.0\.1/);
   assert.doesNotMatch(compose, /-\s*["']?(?:50051|8080):/);
   assert.match(caddy, /@health path \/health/);
   assert.match(caddy, /respond "Rute tidak ditemukan" 404/);
@@ -503,6 +599,8 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(bootstrap, /up --detach --remove-orphans/);
   assert.match(bootstrap, /-H "Host: \$health_host" http:\/\/127\.0\.0\.1\/health/);
   assert.match(bootstrap, /--resolve "\$health_host:443:127\.0\.0\.1"/);
+  assert.match(bootstrap, /127\.0\.0\.1:8081\/api\/v1\/health\/ready/);
+  assert.match(bootstrap, /grep -Fq '\"ok\":true'/);
   assert.match(deploy, /ssh -o BatchMode=yes -o ConnectTimeout=10/);
   assert.match(deploy, /mktemp -d/);
   assert.match(deploy, /COPYFILE_DISABLE=1 tar/);
@@ -661,6 +759,7 @@ test('cache sensitif dienkripsi per akun dan login tidak melewati gerbang keaman
   const store = await readFile(resolve(root, 'frontend/src/services/offlineStore.ts'), 'utf8');
   const client = await readApiClient();
   const worker = await readFile(resolve(root, 'backend/src/lib.rs'), 'utf8');
+  const oracleAuth = await readFile(resolve(root, 'services/oracle-api/src/native_auth.rs'), 'utf8');
   const pagesProxy = await readFile(resolve(root, 'frontend/public/_worker.js'), 'utf8');
 
   assert.match(store, /AES-GCM/);
@@ -672,12 +771,18 @@ test('cache sensitif dienkripsi per akun dan login tidak melewati gerbang keaman
   assert.match(client, /response = await usernameLoginRequest/);
   assert.doesNotMatch(client, /directSupabaseUsernameLogin/);
   assert.doesNotMatch(client, /localStorage\.getItem\(AUTH_SESSION_KEY\)/);
-  assert.doesNotMatch(client, /accessToken|refreshToken|VITE_SUPABASE/);
+  assert.doesNotMatch(client, /VITE_SUPABASE/);
+  assert.doesNotMatch(client, /(?:localStorage|sessionStorage)\.(?:setItem|getItem)\([^)]*(?:accessToken|refreshToken)/);
   assert.match(client, /credentials: 'include'/);
   assert.match(worker, /__Host-e-posyandu-session/);
   assert.match(worker, /HttpOnly; Secure; SameSite=Strict/);
   assert.doesNotMatch(worker, /MFA_ENFORCEMENT|mfa_is_required|jwt_assurance_level/);
-  assert.doesNotMatch(client, /auth\/mfa|enrollMfa|verifyMfa|MfaStatus/);
+  assert.match(client, /auth\/mfa/);
+  assert.match(client, /enrollMfaFactor/);
+  assert.match(client, /verifyMfaFactor/);
+  assert.match(oracleAuth, /mfa_verified: !requires_mfa/);
+  assert.match(oracleAuth, /jwt_aal\(&verified\.access_token\)/);
+  assert.match(oracleAuth, /admin_recovery_codes/);
   assert.match(pagesProxy, /isApiPath/);
   assert.match(pagesProxy, /env\.ASSETS\.fetch/);
   assert.match(pagesProxy, /env\.PRODUCTION_API_ORIGIN/);

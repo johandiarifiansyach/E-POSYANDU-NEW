@@ -669,12 +669,24 @@ fn count_from_range(content_range: Option<String>) -> i64 {
         .unwrap_or_default()
 }
 
+fn is_full_access_role(role: &str) -> bool {
+    matches!(role, "Ahli Gizi" | "super_admin")
+}
+
+fn database_scope_role(role: &str) -> &str {
+    if is_full_access_role(role) {
+        "Ahli Gizi"
+    } else {
+        role
+    }
+}
+
 fn location_parameters(
     resource: Resource,
     scope: &AccessScope,
     parameters: &mut Vec<(String, String)>,
 ) -> ApiResult<()> {
-    if scope.role == "Ahli Gizi" {
+    if is_full_access_role(&scope.role) {
         return Ok(());
     }
     let village = scope
@@ -700,7 +712,7 @@ fn location_parameters(
 }
 
 fn assert_location(scope: &AccessScope, village: &str, posyandu: &str) -> ApiResult<()> {
-    if scope.role == "Ahli Gizi" {
+    if is_full_access_role(&scope.role) {
         return Ok(());
     }
     if scope.desa.as_deref() != Some(village) {
@@ -1149,7 +1161,7 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
                 "p_sort": sort,
                 "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
                 "p_posyandu": first_query(&query, "posyandu").map(|value| value.trim()).filter(|value| !value.is_empty()),
-                "p_role": scope.role,
+                "p_role": database_scope_role(&scope.role),
                 "p_scope_village": scope.desa,
                 "p_scope_posyandu": scope.posyandu,
             }),
@@ -1167,7 +1179,7 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
         "p_search": search,
         "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
         "p_posyandu": first_query(&query, "posyandu").map(|value| value.trim()).filter(|value| !value.is_empty()),
-        "p_role": scope.role,
+        "p_role": database_scope_role(&scope.role),
         "p_scope_village": scope.desa,
         "p_scope_posyandu": scope.posyandu,
     });
@@ -1446,7 +1458,7 @@ async fn exclusive_breastfeeding_page(request: Request, env: &Env) -> ApiResult<
         "p_page": page, "p_size": size,
         "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
         "p_posyandu": first_query(&query, "posyandu").map(|value| value.trim()).filter(|value| !value.is_empty()),
-        "p_role": scope.role, "p_scope_village": scope.desa, "p_scope_posyandu": scope.posyandu,
+        "p_role": database_scope_role(&scope.role), "p_scope_village": scope.desa, "p_scope_posyandu": scope.posyandu,
     })).await
 }
 
@@ -1475,7 +1487,7 @@ async fn dashboard(request: Request, env: &Env) -> ApiResult<Value> {
         "p_previous_month_start": first_query(&query, "previousMonthStart"), "p_previous_month_end": first_query(&query, "previousMonthEnd"),
         "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
         "p_posyandu": first_query(&query, "posyandu").map(|value| value.trim()).filter(|value| !value.is_empty()),
-        "p_role": scope.role, "p_scope_village": scope.desa, "p_scope_posyandu": scope.posyandu,
+        "p_role": database_scope_role(&scope.role), "p_scope_village": scope.desa, "p_scope_posyandu": scope.posyandu,
     })).await
 }
 
@@ -1507,7 +1519,7 @@ async fn sigizi_measurement_export(request: Request, env: &Env) -> ApiResult<Val
             "p_month_end": month_end,
             "p_village": village,
             "p_posyandu": posyandu,
-            "p_role": scope.role,
+            "p_role": database_scope_role(&scope.role),
             "p_scope_village": scope.desa,
             "p_scope_posyandu": scope.posyandu,
         }),
@@ -3412,7 +3424,7 @@ async fn get_background_job(request: Request, env: &Env, id: &str) -> ApiResult<
     let scope = require_scope(&request, env).await?;
     let row = fetch_background_job(env, id, false).await?;
     let owner = string_value(row_object(&row)?.get("owner_user_id"));
-    if owner != scope.user_id && scope.role != "Ahli Gizi" {
+    if owner != scope.user_id && !is_full_access_role(&scope.role) {
         return Err(api_error(404, "Job tidak ditemukan."));
     }
     background_job_public(&row, None)
@@ -3602,7 +3614,7 @@ pub(crate) async fn download_background_job_file(
     let row = fetch_background_job(env, id, false).await?;
     let row = row_object(&row)?;
     let owner = string_value(row.get("owner_user_id"));
-    if owner != scope.user_id && scope.role != "Ahli Gizi" {
+    if owner != scope.user_id && !is_full_access_role(&scope.role) {
         return Err(api_error(404, "Berkas job tidak ditemukan."));
     }
     let object_key = string_value(row.get("object_key"));
@@ -3663,7 +3675,19 @@ async fn collections(request: Request, env: &Env) -> ApiResult<Value> {
     }
 }
 
+fn mutation_requires_write(method: &Method, path: &str) -> bool {
+    (method == &Method::Post && matches!(path, "/api/v1/sync" | "/api/v1/jobs"))
+        || (path.starts_with("/api/v1/collections/")
+            && (method == &Method::Post || method == &Method::Patch || method == &Method::Delete))
+}
+
 pub async fn dispatch(request: Request, env: &Env) -> ApiResult<Value> {
+    if mutation_requires_write(&request.method(), &request.path()) {
+        let scope = require_scope(&request, env).await?;
+        if scope.access_mode != "write" {
+            return Err(api_error(403, "Akun ini hanya memiliki hak baca."));
+        }
+    }
     let cache_key = if dynamic_cacheable_request(&request) {
         let scope = require_scope(&request, env).await?;
         let url = request
@@ -3755,6 +3779,29 @@ mod tests {
     }
 
     #[test]
+    fn read_only_mode_covers_every_public_mutation_route() {
+        assert!(mutation_requires_write(&Method::Post, "/api/v1/sync"));
+        assert!(mutation_requires_write(&Method::Post, "/api/v1/jobs"));
+        assert!(mutation_requires_write(
+            &Method::Post,
+            "/api/v1/collections/children"
+        ));
+        assert!(mutation_requires_write(
+            &Method::Patch,
+            "/api/v1/collections/children/example"
+        ));
+        assert!(mutation_requires_write(
+            &Method::Delete,
+            "/api/v1/collections/measurements/example"
+        ));
+        assert!(!mutation_requires_write(
+            &Method::Get,
+            "/api/v1/collections/children"
+        ));
+        assert!(!mutation_requires_write(&Method::Post, "/api/v1/graphql"));
+    }
+
+    #[test]
     fn separates_redis_cache_by_access_scope_and_version() {
         let scope = AccessScope {
             user_id: "user-1".into(),
@@ -3762,6 +3809,7 @@ mod tests {
             role: "Kader Posyandu".into(),
             desa: Some("Purwoasri".into()),
             posyandu: Some("SALAK 58".into()),
+            access_mode: "write".into(),
         };
         let base = dynamic_cache_key(
             &scope,

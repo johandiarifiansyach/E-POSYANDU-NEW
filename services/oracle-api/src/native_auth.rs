@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env, fs,
     net::IpAddr,
     path::{Path, PathBuf},
@@ -40,6 +40,10 @@ const LOGIN_PAIR_WINDOW_SECONDS: i64 = 60;
 const LOGIN_IP_MAX_ATTEMPTS: i64 = 30;
 const LOGIN_ACCOUNT_MAX_ATTEMPTS: i64 = 10;
 const LOGIN_PAIR_MAX_ATTEMPTS: i64 = 5;
+const ADMIN_MFA_PENDING_TTL_SECONDS: i64 = 5 * 60;
+const ADMIN_RECOVERY_CODE_COUNT: usize = 10;
+const ACCOUNT_ONLINE_WINDOW_SECONDS: i64 = 3 * 60;
+const ACCOUNT_PRESENCE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
 const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 const ORACLE_ORIGIN_HEADER: &str = "x-e-posyandu-origin";
 
@@ -51,6 +55,8 @@ pub(crate) struct AccessScope {
     pub(crate) role: String,
     pub(crate) desa: Option<String>,
     pub(crate) posyandu: Option<String>,
+    #[serde(default = "default_access_mode")]
+    pub(crate) access_mode: String,
 }
 
 #[derive(Clone, Debug)]
@@ -63,6 +69,16 @@ pub(crate) struct AuthorizedSession {
 struct SupabaseUser {
     id: String,
     email: Option<String>,
+    #[serde(default)]
+    factors: Vec<SupabaseFactor>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SupabaseFactor {
+    id: String,
+    status: String,
+    factor_type: String,
+    friendly_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,6 +96,8 @@ struct LoginAccount {
     village: Option<String>,
     posyandu: Option<String>,
     active: bool,
+    #[serde(default = "default_access_mode")]
+    access_mode: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -88,6 +106,8 @@ struct AppUser {
     village: Option<String>,
     posyandu: Option<String>,
     active: bool,
+    #[serde(default = "default_access_mode")]
+    access_mode: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -97,6 +117,43 @@ struct BrowserSession {
     user: SupabaseUser,
     profile: AccessScope,
     updated_at: String,
+    #[serde(default = "default_mfa_verified")]
+    mfa_verified: bool,
+    #[serde(default)]
+    mfa_pending_expires_at: Option<i64>,
+    #[serde(default)]
+    account_revision: i64,
+}
+
+fn default_mfa_verified() -> bool {
+    true
+}
+
+fn default_access_mode() -> String {
+    "write".into()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminAccountBody {
+    email: Option<String>,
+    username: Option<String>,
+    role: Option<String>,
+    village: Option<String>,
+    posyandu: Option<String>,
+    access_mode: Option<String>,
+    active: Option<bool>,
+}
+
+#[derive(Clone, Debug)]
+struct ValidatedAdminAccount {
+    email: String,
+    username: String,
+    role: String,
+    village: Option<String>,
+    posyandu: Option<String>,
+    access_mode: String,
+    active: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +162,38 @@ struct LoginBody {
     username: Option<String>,
     password: Option<String>,
     turnstile_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MfaEnrollBody {
+    factor_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MfaChallengeBody {
+    factor_id: String,
+    factor_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MfaVerifyBody {
+    factor_id: Option<String>,
+    challenge_id: Option<String>,
+    factor_type: String,
+    code: Option<String>,
+    operation: Option<String>,
+    credential_response: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteInviteBody {
+    access_token: String,
+    refresh_token: String,
+    password: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +239,7 @@ struct SupabaseClient {
     http: Client,
     base_url: Url,
     publishable_key: String,
+    secret_key: String,
     database: Arc<NativeDatabase>,
 }
 
@@ -297,6 +387,20 @@ fn now_iso() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
+fn unix_iso(value: i64) -> Option<String> {
+    OffsetDateTime::from_unix_timestamp(value)
+        .ok()
+        .and_then(|timestamp| timestamp.format(&Rfc3339).ok())
+}
+
+fn account_is_online(active: bool, last_seen: Option<i64>, now: i64) -> bool {
+    active
+        && last_seen.is_some_and(|seen| {
+            seen >= now.saturating_sub(ACCOUNT_ONLINE_WINDOW_SECONDS)
+                && seen <= now.saturating_add(30)
+        })
+}
+
 fn sha256_hex(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
@@ -336,6 +440,98 @@ fn normalized_username(input: Option<&str>) -> Result<String, NativeError> {
             "Username atau kata sandi tidak benar.",
         ))
     }
+}
+
+fn validated_admin_account(
+    body: AdminAccountBody,
+    default_active: bool,
+) -> Result<ValidatedAdminAccount, NativeError> {
+    let email = body.email.unwrap_or_default().trim().to_ascii_lowercase();
+    if email.is_empty()
+        || email.len() > 254
+        || email.bytes().any(|byte| byte.is_ascii_whitespace())
+        || email.split_once('@').is_none_or(|(local, domain)| {
+            local.is_empty() || domain.is_empty() || !domain.contains('.')
+        })
+    {
+        return Err(NativeError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation_error",
+            "Alamat email tidak valid.",
+        ));
+    }
+    let username = normalized_username(body.username.as_deref()).map_err(|_| {
+        NativeError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation_error",
+            "Username wajib 3–32 karakter dan hanya boleh memuat huruf kecil, angka, titik, garis bawah, atau tanda hubung.",
+        )
+    })?;
+    let role = body.role.unwrap_or_default();
+    if !matches!(
+        role.as_str(),
+        "Kader Posyandu" | "Bidan Desa" | "Ahli Gizi" | "super_admin"
+    ) {
+        return Err(NativeError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation_error",
+            "Role akun tidak valid.",
+        ));
+    }
+    let normalize_scope = |value: Option<String>| {
+        value
+            .map(|candidate| candidate.trim().to_owned())
+            .filter(|candidate| !candidate.is_empty() && candidate.len() <= 80)
+    };
+    let (village, posyandu) = match role.as_str() {
+        "Kader Posyandu" => {
+            let village = normalize_scope(body.village).ok_or_else(|| {
+                NativeError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "validation_error",
+                    "Desa dan Posyandu wajib dipilih untuk Kader Posyandu.",
+                )
+            })?;
+            let posyandu = normalize_scope(body.posyandu).ok_or_else(|| {
+                NativeError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "validation_error",
+                    "Desa dan Posyandu wajib dipilih untuk Kader Posyandu.",
+                )
+            })?;
+            (Some(village), Some(posyandu))
+        }
+        "Bidan Desa" => {
+            let village = normalize_scope(body.village).ok_or_else(|| {
+                NativeError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "validation_error",
+                    "Desa wajib dipilih untuk Bidan Desa.",
+                )
+            })?;
+            (Some(village), None)
+        }
+        _ => (None, None),
+    };
+    let access_mode = body.access_mode.unwrap_or_else(default_access_mode);
+    if !matches!(access_mode.as_str(), "read" | "write")
+        || (role == "super_admin" && access_mode != "write")
+    {
+        return Err(NativeError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation_error",
+            "Hak akses akun tidak valid. Administrator wajib memiliki akses edit.",
+        ));
+    }
+    Ok(ValidatedAdminAccount {
+        email,
+        username,
+        role,
+        village,
+        posyandu,
+        access_mode,
+        active: body.active.unwrap_or(default_active),
+    })
 }
 
 fn request_id(request: &Request) -> String {
@@ -381,6 +577,64 @@ fn jwt_expiration_seconds(token: &str) -> Option<i64> {
         .as_i64()
 }
 
+fn jwt_aal(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
+    serde_json::from_slice::<Value>(&decoded)
+        .ok()?
+        .get("aal")?
+        .as_str()
+        .map(ToOwned::to_owned)
+}
+
+fn is_super_admin(role: &str) -> bool {
+    role == "super_admin"
+}
+
+fn valid_uuid(value: &str) -> bool {
+    uuid::Uuid::parse_str(value).is_ok()
+}
+
+fn normalized_recovery_code(value: &str) -> Option<String> {
+    let normalized = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_uppercase())
+        .collect::<String>();
+    (normalized.len() == 16).then_some(normalized)
+}
+
+fn new_recovery_code() -> (String, String) {
+    const ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+    let mut bytes = [0_u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    let normalized = bytes
+        .iter()
+        .map(|byte| ALPHABET[*byte as usize % ALPHABET.len()] as char)
+        .collect::<String>();
+    let displayed = normalized
+        .as_bytes()
+        .chunks(4)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("-");
+    (normalized, displayed)
+}
+
+fn valid_admin_password(value: &str) -> bool {
+    (14..=128).contains(&value.chars().count())
+        && value
+            .chars()
+            .any(|character| character.is_ascii_lowercase())
+        && value
+            .chars()
+            .any(|character| character.is_ascii_uppercase())
+        && value.chars().any(|character| character.is_ascii_digit())
+        && value
+            .chars()
+            .any(|character| !character.is_ascii_alphanumeric())
+}
+
 impl SessionStore {
     fn open(path: &Path, encryption_key: [u8; 32]) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
@@ -416,7 +670,28 @@ impl SessionStore {
                     reset_at INTEGER NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS login_attempts_reset_idx
-                    ON login_attempts(reset_at);",
+                    ON login_attempts(reset_at);
+                 CREATE TABLE IF NOT EXISTS admin_recovery_codes (
+                    user_id_hash TEXT NOT NULL,
+                    code_hash TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY(user_id_hash, code_hash)
+                 );
+                 CREATE TABLE IF NOT EXISTS account_presence (
+                    user_id_hash TEXT NOT NULL,
+                    session_hash TEXT NOT NULL,
+                    last_seen INTEGER NOT NULL,
+                    PRIMARY KEY(user_id_hash, session_hash)
+                 );
+                 CREATE INDEX IF NOT EXISTS account_presence_seen_idx
+                    ON account_presence(last_seen);
+                 CREATE INDEX IF NOT EXISTS account_presence_user_idx
+                    ON account_presence(user_id_hash, last_seen DESC);
+                 CREATE TABLE IF NOT EXISTS account_session_revisions (
+                    user_id_hash TEXT PRIMARY KEY,
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL
+                 );",
             )
             .map_err(|error| format!("Skema database sesi tidak dapat dibuat: {error}"))?;
         Ok(Self {
@@ -583,6 +858,179 @@ impl SessionStore {
         );
     }
 
+    fn touch_presence(&self, user_id: &str, session_identifier: &str) -> Result<(), NativeError> {
+        let now = unix_seconds();
+        let connection = self.connection.lock().map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "presence_unavailable",
+                "Status aktivitas akun belum tersedia.",
+            )
+        })?;
+        connection
+            .execute(
+                "INSERT INTO account_presence(user_id_hash, session_hash, last_seen)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(user_id_hash, session_hash) DO UPDATE SET
+                    last_seen=excluded.last_seen",
+                params![
+                    sha256_hex(&format!("presence-user:{user_id}")),
+                    sha256_hex(&format!("presence-session:{session_identifier}")),
+                    now
+                ],
+            )
+            .map_err(|error| {
+                error!(%error, "presence akun tidak dapat disimpan");
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "presence_unavailable",
+                    "Status aktivitas akun belum tersedia.",
+                )
+            })?;
+        let _ = connection.execute(
+            "DELETE FROM account_presence WHERE last_seen < ?1",
+            params![now.saturating_sub(ACCOUNT_PRESENCE_RETENTION_SECONDS)],
+        );
+        Ok(())
+    }
+
+    fn clear_presence(&self, user_id: &str, session_identifier: &str) {
+        let Ok(connection) = self.connection.lock() else {
+            return;
+        };
+        let _ = connection.execute(
+            "DELETE FROM account_presence WHERE user_id_hash=?1 AND session_hash=?2",
+            params![
+                sha256_hex(&format!("presence-user:{user_id}")),
+                sha256_hex(&format!("presence-session:{session_identifier}"))
+            ],
+        );
+    }
+
+    fn clear_all_presence(&self, user_id: &str) {
+        let Ok(connection) = self.connection.lock() else {
+            return;
+        };
+        let _ = connection.execute(
+            "DELETE FROM account_presence WHERE user_id_hash=?1",
+            params![sha256_hex(&format!("presence-user:{user_id}"))],
+        );
+    }
+
+    fn account_revision(&self, user_id: &str) -> Result<i64, NativeError> {
+        let connection = self.connection.lock().map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "session_unavailable",
+                "Penyimpanan sesi aman belum tersedia.",
+            )
+        })?;
+        connection
+            .query_row(
+                "SELECT revision FROM account_session_revisions WHERE user_id_hash=?1",
+                params![sha256_hex(&format!("account-revision:{user_id}"))],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|value| value.unwrap_or(0))
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "session_unavailable",
+                    "Penyimpanan sesi aman belum tersedia.",
+                )
+            })
+    }
+
+    fn invalidate_account_sessions(&self, user_id: &str) -> Result<(), NativeError> {
+        let connection = self.connection.lock().map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "session_unavailable",
+                "Penyimpanan sesi aman belum tersedia.",
+            )
+        })?;
+        connection
+            .execute(
+                "INSERT INTO account_session_revisions(user_id_hash, revision, updated_at)
+                 VALUES (?1, 1, ?2)
+                 ON CONFLICT(user_id_hash) DO UPDATE SET
+                    revision=account_session_revisions.revision + 1,
+                    updated_at=excluded.updated_at",
+                params![
+                    sha256_hex(&format!("account-revision:{user_id}")),
+                    unix_seconds()
+                ],
+            )
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "session_unavailable",
+                    "Sesi akun belum dapat dibatalkan.",
+                )
+            })?;
+        drop(connection);
+        self.clear_all_presence(user_id);
+        Ok(())
+    }
+
+    fn last_seen_by_user(&self, user_ids: &[String]) -> Result<HashMap<String, i64>, NativeError> {
+        let lookup = user_ids
+            .iter()
+            .map(|user_id| {
+                (
+                    sha256_hex(&format!("presence-user:{user_id}")),
+                    user_id.clone(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let connection = self.connection.lock().map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "presence_unavailable",
+                "Status aktivitas akun belum tersedia.",
+            )
+        })?;
+        let mut statement = connection
+            .prepare(
+                "SELECT user_id_hash, MAX(last_seen) AS last_seen
+                 FROM account_presence
+                 GROUP BY user_id_hash",
+            )
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "presence_unavailable",
+                    "Status aktivitas akun belum tersedia.",
+                )
+            })?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "presence_unavailable",
+                    "Status aktivitas akun belum tersedia.",
+                )
+            })?;
+        let mut output = HashMap::new();
+        for row in rows {
+            let (user_hash, last_seen) = row.map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "presence_unavailable",
+                    "Status aktivitas akun belum tersedia.",
+                )
+            })?;
+            if let Some(user_id) = lookup.get(&user_hash) {
+                output.insert(user_id.clone(), last_seen);
+            }
+        }
+        Ok(output)
+    }
+
     fn consume_attempt(
         &self,
         attempt_key: &str,
@@ -694,6 +1142,127 @@ impl SessionStore {
             "DELETE FROM login_attempts WHERE reset_at <= ?1",
             params![now],
         );
+        let _ = connection.execute(
+            "DELETE FROM account_presence WHERE last_seen < ?1",
+            params![now.saturating_sub(ACCOUNT_PRESENCE_RETENTION_SECONDS)],
+        );
+    }
+
+    fn ensure_recovery_codes(&self, user_id: &str) -> Result<Vec<String>, NativeError> {
+        let user_id_hash = sha256_hex(&format!("admin-recovery:{user_id}"));
+        let mut connection = self.connection.lock().map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "recovery_unavailable",
+                "Kode pemulihan belum dapat disiapkan.",
+            )
+        })?;
+        let existing: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM admin_recovery_codes WHERE user_id_hash=?1",
+                params![user_id_hash],
+                |row| row.get(0),
+            )
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "recovery_unavailable",
+                    "Kode pemulihan belum dapat disiapkan.",
+                )
+            })?;
+        if existing > 0 {
+            return Ok(Vec::new());
+        }
+        let transaction = connection.transaction().map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "recovery_unavailable",
+                "Kode pemulihan belum dapat disiapkan.",
+            )
+        })?;
+        let mut displayed = Vec::with_capacity(ADMIN_RECOVERY_CODE_COUNT);
+        for _ in 0..ADMIN_RECOVERY_CODE_COUNT {
+            let (normalized, code) = new_recovery_code();
+            transaction
+                .execute(
+                    "INSERT INTO admin_recovery_codes(user_id_hash, code_hash, created_at)
+                     VALUES (?1, ?2, ?3)",
+                    params![
+                        user_id_hash,
+                        sha256_hex(&format!("recovery-code:{normalized}")),
+                        unix_seconds()
+                    ],
+                )
+                .map_err(|_| {
+                    NativeError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "recovery_unavailable",
+                        "Kode pemulihan belum dapat disiapkan.",
+                    )
+                })?;
+            displayed.push(code);
+        }
+        transaction.commit().map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "recovery_unavailable",
+                "Kode pemulihan belum dapat disiapkan.",
+            )
+        })?;
+        Ok(displayed)
+    }
+
+    fn has_recovery_codes(&self, user_id: &str) -> Result<bool, NativeError> {
+        let connection = self.connection.lock().map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "recovery_unavailable",
+                "Status pemulihan belum dapat diperiksa.",
+            )
+        })?;
+        let count: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM admin_recovery_codes WHERE user_id_hash=?1",
+                params![sha256_hex(&format!("admin-recovery:{user_id}"))],
+                |row| row.get(0),
+            )
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "recovery_unavailable",
+                    "Status pemulihan belum dapat diperiksa.",
+                )
+            })?;
+        Ok(count > 0)
+    }
+
+    fn consume_recovery_code(&self, user_id: &str, code: &str) -> Result<bool, NativeError> {
+        let Some(normalized) = normalized_recovery_code(code) else {
+            return Ok(false);
+        };
+        let connection = self.connection.lock().map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "recovery_unavailable",
+                "Kode pemulihan belum dapat diperiksa.",
+            )
+        })?;
+        let deleted = connection
+            .execute(
+                "DELETE FROM admin_recovery_codes WHERE user_id_hash=?1 AND code_hash=?2",
+                params![
+                    sha256_hex(&format!("admin-recovery:{user_id}")),
+                    sha256_hex(&format!("recovery-code:{normalized}"))
+                ],
+            )
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "recovery_unavailable",
+                    "Kode pemulihan belum dapat diperiksa.",
+                )
+            })?;
+        Ok(deleted == 1)
     }
 }
 
@@ -760,6 +1329,138 @@ impl SupabaseClient {
             .header(header::ACCEPT, "application/json")
     }
 
+    fn admin_request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
+        self.http
+            .request(method, url)
+            .header("apikey", &self.secret_key)
+            .bearer_auth(&self.secret_key)
+            .header(header::ACCEPT, "application/json")
+    }
+
+    async fn admin_response_json<T: DeserializeOwned>(
+        response: reqwest::Response,
+        message: &'static str,
+    ) -> Result<T, NativeError> {
+        let status = response.status();
+        let bytes = response.bytes().await.map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "upstream_unavailable",
+                message,
+            )
+        })?;
+        if !status.is_success() {
+            let conflict = matches!(
+                status,
+                reqwest::StatusCode::BAD_REQUEST
+                    | reqwest::StatusCode::CONFLICT
+                    | reqwest::StatusCode::UNPROCESSABLE_ENTITY
+            );
+            return Err(NativeError::new(
+                if conflict {
+                    StatusCode::CONFLICT
+                } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    StatusCode::TOO_MANY_REQUESTS
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE
+                },
+                if conflict {
+                    "account_conflict"
+                } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    "rate_limited"
+                } else {
+                    "upstream_unavailable"
+                },
+                message,
+            ));
+        }
+        serde_json::from_slice(&bytes).map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "invalid_upstream_response",
+                "Respons layanan akun tidak dapat dibaca.",
+            )
+        })
+    }
+
+    async fn invite_user(&self, email: &str, username: &str) -> Result<SupabaseUser, NativeError> {
+        let mut url = self.url("auth/v1/invite")?;
+        url.query_pairs_mut()
+            .append_pair("redirect_to", "https://eposyandu.app/");
+        let response = self
+            .admin_request(Method::POST, url)
+            .json(&json!({ "email": email, "data": { "username": username } }))
+            .send()
+            .await
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "upstream_unavailable",
+                    "Undangan akun belum dapat dikirim.",
+                )
+            })?;
+        Self::admin_response_json(
+            response,
+            "Email sudah digunakan atau undangan belum dapat dikirim.",
+        )
+        .await
+    }
+
+    async fn update_admin_user(
+        &self,
+        user_id: &str,
+        email: &str,
+        username: &str,
+    ) -> Result<SupabaseUser, NativeError> {
+        let url = self.url(&format!("auth/v1/admin/users/{user_id}"))?;
+        let response = self
+            .admin_request(Method::PUT, url)
+            .json(&json!({ "email": email, "user_metadata": { "username": username } }))
+            .send()
+            .await
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "upstream_unavailable",
+                    "Identitas akun belum dapat diperbarui.",
+                )
+            })?;
+        Self::admin_response_json(
+            response,
+            "Email sudah digunakan atau identitas akun belum dapat diperbarui.",
+        )
+        .await
+    }
+
+    async fn delete_admin_user(&self, user_id: &str) -> Result<(), NativeError> {
+        let url = self.url(&format!("auth/v1/admin/users/{user_id}"))?;
+        let response = self
+            .admin_request(Method::DELETE, url)
+            .json(&json!({ "should_soft_delete": false }))
+            .send()
+            .await
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "upstream_unavailable",
+                    "Akun belum dapat dihapus dari layanan autentikasi.",
+                )
+            })?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(NativeError::new(
+                if response.status() == reqwest::StatusCode::NOT_FOUND {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE
+                },
+                "account_delete_failed",
+                "Akun belum dapat dihapus dari layanan autentikasi.",
+            ))
+        }
+    }
+
     async fn login_account(&self, username: &str) -> Result<Option<LoginAccount>, NativeError> {
         let result = self
             .database
@@ -768,7 +1469,7 @@ impl SupabaseClient {
                 &[
                     (
                         "select".into(),
-                        "user_id,email,role,village,posyandu,active".into(),
+                        "user_id,email,role,village,posyandu,active,access_mode".into(),
                     ),
                     ("username".into(), format!("eq.{username}")),
                     ("limit".into(), "1".into()),
@@ -830,6 +1531,98 @@ impl SupabaseClient {
         Self::response_json(response, "Sesi masuk tidak lagi valid.").await
     }
 
+    async fn mfa_request<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        access_token: &str,
+        payload: Option<&Value>,
+    ) -> Result<T, NativeError> {
+        let url = self.url(path)?;
+        let mut request = self
+            .http
+            .request(method, url)
+            .header("apikey", &self.publishable_key)
+            .bearer_auth(access_token)
+            .header(header::ACCEPT, "application/json");
+        if let Some(payload) = payload {
+            request = request.json(payload);
+        }
+        let response = request.send().await.map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "mfa_unavailable",
+                "Layanan verifikasi dua langkah belum tersedia.",
+            )
+        })?;
+        Self::response_json(
+            response,
+            "Verifikasi dua langkah tidak berhasil. Periksa kode atau perangkat lalu coba lagi.",
+        )
+        .await
+    }
+
+    async fn mfa_enroll(
+        &self,
+        access_token: &str,
+        factor_type: &str,
+    ) -> Result<Value, NativeError> {
+        let friendly_name = if factor_type == "webauthn" {
+            "Passkey Administrator"
+        } else {
+            "TOTP Administrator"
+        };
+        let payload = if factor_type == "totp" {
+            json!({
+                "factor_type": factor_type,
+                "friendly_name": friendly_name,
+                "issuer": "E-Posyandu"
+            })
+        } else {
+            json!({
+                "factor_type": factor_type,
+                "friendly_name": friendly_name
+            })
+        };
+        self.mfa_request(
+            Method::POST,
+            "auth/v1/factors",
+            access_token,
+            Some(&payload),
+        )
+        .await
+    }
+
+    async fn mfa_challenge(
+        &self,
+        access_token: &str,
+        factor_id: &str,
+        payload: &Value,
+    ) -> Result<Value, NativeError> {
+        self.mfa_request(
+            Method::POST,
+            &format!("auth/v1/factors/{factor_id}/challenge"),
+            access_token,
+            Some(payload),
+        )
+        .await
+    }
+
+    async fn mfa_verify(
+        &self,
+        access_token: &str,
+        factor_id: &str,
+        payload: &Value,
+    ) -> Result<SupabaseSession, NativeError> {
+        self.mfa_request(
+            Method::POST,
+            &format!("auth/v1/factors/{factor_id}/verify"),
+            access_token,
+            Some(payload),
+        )
+        .await
+    }
+
     async fn logout(&self, access_token: &str) {
         let Ok(url) = self.url("auth/v1/logout") else {
             return;
@@ -843,7 +1636,21 @@ impl SupabaseClient {
             .await;
     }
 
-    async fn verify_bearer(&self, access_token: &str) -> Result<AccessScope, NativeError> {
+    async fn logout_local(&self, access_token: &str) {
+        let Ok(mut url) = self.url("auth/v1/logout") else {
+            return;
+        };
+        url.query_pairs_mut().append_pair("scope", "local");
+        let _ = self
+            .http
+            .post(url)
+            .header("apikey", &self.publishable_key)
+            .bearer_auth(access_token)
+            .send()
+            .await;
+    }
+
+    async fn identity(&self, access_token: &str) -> Result<SupabaseUser, NativeError> {
         let url = self.url("auth/v1/user")?;
         let response = self
             .http
@@ -859,15 +1666,46 @@ impl SupabaseClient {
                     "Layanan autentikasi belum tersedia.",
                 )
             })?;
-        let identity: SupabaseUser =
-            Self::response_json(response, "Sesi masuk tidak lagi valid.").await?;
+        Self::response_json(response, "Tautan undangan tidak lagi valid.").await
+    }
 
+    async fn update_password(
+        &self,
+        access_token: &str,
+        password: &str,
+    ) -> Result<SupabaseUser, NativeError> {
+        let url = self.url("auth/v1/user")?;
+        let response = self
+            .http
+            .put(url)
+            .header("apikey", &self.publishable_key)
+            .bearer_auth(access_token)
+            .json(&json!({ "password": password }))
+            .send()
+            .await
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "upstream_unavailable",
+                    "Kata sandi administrator belum dapat disimpan.",
+                )
+            })?;
+        Self::response_json(response, "Kata sandi administrator belum dapat disimpan.").await
+    }
+
+    async fn profile_for_identity(
+        &self,
+        identity: &SupabaseUser,
+    ) -> Result<AccessScope, NativeError> {
         let result = self
             .database
             .get(
                 "app_users",
                 &[
-                    ("select".into(), "role,village,posyandu,active".into()),
+                    (
+                        "select".into(),
+                        "role,village,posyandu,active,access_mode".into(),
+                    ),
                     ("user_id".into(), format!("eq.{}", identity.id)),
                     ("limit".into(), "1".into()),
                 ],
@@ -896,12 +1734,43 @@ impl SupabaseClient {
                 )
             })?;
         validate_profile(
-            identity.id,
-            identity.email,
+            identity.id.clone(),
+            identity.email.clone(),
             profile.role,
             profile.village,
             profile.posyandu,
+            profile.access_mode,
         )
+    }
+
+    async fn verify_bearer(&self, access_token: &str) -> Result<AccessScope, NativeError> {
+        let url = self.url("auth/v1/user")?;
+        let response = self
+            .http
+            .get(url)
+            .header("apikey", &self.publishable_key)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "upstream_unavailable",
+                    "Layanan autentikasi belum tersedia.",
+                )
+            })?;
+        let identity: SupabaseUser =
+            Self::response_json(response, "Sesi masuk tidak lagi valid.").await?;
+
+        let profile = self.profile_for_identity(&identity).await?;
+        if is_super_admin(&profile.role) && jwt_aal(access_token).as_deref() != Some("aal2") {
+            return Err(NativeError::new(
+                StatusCode::UNAUTHORIZED,
+                "mfa_required",
+                "Verifikasi dua langkah diperlukan untuk akun administrator.",
+            ));
+        }
+        Ok(profile)
     }
 
     async fn audit_login(
@@ -943,6 +1812,79 @@ impl SupabaseClient {
             warn!(%request_id, %action, "audit autentikasi native gagal ditulis");
         }
     }
+
+    async fn audit_mfa(&self, scope: &AccessScope, method: &str) {
+        let request_id = format!("mfa-{}-{}", unix_seconds(), random_identifier(8));
+        let response = self
+            .database
+            .write(
+                &Method::POST,
+                "audit_events",
+                &[(
+                    "on_conflict".into(),
+                    "idempotency_key,action,resource,document_id".into(),
+                )],
+                Some(&json!({
+                    "request_id": request_id,
+                    "idempotency_key": Value::Null,
+                    "actor_user_id": scope.user_id,
+                    "actor_role": scope.role,
+                    "action": "login_success",
+                    "resource": "authentication",
+                    "document_id": sha256_hex(&format!("mfa:{}", scope.user_id)),
+                    "village": scope.desa,
+                    "posyandu": scope.posyandu,
+                    "before_data": Value::Null,
+                    "after_data": Value::Null,
+                    "metadata": { "outcome": "mfa_verified", "method": method, "origin": "oracle-native" }
+                })),
+                Some("resolution=ignore-duplicates,return=minimal"),
+            )
+            .await;
+        if response.is_err() {
+            warn!(%request_id, "audit MFA native gagal ditulis");
+        }
+    }
+
+    async fn audit_account_admin(
+        &self,
+        request_id: &str,
+        actor: &AccessScope,
+        target_user_id: &str,
+        action: &str,
+        before: Option<&Value>,
+        after: Option<&Value>,
+    ) {
+        let response = self
+            .database
+            .write(
+                &Method::POST,
+                "audit_events",
+                &[(
+                    "on_conflict".into(),
+                    "idempotency_key,action,resource,document_id".into(),
+                )],
+                Some(&json!({
+                    "request_id": request_id,
+                    "idempotency_key": Value::Null,
+                    "actor_user_id": actor.user_id,
+                    "actor_role": actor.role,
+                    "action": action,
+                    "resource": "app_users",
+                    "document_id": target_user_id,
+                    "village": after.and_then(|value| value.get("village")).cloned().unwrap_or(Value::Null),
+                    "posyandu": after.and_then(|value| value.get("posyandu")).cloned().unwrap_or(Value::Null),
+                    "before_data": before.cloned().unwrap_or(Value::Null),
+                    "after_data": after.cloned().unwrap_or(Value::Null),
+                    "metadata": { "origin": "oracle-native", "adminManaged": true }
+                })),
+                Some("resolution=ignore-duplicates,return=minimal"),
+            )
+            .await;
+        if response.is_err() {
+            warn!(%request_id, %action, %target_user_id, "audit administrasi akun gagal ditulis");
+        }
+    }
 }
 
 fn validate_profile(
@@ -951,8 +1893,12 @@ fn validate_profile(
     role: String,
     desa: Option<String>,
     posyandu: Option<String>,
+    access_mode: String,
 ) -> Result<AccessScope, NativeError> {
-    if !matches!(role.as_str(), "Kader Posyandu" | "Bidan Desa" | "Ahli Gizi") {
+    if !matches!(
+        role.as_str(),
+        "Kader Posyandu" | "Bidan Desa" | "Ahli Gizi" | "super_admin"
+    ) {
         return Err(NativeError::new(
             StatusCode::FORBIDDEN,
             "forbidden",
@@ -973,12 +1919,29 @@ fn validate_profile(
             "Wilayah bidan belum lengkap.",
         ));
     }
+    if is_super_admin(&role) && (desa.is_some() || posyandu.is_some()) {
+        return Err(NativeError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Scope administrator tidak valid.",
+        ));
+    }
+    if !matches!(access_mode.as_str(), "read" | "write")
+        || (is_super_admin(&role) && access_mode != "write")
+    {
+        return Err(NativeError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Hak akses akun tidak valid.",
+        ));
+    }
     Ok(AccessScope {
         user_id,
         email,
         role,
         desa,
         posyandu,
+        access_mode,
     })
 }
 
@@ -1040,6 +2003,7 @@ impl NativeAuth {
                 http,
                 base_url,
                 publishable_key: required_env("SUPABASE_PUBLISHABLE_KEY")?,
+                secret_key: required_env("SUPABASE_SECRET_KEY")?,
                 database,
             },
             sessions,
@@ -1267,6 +2231,9 @@ impl NativeAuth {
             .map(ToOwned::to_owned);
         if let Some(value) = bearer {
             let profile = self.supabase.verify_bearer(&value).await?;
+            let account_revision = self.sessions.account_revision(&profile.user_id)?;
+            self.sessions
+                .touch_presence(&profile.user_id, &format!("bearer:{}", sha256_hex(&value)))?;
             return Ok((
                 String::new(),
                 BrowserSession {
@@ -1275,13 +2242,25 @@ impl NativeAuth {
                     user: SupabaseUser {
                         id: profile.user_id.clone(),
                         email: profile.email.clone(),
+                        factors: Vec::new(),
                     },
                     profile,
                     updated_at: now_iso(),
+                    mfa_verified: true,
+                    mfa_pending_expires_at: None,
+                    account_revision,
                 },
             ));
         }
 
+        self.browser_session(headers, true).await
+    }
+
+    async fn browser_session(
+        &self,
+        headers: HeaderMap,
+        require_verified_mfa: bool,
+    ) -> Result<(String, BrowserSession), NativeError> {
         let identifier = self
             .cookie_identifier(&headers)
             .ok_or_else(NativeError::unauthorized)?;
@@ -1289,6 +2268,16 @@ impl NativeAuth {
             .sessions
             .get(&identifier)?
             .ok_or_else(NativeError::unauthorized)?;
+        if self.sessions.account_revision(&session.profile.user_id)? != session.account_revision {
+            self.sessions.delete(&identifier);
+            self.sessions
+                .clear_presence(&session.profile.user_id, &identifier);
+            return Err(NativeError::new(
+                StatusCode::UNAUTHORIZED,
+                "account_access_changed",
+                "Hak akses akun berubah. Silakan masuk kembali.",
+            ));
+        }
         let expires_soon = jwt_expiration_seconds(&session.access_token)
             .is_none_or(|expires_at| expires_at <= unix_seconds() + SESSION_REFRESH_WINDOW_SECONDS);
         if expires_soon {
@@ -1312,7 +2301,31 @@ impl NativeAuth {
             session.user = refreshed.user;
             session.updated_at = now_iso();
         }
+        if is_super_admin(&session.profile.role) && !session.mfa_verified {
+            if session
+                .mfa_pending_expires_at
+                .is_none_or(|expires_at| expires_at <= unix_seconds())
+            {
+                self.sessions.delete(&identifier);
+                return Err(NativeError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "mfa_session_expired",
+                    "Waktu verifikasi dua langkah habis. Silakan masuk kembali.",
+                ));
+            }
+            if require_verified_mfa {
+                return Err(NativeError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "mfa_required",
+                    "Verifikasi dua langkah diperlukan untuk akun administrator.",
+                ));
+            }
+        }
         self.sessions.put(&identifier, &session)?;
+        if !is_super_admin(&session.profile.role) || session.mfa_verified {
+            self.sessions
+                .touch_presence(&session.profile.user_id, &identifier)?;
+        }
         Ok((identifier, session))
     }
 
@@ -1497,7 +2510,9 @@ impl NativeAuth {
             account.role.clone(),
             account.village.clone(),
             account.posyandu.clone(),
+            account.access_mode.clone(),
         )?;
+        let requires_mfa = is_super_admin(&profile.role);
         let identifier = random_identifier(32);
         let browser_session = BrowserSession {
             access_token: session.access_token,
@@ -1505,6 +2520,10 @@ impl NativeAuth {
             user: session.user.clone(),
             profile: profile.clone(),
             updated_at: now_iso(),
+            mfa_verified: !requires_mfa,
+            mfa_pending_expires_at: requires_mfa
+                .then(|| unix_seconds() + ADMIN_MFA_PENDING_TTL_SECONDS),
+            account_revision: self.sessions.account_revision(&profile.user_id)?,
         };
         self.sessions.put(&identifier, &browser_session)?;
         self.sessions
@@ -1515,17 +2534,42 @@ impl NativeAuth {
                 &username,
                 Some(&account),
                 "login_success",
-                "authenticated",
+                if requires_mfa {
+                    "password_verified_mfa_pending"
+                } else {
+                    "authenticated"
+                },
             )
             .await;
 
-        let mut response = response_json(
-            StatusCode::OK,
+        let payload = if requires_mfa {
+            let factors = session
+                .user
+                .factors
+                .iter()
+                .filter(|factor| factor.status == "verified")
+                .filter(|factor| matches!(factor.factor_type.as_str(), "totp" | "webauthn"))
+                .map(|factor| {
+                    json!({
+                        "id": factor.id,
+                        "type": factor.factor_type,
+                        "name": factor.friendly_name
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "mfaRequired": true,
+                "setupRequired": factors.is_empty(),
+                "factors": factors,
+                "expiresIn": ADMIN_MFA_PENDING_TTL_SECONDS
+            })
+        } else {
             json!({
                 "user": { "id": session.user.id, "email": session.user.email },
                 "profile": profile_payload(&profile)
-            }),
-        );
+            })
+        };
+        let mut response = response_json(StatusCode::OK, payload);
         response.headers_mut().insert(
             header::SET_COOKIE,
             HeaderValue::from_str(&self.set_cookie(&identifier)).map_err(|_| {
@@ -1537,6 +2581,424 @@ impl NativeAuth {
             })?,
         );
         Ok(response)
+    }
+
+    fn webauthn_scope(&self) -> (String, Vec<String>) {
+        let rp_id = if self.development {
+            "localhost".to_owned()
+        } else {
+            "eposyandu.app".to_owned()
+        };
+        let origins = self
+            .allowed_origins
+            .iter()
+            .filter(|origin| {
+                Url::parse(origin)
+                    .ok()
+                    .and_then(|url| url.host_str().map(ToOwned::to_owned))
+                    .is_some_and(|host| host == rp_id || host.ends_with(&format!(".{rp_id}")))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        (rp_id, origins)
+    }
+
+    async fn mfa_body<T: DeserializeOwned>(&self, request: Request) -> Result<T, NativeError> {
+        let bytes = to_bytes(request.into_body(), LOGIN_BODY_MAX_BYTES)
+            .await
+            .map_err(|_| {
+                NativeError::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "payload_too_large",
+                    "Data verifikasi terlalu besar.",
+                )
+            })?;
+        serde_json::from_slice(&bytes).map_err(|_| {
+            NativeError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "validation_error",
+                "Data verifikasi tidak valid.",
+            )
+        })
+    }
+
+    pub(crate) async fn complete_invite(&self, request: Request) -> Response {
+        match self.complete_invite_result(request).await {
+            Ok(response) => response,
+            Err(error_value) => error_value.into_response(),
+        }
+    }
+
+    async fn complete_invite_result(&self, request: Request) -> Result<Response, NativeError> {
+        self.validate_origin(&request)?;
+        let request_id = request_id(&request);
+        let body: CompleteInviteBody = self.mfa_body(request).await?;
+        if body.access_token.len() > 8 * 1024
+            || body.refresh_token.is_empty()
+            || body.refresh_token.len() > 8 * 1024
+            || !valid_admin_password(&body.password)
+        {
+            return Err(NativeError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "validation_error",
+                "Kata sandi wajib minimal 14 karakter dan memuat huruf besar, huruf kecil, angka, serta simbol.",
+            ));
+        }
+        let identity = self.supabase.identity(&body.access_token).await?;
+        let profile = self.supabase.profile_for_identity(&identity).await?;
+        let requires_mfa = is_super_admin(&profile.role);
+        if requires_mfa && self.sessions.has_recovery_codes(&profile.user_id)? {
+            return Err(NativeError::new(
+                StatusCode::FORBIDDEN,
+                "invite_not_allowed",
+                "Undangan akun ini tidak dapat digunakan.",
+            ));
+        }
+        let email = identity
+            .email
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                NativeError::new(
+                    StatusCode::FORBIDDEN,
+                    "invite_not_allowed",
+                    "Email akun belum terverifikasi.",
+                )
+            })?;
+        let updated = self
+            .supabase
+            .update_password(&body.access_token, &body.password)
+            .await?;
+        if updated.id != profile.user_id {
+            return Err(NativeError::new(
+                StatusCode::UNAUTHORIZED,
+                "invalid_invite",
+                "Tautan undangan tidak sesuai dengan akun.",
+            ));
+        }
+        self.supabase.logout_local(&body.access_token).await;
+        let session = self.supabase.password_login(email, &body.password).await?;
+        if session.user.id != profile.user_id {
+            return Err(NativeError::new(
+                StatusCode::UNAUTHORIZED,
+                "invalid_invite",
+                "Tautan undangan tidak sesuai dengan akun.",
+            ));
+        }
+
+        let identifier = random_identifier(32);
+        self.sessions.put(
+            &identifier,
+            &BrowserSession {
+                access_token: session.access_token,
+                refresh_token: session.refresh_token,
+                user: session.user.clone(),
+                profile: profile.clone(),
+                updated_at: now_iso(),
+                mfa_verified: !requires_mfa,
+                mfa_pending_expires_at: requires_mfa
+                    .then(|| unix_seconds() + ADMIN_MFA_PENDING_TTL_SECONDS),
+                account_revision: self.sessions.account_revision(&profile.user_id)?,
+            },
+        )?;
+        let account = LoginAccount {
+            user_id: profile.user_id.clone(),
+            email: profile.email.clone(),
+            role: profile.role.clone(),
+            village: profile.desa.clone(),
+            posyandu: profile.posyandu.clone(),
+            active: true,
+            access_mode: profile.access_mode.clone(),
+        };
+        self.supabase
+            .audit_login(
+                &request_id,
+                "invite",
+                Some(&account),
+                "login_success",
+                if requires_mfa {
+                    "invite_completed_mfa_pending"
+                } else {
+                    "invite_completed_authenticated"
+                },
+            )
+            .await;
+        let factors = session
+            .user
+            .factors
+            .iter()
+            .filter(|factor| factor.status == "verified")
+            .filter(|factor| matches!(factor.factor_type.as_str(), "totp" | "webauthn"))
+            .map(|factor| {
+                json!({
+                    "id": factor.id,
+                    "type": factor.factor_type,
+                    "name": factor.friendly_name
+                })
+            })
+            .collect::<Vec<_>>();
+        let payload = if requires_mfa {
+            json!({
+                "mfaRequired": true,
+                "setupRequired": factors.is_empty(),
+                "factors": factors,
+                "expiresIn": ADMIN_MFA_PENDING_TTL_SECONDS
+            })
+        } else {
+            json!({
+                "mfaRequired": false,
+                "user": { "id": session.user.id, "email": session.user.email },
+                "profile": profile_payload(&profile)
+            })
+        };
+        let mut response = response_json(StatusCode::OK, payload);
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            HeaderValue::from_str(&self.set_cookie(&identifier)).map_err(|_| {
+                NativeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "session_error",
+                    "Cookie sesi aman tidak dapat dibuat.",
+                )
+            })?,
+        );
+        Ok(response)
+    }
+
+    pub(crate) async fn mfa_enroll(&self, request: Request) -> Response {
+        match self.mfa_enroll_result(request).await {
+            Ok(response) => response,
+            Err(error_value) => error_value.into_response(),
+        }
+    }
+
+    async fn mfa_enroll_result(&self, request: Request) -> Result<Response, NativeError> {
+        self.validate_origin(&request)?;
+        let headers = request.headers().clone();
+        let body: MfaEnrollBody = self.mfa_body(request).await?;
+        let (_, session) = self.browser_session(headers, false).await?;
+        if !is_super_admin(&session.profile.role)
+            || !matches!(body.factor_type.as_str(), "totp" | "webauthn")
+        {
+            return Err(NativeError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Metode verifikasi tidak diizinkan.",
+            ));
+        }
+        let factor = self
+            .supabase
+            .mfa_enroll(&session.access_token, &body.factor_type)
+            .await?;
+        Ok(response_json(StatusCode::OK, json!({ "factor": factor })))
+    }
+
+    pub(crate) async fn mfa_challenge(&self, request: Request) -> Response {
+        match self.mfa_challenge_result(request).await {
+            Ok(response) => response,
+            Err(error_value) => error_value.into_response(),
+        }
+    }
+
+    async fn mfa_challenge_result(&self, request: Request) -> Result<Response, NativeError> {
+        self.validate_origin(&request)?;
+        let headers = request.headers().clone();
+        let body: MfaChallengeBody = self.mfa_body(request).await?;
+        let (_, session) = self.browser_session(headers, false).await?;
+        if !is_super_admin(&session.profile.role)
+            || !valid_uuid(&body.factor_id)
+            || !matches!(body.factor_type.as_str(), "totp" | "webauthn")
+        {
+            return Err(NativeError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "validation_error",
+                "Faktor verifikasi tidak valid.",
+            ));
+        }
+        let payload = if body.factor_type == "webauthn" {
+            let (rp_id, rp_origins) = self.webauthn_scope();
+            if rp_origins.is_empty() {
+                return Err(NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "webauthn_unavailable",
+                    "Passkey belum dikonfigurasi untuk alamat aplikasi ini.",
+                ));
+            }
+            json!({
+                "factorId": body.factor_id,
+                "webauthn": { "rpId": rp_id, "rpOrigins": rp_origins }
+            })
+        } else {
+            json!({ "factorId": body.factor_id })
+        };
+        let challenge = self
+            .supabase
+            .mfa_challenge(&session.access_token, &body.factor_id, &payload)
+            .await?;
+        Ok(response_json(
+            StatusCode::OK,
+            json!({ "challenge": challenge }),
+        ))
+    }
+
+    pub(crate) async fn mfa_verify(&self, request: Request) -> Response {
+        match self.mfa_verify_result(request).await {
+            Ok(response) => response,
+            Err(error_value) => error_value.into_response(),
+        }
+    }
+
+    async fn mfa_verify_result(&self, request: Request) -> Result<Response, NativeError> {
+        self.validate_origin(&request)?;
+        let headers = request.headers().clone();
+        let body: MfaVerifyBody = self.mfa_body(request).await?;
+        let (identifier, mut session) = self.browser_session(headers, false).await?;
+        if !is_super_admin(&session.profile.role) {
+            return Err(NativeError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Verifikasi administrator tidak diizinkan.",
+            ));
+        }
+
+        let mut recovery_codes = Vec::new();
+        if body.factor_type == "recovery" {
+            let allowed = self.sessions.consume_attempt(
+                &format!("mfa:recovery:{}", session.profile.user_id),
+                5,
+                5 * 60,
+            )?;
+            let valid = allowed
+                && body.code.as_deref().is_some_and(|code| {
+                    self.sessions
+                        .consume_recovery_code(&session.profile.user_id, code)
+                        .unwrap_or(false)
+                });
+            if !valid {
+                return Err(NativeError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_recovery_code",
+                    "Kode pemulihan tidak valid atau sudah pernah digunakan.",
+                ));
+            }
+        } else {
+            let factor_id = body
+                .factor_id
+                .as_deref()
+                .filter(|value| valid_uuid(value))
+                .ok_or_else(|| {
+                    NativeError::new(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "validation_error",
+                        "Faktor verifikasi tidak valid.",
+                    )
+                })?;
+            let challenge_id = body
+                .challenge_id
+                .as_deref()
+                .filter(|value| valid_uuid(value))
+                .ok_or_else(|| {
+                    NativeError::new(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "validation_error",
+                        "Challenge verifikasi tidak valid.",
+                    )
+                })?;
+            let payload = match body.factor_type.as_str() {
+                "totp" => {
+                    let code = body
+                        .code
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| {
+                            value.len() == 6 && value.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                        .ok_or_else(|| {
+                            NativeError::new(
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                "validation_error",
+                                "Kode authenticator harus berisi 6 angka.",
+                            )
+                        })?;
+                    json!({ "challenge_id": challenge_id, "code": code })
+                }
+                "webauthn" => {
+                    let operation = body
+                        .operation
+                        .as_deref()
+                        .filter(|value| matches!(*value, "create" | "request"))
+                        .ok_or_else(|| {
+                            NativeError::new(
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                "validation_error",
+                                "Operasi passkey tidak valid.",
+                            )
+                        })?;
+                    let credential = body.credential_response.as_ref().ok_or_else(|| {
+                        NativeError::new(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "validation_error",
+                            "Respons passkey tidak tersedia.",
+                        )
+                    })?;
+                    let (rp_id, rp_origins) = self.webauthn_scope();
+                    json!({
+                        "challenge_id": challenge_id,
+                        "webauthn": {
+                            "type": operation,
+                            "rpId": rp_id,
+                            "rpOrigins": rp_origins,
+                            "credential_response": credential
+                        }
+                    })
+                }
+                _ => {
+                    return Err(NativeError::new(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "validation_error",
+                        "Metode verifikasi tidak valid.",
+                    ));
+                }
+            };
+            let verified = self
+                .supabase
+                .mfa_verify(&session.access_token, factor_id, &payload)
+                .await?;
+            if verified.user.id != session.profile.user_id
+                || jwt_aal(&verified.access_token).as_deref() != Some("aal2")
+            {
+                self.sessions.delete(&identifier);
+                return Err(NativeError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "mfa_failed",
+                    "Verifikasi dua langkah tidak menghasilkan sesi administrator yang aman.",
+                ));
+            }
+            session.access_token = verified.access_token;
+            session.refresh_token = verified.refresh_token;
+            session.user = verified.user;
+            recovery_codes = self
+                .sessions
+                .ensure_recovery_codes(&session.profile.user_id)?;
+        }
+        session.mfa_verified = true;
+        session.mfa_pending_expires_at = None;
+        session.updated_at = now_iso();
+        self.sessions.put(&identifier, &session)?;
+        self.sessions
+            .touch_presence(&session.profile.user_id, &identifier)?;
+        self.supabase
+            .audit_mfa(&session.profile, &body.factor_type)
+            .await;
+
+        Ok(response_json(
+            StatusCode::OK,
+            json!({
+                "user": { "id": session.user.id, "email": session.user.email },
+                "profile": profile_payload(&session.profile),
+                "recoveryCodes": recovery_codes
+            }),
+        ))
     }
 
     pub(crate) async fn session(&self, request: Request) -> Response {
@@ -1563,6 +3025,413 @@ impl NativeAuth {
         }
     }
 
+    pub(crate) async fn presence(&self, request: Request) -> Response {
+        if let Err(error_value) = self.validate_origin(&request) {
+            return error_value.into_response();
+        }
+        let headers = request.headers().clone();
+        drop(request);
+        match self.active_session(headers).await {
+            Ok(_) => response_json(
+                StatusCode::OK,
+                json!({ "online": true, "checkedAt": now_iso() }),
+            ),
+            Err(error_value) => error_value.into_response(),
+        }
+    }
+
+    async fn verified_admin(&self, headers: HeaderMap) -> Result<BrowserSession, NativeError> {
+        let (_, session) = self.active_session(headers).await?;
+        if !is_super_admin(&session.profile.role) || !session.mfa_verified {
+            return Err(NativeError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Administrasi akun hanya tersedia untuk Administrator terverifikasi.",
+            ));
+        }
+        Ok(session)
+    }
+
+    pub(crate) async fn require_verified_admin(&self, headers: HeaderMap) -> Result<(), Response> {
+        self.verified_admin(headers)
+            .await
+            .map(|_| ())
+            .map_err(NativeError::into_response)
+    }
+
+    async fn account_row(&self, user_id: &str) -> Result<Value, NativeError> {
+        if !valid_uuid(user_id) {
+            return Err(NativeError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "validation_error",
+                "ID akun tidak valid.",
+            ));
+        }
+        let result = self
+            .supabase
+            .database
+            .get(
+                "app_users",
+                &[
+                    ("user_id".into(), format!("eq.{user_id}")),
+                    ("limit".into(), "1".into()),
+                ],
+                false,
+            )
+            .await
+            .map_err(|error| native_database_error(error, "Akun belum dapat dimuat."))?;
+        result
+            .value
+            .as_array()
+            .and_then(|rows| rows.first())
+            .cloned()
+            .ok_or_else(|| {
+                NativeError::new(StatusCode::NOT_FOUND, "not_found", "Akun tidak ditemukan.")
+            })
+    }
+
+    async fn active_super_admin_count(&self) -> Result<usize, NativeError> {
+        let result = self
+            .supabase
+            .database
+            .get(
+                "app_users",
+                &[
+                    ("role".into(), "eq.super_admin".into()),
+                    ("active".into(), "eq.true".into()),
+                    ("limit".into(), "500".into()),
+                ],
+                false,
+            )
+            .await
+            .map_err(|error| {
+                native_database_error(error, "Administrator aktif belum dapat diperiksa.")
+            })?;
+        Ok(result.value.as_array().map_or(0, Vec::len))
+    }
+
+    pub(crate) async fn create_admin_account(&self, request: Request) -> Response {
+        match self.create_admin_account_result(request).await {
+            Ok(value) => response_json(StatusCode::CREATED, value),
+            Err(error) => error.into_response(),
+        }
+    }
+
+    async fn create_admin_account_result(&self, request: Request) -> Result<Value, NativeError> {
+        self.validate_origin(&request)?;
+        let request_id = request_id(&request);
+        let headers = request.headers().clone();
+        let admin = self.verified_admin(headers).await?;
+        let body = validated_admin_account(self.mfa_body(request).await?, true)?;
+        if !body.active {
+            return Err(NativeError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "validation_error",
+                "Akun undangan baru harus aktif.",
+            ));
+        }
+        let invited = self
+            .supabase
+            .invite_user(&body.email, &body.username)
+            .await?;
+        if !valid_uuid(&invited.id) {
+            return Err(NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "invalid_upstream_response",
+                "ID akun undangan tidak valid.",
+            ));
+        }
+        let after = json!({
+            "user_id": invited.id,
+            "email": body.email,
+            "username": body.username,
+            "role": body.role,
+            "village": body.village,
+            "posyandu": body.posyandu,
+            "access_mode": body.access_mode,
+            "active": true
+        });
+        if let Err(error) = self
+            .supabase
+            .database
+            .write(
+                &Method::POST,
+                "app_users",
+                &[],
+                Some(&after),
+                Some("return=representation"),
+            )
+            .await
+        {
+            let _ = self.supabase.delete_admin_user(&invited.id).await;
+            return Err(native_database_error(
+                error,
+                "Username atau email sudah digunakan oleh akun lain.",
+            ));
+        }
+        self.supabase
+            .audit_account_admin(
+                &request_id,
+                &admin.profile,
+                &invited.id,
+                "create",
+                None,
+                Some(&after),
+            )
+            .await;
+        Ok(json!({
+            "created": true,
+            "userId": invited.id,
+            "message": "Undangan akun berhasil dikirim melalui email."
+        }))
+    }
+
+    pub(crate) async fn update_admin_account(&self, request: Request, user_id: String) -> Response {
+        match self.update_admin_account_result(request, &user_id).await {
+            Ok(value) => response_json(StatusCode::OK, value),
+            Err(error) => error.into_response(),
+        }
+    }
+
+    async fn update_admin_account_result(
+        &self,
+        request: Request,
+        user_id: &str,
+    ) -> Result<Value, NativeError> {
+        self.validate_origin(&request)?;
+        let request_id = request_id(&request);
+        let headers = request.headers().clone();
+        let admin = self.verified_admin(headers).await?;
+        if admin.profile.user_id == user_id {
+            return Err(NativeError::new(
+                StatusCode::FORBIDDEN,
+                "self_account_protected",
+                "Akun Administrator yang sedang digunakan tidak dapat diedit dari halaman ini.",
+            ));
+        }
+        let before = self.account_row(user_id).await?;
+        let body = validated_admin_account(self.mfa_body(request).await?, true)?;
+        let was_last_admin = before.get("role").and_then(Value::as_str) == Some("super_admin")
+            && before
+                .get("active")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            && (body.role != "super_admin" || !body.active)
+            && self.active_super_admin_count().await? <= 1;
+        if was_last_admin {
+            return Err(NativeError::new(
+                StatusCode::CONFLICT,
+                "last_admin_protected",
+                "Administrator aktif terakhir tidak dapat dinonaktifkan atau diubah rolenya.",
+            ));
+        }
+        let previous_email = before
+            .get("email")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let previous_username = before
+            .get("username")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        self.supabase
+            .update_admin_user(user_id, &body.email, &body.username)
+            .await?;
+        let after = json!({
+            "email": body.email,
+            "username": body.username,
+            "role": body.role,
+            "village": body.village,
+            "posyandu": body.posyandu,
+            "access_mode": body.access_mode,
+            "active": body.active,
+            "updated_at": now_iso()
+        });
+        if let Err(error) = self
+            .supabase
+            .database
+            .write(
+                &Method::PATCH,
+                "app_users",
+                &[("user_id".into(), format!("eq.{user_id}"))],
+                Some(&after),
+                Some("return=representation"),
+            )
+            .await
+        {
+            let _ = self
+                .supabase
+                .update_admin_user(user_id, previous_email, previous_username)
+                .await;
+            return Err(native_database_error(
+                error,
+                "Username atau email sudah digunakan oleh akun lain.",
+            ));
+        }
+        self.sessions.invalidate_account_sessions(user_id)?;
+        self.supabase
+            .audit_account_admin(
+                &request_id,
+                &admin.profile,
+                user_id,
+                "update",
+                Some(&before),
+                Some(&after),
+            )
+            .await;
+        Ok(json!({ "updated": true, "userId": user_id }))
+    }
+
+    pub(crate) async fn delete_admin_account(&self, request: Request, user_id: String) -> Response {
+        match self.delete_admin_account_result(request, &user_id).await {
+            Ok(value) => response_json(StatusCode::OK, value),
+            Err(error) => error.into_response(),
+        }
+    }
+
+    async fn delete_admin_account_result(
+        &self,
+        request: Request,
+        user_id: &str,
+    ) -> Result<Value, NativeError> {
+        self.validate_origin(&request)?;
+        let request_id = request_id(&request);
+        let headers = request.headers().clone();
+        let admin = self.verified_admin(headers).await?;
+        if admin.profile.user_id == user_id {
+            return Err(NativeError::new(
+                StatusCode::FORBIDDEN,
+                "self_account_protected",
+                "Akun Administrator yang sedang digunakan tidak dapat dihapus.",
+            ));
+        }
+        let before = self.account_row(user_id).await?;
+        if before.get("role").and_then(Value::as_str) == Some("super_admin")
+            && before
+                .get("active")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            && self.active_super_admin_count().await? <= 1
+        {
+            return Err(NativeError::new(
+                StatusCode::CONFLICT,
+                "last_admin_protected",
+                "Administrator aktif terakhir tidak dapat dihapus.",
+            ));
+        }
+        self.sessions.invalidate_account_sessions(user_id)?;
+        self.supabase.delete_admin_user(user_id).await?;
+        self.supabase
+            .database
+            .write(
+                &Method::DELETE,
+                "app_users",
+                &[("user_id".into(), format!("eq.{user_id}"))],
+                None,
+                None,
+            )
+            .await
+            .map_err(|error| native_database_error(error, "Profil akun belum dapat dihapus."))?;
+        self.supabase
+            .audit_account_admin(
+                &request_id,
+                &admin.profile,
+                user_id,
+                "delete",
+                Some(&before),
+                None,
+            )
+            .await;
+        Ok(json!({ "deleted": true, "userId": user_id }))
+    }
+
+    pub(crate) async fn admin_accounts(&self, headers: HeaderMap) -> Result<Value, Response> {
+        let session = self
+            .verified_admin(headers)
+            .await
+            .map_err(NativeError::into_response)?;
+        let result = self
+            .supabase
+            .database
+            .get(
+                "app_users",
+                &[
+                    ("order".into(), "role.asc,username.asc".into()),
+                    ("limit".into(), "500".into()),
+                ],
+                false,
+            )
+            .await
+            .map_err(|error| {
+                native_database_error(error, "Daftar akun belum dapat dimuat.").into_response()
+            })?;
+        let rows = result.value.as_array().cloned().unwrap_or_default();
+        let user_ids = rows
+            .iter()
+            .filter_map(|row| {
+                row.get("user_id")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .collect::<Vec<_>>();
+        let presence = self
+            .sessions
+            .last_seen_by_user(&user_ids)
+            .map_err(NativeError::into_response)?;
+        let now = unix_seconds();
+        let mut online_count = 0_usize;
+        let mut active_count = 0_usize;
+        let accounts = rows
+            .iter()
+            .filter_map(|row| {
+                let user_id = row.get("user_id")?.as_str()?;
+                let active = row.get("active").and_then(Value::as_bool).unwrap_or(false);
+                if active {
+                    active_count += 1;
+                }
+                let last_seen = presence.get(user_id).copied();
+                let online = account_is_online(active, last_seen, now);
+                if online {
+                    online_count += 1;
+                }
+                Some(json!({
+                    "userId": user_id,
+                    "username": row.get("username").cloned().unwrap_or(Value::Null),
+                    "email": row.get("email").cloned().unwrap_or(Value::Null),
+                    "role": row.get("role").cloned().unwrap_or(Value::Null),
+                    "village": row.get("village").cloned().unwrap_or(Value::Null),
+                    "posyandu": row.get("posyandu").cloned().unwrap_or(Value::Null),
+                    "active": active,
+                    "accessMode": row.get("access_mode").cloned().unwrap_or_else(|| json!("write")),
+                    "isCurrentAccount": user_id == session.profile.user_id,
+                    "presenceStatus": if online { "online" } else { "offline" },
+                    "lastSeenAt": last_seen.and_then(unix_iso),
+                    "createdAt": row.get("created_at").cloned().unwrap_or(Value::Null)
+                }))
+            })
+            .collect::<Vec<_>>();
+        let total = accounts.len();
+        Ok(json!({
+            "checkedAt": now_iso(),
+            "onlineWindowSeconds": ACCOUNT_ONLINE_WINDOW_SECONDS,
+            "access": {
+                "role": "super_admin",
+                "level": "full",
+                "scope": "global",
+                "allApplicationData": true,
+                "accountMonitoring": true,
+                "systemMonitoring": true,
+                "auditAccess": true
+            },
+            "summary": {
+                "total": total,
+                "active": active_count,
+                "online": online_count,
+                "offline": total.saturating_sub(online_count)
+            },
+            "accounts": accounts
+        }))
+    }
+
     pub(crate) async fn logout(&self, request: Request) -> Response {
         let origin_result = self.validate_origin(&request);
         if let Err(error_value) = origin_result {
@@ -1573,6 +3442,8 @@ impl NativeAuth {
         if let Some(identifier) = self.cookie_identifier(&headers) {
             if let Ok(Some(session)) = self.sessions.get(&identifier) {
                 self.supabase.logout(&session.access_token).await;
+                self.sessions
+                    .clear_presence(&session.profile.user_id, &identifier);
             }
             self.sessions.delete(&identifier);
         }
@@ -1594,7 +3465,8 @@ fn profile_payload(scope: &AccessScope) -> Value {
         "email": scope.email,
         "role": scope.role,
         "desa": scope.desa,
-        "posyandu": scope.posyandu
+        "posyandu": scope.posyandu,
+        "accessMode": scope.access_mode
     })
 }
 
@@ -1618,6 +3490,7 @@ mod tests {
             user: SupabaseUser {
                 id: "user-1".into(),
                 email: Some("user@example.test".into()),
+                factors: Vec::new(),
             },
             profile: AccessScope {
                 user_id: "user-1".into(),
@@ -1625,8 +3498,12 @@ mod tests {
                 role: "Ahli Gizi".into(),
                 desa: None,
                 posyandu: None,
+                access_mode: "write".into(),
             },
             updated_at: now_iso(),
+            mfa_verified: true,
+            mfa_pending_expires_at: None,
+            account_revision: 0,
         }
     }
 
@@ -1654,6 +3531,29 @@ mod tests {
     }
 
     #[test]
+    fn recovery_codes_are_one_time_and_not_stored_as_plaintext() {
+        let (store, path) = temporary_store();
+        let codes = store.ensure_recovery_codes("admin-user").unwrap();
+        assert_eq!(codes.len(), ADMIN_RECOVERY_CODE_COUNT);
+        let first = codes.first().expect("recovery code");
+        let raw = fs::read(&path).expect("sqlite database");
+        assert!(
+            !raw.windows(first.len())
+                .any(|value| value == first.as_bytes())
+        );
+        assert!(store.consume_recovery_code("admin-user", first).unwrap());
+        assert!(!store.consume_recovery_code("admin-user", first).unwrap());
+        assert!(
+            store
+                .ensure_recovery_codes("admin-user")
+                .unwrap()
+                .is_empty()
+        );
+        drop(store);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
     fn login_rate_limit_is_persistent_and_bounded() {
         let (store, path) = temporary_store();
         for _ in 0..3 {
@@ -1665,6 +3565,71 @@ mod tests {
     }
 
     #[test]
+    fn account_presence_is_hashed_and_can_be_cleared() {
+        let (store, path) = temporary_store();
+        store
+            .touch_presence("account-user-1", "browser-session-1")
+            .unwrap();
+        let raw = fs::read(&path).expect("sqlite database");
+        assert!(
+            !raw.windows("account-user-1".len())
+                .any(|value| value == b"account-user-1")
+        );
+        assert!(
+            store
+                .last_seen_by_user(&["account-user-1".into()])
+                .unwrap()
+                .contains_key("account-user-1")
+        );
+        store.clear_presence("account-user-1", "browser-session-1");
+        assert!(
+            store
+                .last_seen_by_user(&["account-user-1".into()])
+                .unwrap()
+                .is_empty()
+        );
+        drop(store);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn account_changes_invalidate_existing_sessions_and_presence() {
+        let (store, path) = temporary_store();
+        assert_eq!(store.account_revision("account-user-1").unwrap(), 0);
+        store
+            .touch_presence("account-user-1", "browser-session-1")
+            .unwrap();
+        store.invalidate_account_sessions("account-user-1").unwrap();
+        assert_eq!(store.account_revision("account-user-1").unwrap(), 1);
+        assert!(
+            store
+                .last_seen_by_user(&["account-user-1".into()])
+                .unwrap()
+                .is_empty()
+        );
+        drop(store);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn account_online_status_uses_three_minute_activity_window() {
+        let now = 10_000;
+        assert!(account_is_online(true, Some(now), now));
+        assert!(account_is_online(
+            true,
+            Some(now - ACCOUNT_ONLINE_WINDOW_SECONDS),
+            now
+        ));
+        assert!(!account_is_online(
+            true,
+            Some(now - ACCOUNT_ONLINE_WINDOW_SECONDS - 1),
+            now
+        ));
+        assert!(!account_is_online(false, Some(now), now));
+        assert!(!account_is_online(true, None, now));
+    }
+
+    #[test]
     fn validates_profile_scope_rules() {
         assert!(
             validate_profile(
@@ -1672,7 +3637,8 @@ mod tests {
                 None,
                 "Kader Posyandu".into(),
                 Some("Desa".into()),
-                Some("Posyandu".into())
+                Some("Posyandu".into()),
+                "write".into()
             )
             .is_ok()
         );
@@ -1682,7 +3648,30 @@ mod tests {
                 None,
                 "Kader Posyandu".into(),
                 Some("Desa".into()),
-                None
+                None,
+                "write".into()
+            )
+            .is_err()
+        );
+        assert!(
+            validate_profile(
+                "u1".into(),
+                None,
+                "Ahli Gizi".into(),
+                None,
+                None,
+                "read".into()
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_profile(
+                "u1".into(),
+                None,
+                "super_admin".into(),
+                None,
+                None,
+                "read".into()
             )
             .is_err()
         );

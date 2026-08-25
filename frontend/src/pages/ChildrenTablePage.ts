@@ -3,7 +3,7 @@ import Native from '../runtime/dom';
 import { Badge, Button, DataTable, KenaikanBadge, Pagination, StatusBadge } from '../components';
 import { ChevronDown, FileDown, FileText, FileUp, Filter, Gift, Pencil, Plus, RotateCcw, Ruler, Search, Trash2, Utensils, X } from '../ui/icons';
 import { TableLoadingSkeleton } from '../ui/skeleton';
-import { Card, formatIndoDate, MONTHS, ROLES } from './DashboardApp';
+import { Card, formatIndoDate, isFullAccessRole, MONTHS, ROLES } from './DashboardApp';
 import { getMeasurementStatuses } from '../features/measurements/measurementRules';
 import { getPmtCategoryForTab } from '../features/children/childRules';
 import type { PageState } from '../shared/pageState';
@@ -24,7 +24,7 @@ function getPageTitle(activeTab, filterMonth, filterYear) {
         return 'Balita MPASI (6-23 Bulan)';
     return 'Data Balita Lengkap';
 }
-export default function ChildrenTablePage({ activeTab, currentFilterDate, currentPage, displayData, fileInputRef, filterMonth, filterYear, handleExportMpasi, handleExportPengukuranSigizi, handleExportSigizi, handleExportTable, handleImportIdentitas, handlePermanentDelete, handleRestore, itemsPerPage, loading, monthlyMeasurements, mpasiLogs, paginatedData, onClearSearch, searchTerm, searchDraft, setChildToDelete, setChildToMpasi, setCurrentPage, onEditChild, setPmtModalData, setSearchDraft, onOpenAddChild, onOpenMeasurement, onSubmitSearch, setSortOrder, sortOrder, totalDataCount, user, pageState }) {
+export default function ChildrenTablePage({ activeTab, currentFilterDate, currentPage, displayData, fileInputRef, filterMonth, filterYear, handleExportMpasi, handleExportPengukuranSigizi, handleExportSigizi, handleExportTable, handleImportIdentitas, handlePermanentDelete, handleRestore, itemsPerPage, loading, monthlyMeasurements, mpasiLogs, paginatedData, onClearSearch, searchTerm, searchDraft, setChildToDelete, setChildToMpasi, setCurrentPage, onEditChild, setPmtModalData, setSearchDraft, onOpenAddChild, onOpenMeasurement, onSubmitSearch, setSortOrder, sortOrder, totalDataCount, user, pageState, readOnly = false }) {
     const fallbackTotal = totalDataCount ?? displayData.length;
     const resolvedState = pageState ?? (loading
         ? { status: 'loading' }
@@ -67,7 +67,7 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                 Native.createElement("div", { className: "flex gap-2 overflow-x-auto pb-1 sm:pb-0 no-scrollbar" },
                     activeTab === 'recent' && (Native.createElement(Native.Fragment, null,
                         Native.createElement("input", { type: "file", ref: fileInputRef, onChange: handleImportIdentitas, accept: ".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", style: { display: 'none' } }),
-                        Native.createElement(Button, { onClick: () => fileInputRef.current?.click(), variant: "primary", className: "ios-toolbar-button icon-only-mobile bg-indigo-600 hover:bg-indigo-700 whitespace-nowrap", title: "Import identitas balita" },
+                        !readOnly && Native.createElement(Button, { onClick: () => fileInputRef.current?.click(), variant: "primary", className: "ios-toolbar-button icon-only-mobile bg-indigo-600 hover:bg-indigo-700 whitespace-nowrap", title: "Import identitas balita" },
                             Native.createElement("span", { className: "ios-button-symbol", "aria-hidden": "true" },
                                 Native.createElement(FileUp, { className: "w-4 h-4" })),
                             " ",
@@ -92,7 +92,7 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                             Native.createElement(FileDown, { className: "w-4 h-4" })),
                         " ",
                         Native.createElement("span", { className: "hidden sm:inline" }, "Export Pengukuran"))),
-                    activeTab !== 'recycle_bin' && (Native.createElement(Button, { onClick: onOpenAddChild, className: "ios-toolbar-button icon-only-mobile whitespace-nowrap", title: "Tambah balita" },
+                    !readOnly && activeTab !== 'recycle_bin' && (Native.createElement(Button, { onClick: onOpenAddChild, className: "ios-toolbar-button icon-only-mobile whitespace-nowrap", title: "Tambah balita" },
                         Native.createElement("span", { className: "ios-button-symbol", "aria-hidden": "true" },
                             Native.createElement(Plus, { className: "w-4 h-4" })),
                         " ",
@@ -108,8 +108,8 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                             Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-200 md:sticky md:left-0 bg-slate-50 z-20" }, "No"),
                             Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-200 md:sticky md:left-[48px] bg-slate-50 z-20 md:shadow-lg" }, "Identitas"),
                             Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-200" }, "Ortu"),
-                            user.role === ROLES.GIZI && (Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-200" }, "Desa")),
-                            (user.role === ROLES.BIDAN || user.role === ROLES.GIZI) && (Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-200" }, "Posyandu")),
+                            isFullAccessRole(user.role) && (Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-200" }, "Desa")),
+                            (user.role === ROLES.BIDAN || isFullAccessRole(user.role)) && (Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-200" }, "Posyandu")),
                             activeTab === 'mpasi' ? (Native.createElement(Native.Fragment, null,
                                 Native.createElement("th", { className: "px-2 py-3 text-center text-[10px] font-bold text-slate-500 uppercase border-r border-slate-200 bg-orange-50/50" }, "Tgl Monitor"),
                                 Native.createElement("th", { className: "px-2 py-3 text-center text-[10px] font-bold text-slate-500 uppercase border-r border-slate-200 bg-orange-50/50" }, "ASI"),
@@ -186,8 +186,8 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                                         " Bln)"))),
                             Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap border-r border-slate-100" },
                                 Native.createElement("div", { className: "font-medium text-slate-700" }, child.namaOrtu)),
-                            user.role === ROLES.GIZI && (Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap border-r border-slate-100 text-slate-600" }, child.desa)),
-                            (user.role === ROLES.BIDAN || user.role === ROLES.GIZI) && (Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap border-r border-slate-100 text-slate-600" }, child.posyandu)),
+                            isFullAccessRole(user.role) && (Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap border-r border-slate-100 text-slate-600" }, child.desa)),
+                            (user.role === ROLES.BIDAN || isFullAccessRole(user.role)) && (Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap border-r border-slate-100 text-slate-600" }, child.posyandu)),
                             activeTab === 'mpasi' ? (Native.createElement(Native.Fragment, null,
                                 Native.createElement("td", { className: "px-2 py-3 text-center border-r border-slate-100 text-[10px]" }, hasMpasi ? formatIndoDate(mpasiLog.tglMonitoring) : '-'),
                                 Native.createElement("td", { className: "px-2 py-3 text-center border-r border-slate-100 text-[10px]" }, hasMpasi ? mpasiLog.asi : '-'),
@@ -214,7 +214,7 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                                 Native.createElement("td", { className: "px-2 py-3 text-center border-r border-slate-100 bg-emerald-50/10" },
                                     Native.createElement(StatusBadge, { status: statusImtu })))),
                             Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap text-center" },
-                                Native.createElement("div", { className: "flex justify-center gap-1" }, activeTab === 'recycle_bin' ? (Native.createElement(Native.Fragment, null,
+                                Native.createElement("div", { className: "flex justify-center gap-1" }, readOnly ? Native.createElement("span", { className: "text-xs font-semibold text-slate-400" }, "Hanya baca") : activeTab === 'recycle_bin' ? (Native.createElement(Native.Fragment, null,
                                     Native.createElement(Button, { variant: "actionGreen", className: "table-action-button table-action-green", onClick: () => handleRestore(child.id), title: "Pulihkan" },
                                         Native.createElement(RotateCcw, { className: "w-4 h-4" })),
                                     Native.createElement(Button, { variant: "actionRed", className: "table-action-button table-action-red", onClick: () => handlePermanentDelete(child.id), title: "Hapus Permanen" },

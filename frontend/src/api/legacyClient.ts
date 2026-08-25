@@ -36,6 +36,7 @@ export type AccessProfile = {
   role: string;
   desa: string | null;
   posyandu: string | null;
+  accessMode: 'read' | 'write';
 };
 
 export type Firestore = {
@@ -234,6 +235,96 @@ export type MonitoringStatus = {
   };
   queue: { configured: boolean };
   alerts: { externalConfigured: boolean };
+};
+
+export type AdminAccountPresence = {
+  userId: string;
+  username: string | null;
+  email: string | null;
+  role: string | null;
+  village: string | null;
+  posyandu: string | null;
+  active: boolean;
+  accessMode: 'read' | 'write';
+  isCurrentAccount: boolean;
+  presenceStatus: 'online' | 'offline';
+  lastSeenAt: string | null;
+  createdAt: string | null;
+};
+
+export type AdminAccountInput = {
+  email: string;
+  username: string;
+  role: 'Kader Posyandu' | 'Bidan Desa' | 'Ahli Gizi' | 'super_admin';
+  village: string | null;
+  posyandu: string | null;
+  accessMode: 'read' | 'write';
+  active?: boolean;
+};
+
+export type AdminAccountMutationResult = {
+  userId: string;
+  created?: boolean;
+  updated?: boolean;
+  deleted?: boolean;
+  message?: string;
+};
+
+export type AdminAccountsOverview = {
+  checkedAt: string;
+  onlineWindowSeconds: number;
+  access: {
+    role: 'super_admin';
+    level: 'full';
+    scope: 'global';
+    allApplicationData: boolean;
+    accountMonitoring: boolean;
+    systemMonitoring: boolean;
+    auditAccess: boolean;
+  };
+  summary: {
+    total: number;
+    active: number;
+    online: number;
+    offline: number;
+  };
+  accounts: AdminAccountPresence[];
+};
+
+export type BackendReadiness = {
+  ok: boolean;
+  status: string;
+  checkedAt: string;
+  environment: string;
+  components: Record<string, Record<string, unknown>>;
+};
+
+export type AdminMonitoringSample = {
+  sequence: number;
+  timestamp: string;
+  intervalSeconds: number;
+  system: {
+    timestamp: string;
+    intervalSeconds: number;
+    cpuPercent: number;
+    memoryPercent: number;
+    memoryUsedBytes: number;
+    memoryTotalBytes: number;
+    loadAverage: number;
+    diskReadOperationsPerSecond: number;
+    diskWriteOperationsPerSecond: number;
+    diskReadBytesPerSecond: number;
+    diskWriteBytesPerSecond: number;
+    networkReceiveBytesPerSecond: number;
+    networkTransmitBytesPerSecond: number;
+    uptimeSeconds: number;
+  };
+  services: {
+    api: 'online' | 'offline';
+    database: 'online' | 'offline';
+    redis: 'online' | 'offline';
+    nutritionWorker: 'online' | 'offline';
+  };
 };
 
 export type SigiziMeasurementExportRequest = {
@@ -454,6 +545,7 @@ async function responseErrorDetail(response: Response, fallback: string): Promis
     if (typeof payload?.detail === 'string') return payload.detail;
     if (typeof payload?.msg === 'string') return payload.msg;
     if (typeof payload?.message === 'string') return payload.message;
+    if (typeof payload?.error?.message === 'string') return payload.error.message;
     if (typeof payload?.errors?.[0]?.message === 'string') return payload.errors[0].message;
   } catch {
     // Keep the safe fallback when the service cannot return JSON.
@@ -560,17 +652,36 @@ function notifyAuthListeners() {
   authListeners.forEach((listener) => listener(authState.currentUser));
 }
 
-type SupabaseAuthResponse = {
+type AuthenticatedResponse = {
   user: { id: string; email?: string | null };
   profile?: AccessProfile;
+  recoveryCodes?: string[];
 };
 
-export type SignInResult = {
+export type MfaFactor = {
+  id: string;
+  type: 'totp' | 'webauthn';
+  name?: string | null;
+};
+
+export type MfaPendingSignIn = {
+  mfaRequired: true;
+  setupRequired: boolean;
+  factors: MfaFactor[];
+  expiresIn: number;
+};
+
+type LoginResponse = AuthenticatedResponse | MfaPendingSignIn;
+
+export type AuthenticatedSignInResult = {
+  mfaRequired: false;
   session: AuthUser | null;
   profile: AccessProfile | null;
 };
 
-async function usernameLoginRequest(username: string, password: string, turnstileToken?: string): Promise<SupabaseAuthResponse> {
+export type SignInResult = AuthenticatedSignInResult | MfaPendingSignIn;
+
+async function usernameLoginRequest(username: string, password: string, turnstileToken?: string): Promise<LoginResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
   let response: Response;
   try {
@@ -593,10 +704,10 @@ async function usernameLoginRequest(username: string, password: string, turnstil
     throw new Error(await responseErrorDetail(response, 'Username atau kata sandi tidak benar.'));
   }
   clearApiUnavailable();
-  return response.json() as Promise<SupabaseAuthResponse>;
+  return response.json() as Promise<LoginResponse>;
 }
 
-async function browserSessionRequest(): Promise<SupabaseAuthResponse | null> {
+async function browserSessionRequest(): Promise<AuthenticatedResponse | null> {
   let response: Response;
   try {
     response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/auth/session`, {
@@ -616,10 +727,10 @@ async function browserSessionRequest(): Promise<SupabaseAuthResponse | null> {
   if (!response.ok) {
     throw new Error(await responseErrorDetail(response, `Sesi tidak dapat diperiksa (${response.status}).`));
   }
-  return response.json() as Promise<SupabaseAuthResponse>;
+  return response.json() as Promise<AuthenticatedResponse>;
 }
 
-function sessionFromResponse(response: SupabaseAuthResponse): AuthUser {
+function sessionFromResponse(response: AuthenticatedResponse): AuthUser {
   return {
     uid: response.user.id,
     email: response.user.email || null
@@ -703,6 +814,48 @@ export async function getFeatureFlags(): Promise<FeatureFlags> {
 
 export async function getMonitoringStatus(): Promise<MonitoringStatus> {
   return apiRequest<MonitoringStatus>('/monitoring/status');
+}
+
+export async function reportAccountPresence(): Promise<{ online: boolean; checkedAt: string }> {
+  return apiRequest<{ online: boolean; checkedAt: string }>('/auth/presence', {
+    method: 'POST',
+    body: '{}'
+  });
+}
+
+export async function getAdminAccountsOverview(): Promise<AdminAccountsOverview> {
+  return apiRequest<AdminAccountsOverview>('/admin/accounts');
+}
+
+export function getAdminMonitoringStreamUrl(): string {
+  return apiUrl('/admin/monitoring/stream');
+}
+
+export async function createAdminAccount(input: AdminAccountInput): Promise<AdminAccountMutationResult> {
+  return apiRequest<AdminAccountMutationResult>('/admin/accounts', {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+}
+
+export async function updateAdminAccount(
+  userId: string,
+  input: AdminAccountInput
+): Promise<AdminAccountMutationResult> {
+  return apiRequest<AdminAccountMutationResult>(`/admin/accounts/${encodeURIComponent(userId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input)
+  });
+}
+
+export async function deleteAdminAccount(userId: string): Promise<AdminAccountMutationResult> {
+  return apiRequest<AdminAccountMutationResult>(`/admin/accounts/${encodeURIComponent(userId)}`, {
+    method: 'DELETE'
+  });
+}
+
+export async function getBackendReadiness(): Promise<BackendReadiness> {
+  return apiRequest<BackendReadiness>('/health/ready');
 }
 
 export async function getChangeHistory(
@@ -1224,7 +1377,7 @@ export async function restoreAuthSession(auth: Auth): Promise<AuthUser | null> {
     return storedSession;
   }
 
-  let response: SupabaseAuthResponse | null;
+  let response: AuthenticatedResponse | null;
   try {
     response = await browserSessionRequest();
   } catch (error) {
@@ -1262,7 +1415,7 @@ export async function signInWithPassword(
   password: string,
   turnstileToken?: string
 ): Promise<SignInResult> {
-  let response: SupabaseAuthResponse;
+  let response: LoginResponse;
   try {
     response = await usernameLoginRequest(username, password, turnstileToken);
   } catch (error) {
@@ -1271,6 +1424,7 @@ export async function signInWithPassword(
     }
     throw error;
   }
+  if ('mfaRequired' in response) return response;
   const nextSession = sessionFromResponse(response);
   const changesAccount = !auth.currentUser || auth.currentUser.uid !== nextSession.uid;
   await initializeOfflineStoreSession(nextSession.uid, { forceReset: changesAccount });
@@ -1278,7 +1432,100 @@ export async function signInWithPassword(
   auth.currentUser = nextSession;
   saveSession(nextSession);
   notifyAuthListeners();
-  return { session: nextSession, profile: response.profile || null };
+  return { mfaRequired: false, session: nextSession, profile: response.profile || null };
+}
+
+async function mfaRequest<T>(path: string, payload: Record<string, unknown>): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/auth/mfa/${path}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Request-ID': createRequestId()
+      },
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    if (isNetworkError(error)) throw new ApiUnavailableError();
+    throw error;
+  }
+  if (!response.ok) {
+    throw new Error(await responseErrorDetail(response, 'Verifikasi dua langkah tidak berhasil.'));
+  }
+  return response.json() as Promise<T>;
+}
+
+export async function completeAdminInvitation(
+  accessToken: string,
+  refreshToken: string,
+  password: string
+): Promise<SignInResult> {
+  const response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/auth/invite/complete`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-Request-ID': createRequestId()
+    },
+    body: JSON.stringify({ accessToken, refreshToken, password })
+  });
+  if (!response.ok) {
+    throw new Error(await responseErrorDetail(response, 'Undangan administrator tidak dapat diaktifkan.'));
+  }
+  const result = await response.json() as LoginResponse;
+  if ('mfaRequired' in result) return result;
+  const nextSession = sessionFromResponse(result);
+  const changesAccount = !authState.currentUser || authState.currentUser.uid !== nextSession.uid;
+  await initializeOfflineStoreSession(nextSession.uid, { forceReset: changesAccount });
+  if (changesAccount) clearSyncState();
+  authState.currentUser = nextSession;
+  saveSession(nextSession);
+  notifyAuthListeners();
+  return { mfaRequired: false, session: nextSession, profile: result.profile || null };
+}
+
+export async function enrollMfaFactor(factorType: 'totp' | 'webauthn'): Promise<any> {
+  const response = await mfaRequest<{ factor: any }>('enroll', { factorType });
+  return response.factor;
+}
+
+export async function challengeMfaFactor(
+  factorId: string,
+  factorType: 'totp' | 'webauthn'
+): Promise<any> {
+  const response = await mfaRequest<{ challenge: any }>('challenge', { factorId, factorType });
+  return response.challenge;
+}
+
+export async function verifyMfaFactor(
+  auth: Auth,
+  payload: {
+    factorType: 'totp' | 'webauthn' | 'recovery';
+    factorId?: string;
+    challengeId?: string;
+    code?: string;
+    operation?: 'create' | 'request';
+    credentialResponse?: unknown;
+  }
+): Promise<AuthenticatedSignInResult & { recoveryCodes: string[] }> {
+  const response = await mfaRequest<AuthenticatedResponse>('verify', payload);
+  const nextSession = sessionFromResponse(response);
+  const changesAccount = !auth.currentUser || auth.currentUser.uid !== nextSession.uid;
+  await initializeOfflineStoreSession(nextSession.uid, { forceReset: changesAccount });
+  if (changesAccount) clearSyncState();
+  auth.currentUser = nextSession;
+  saveSession(nextSession);
+  notifyAuthListeners();
+  return {
+    mfaRequired: false,
+    session: nextSession,
+    profile: response.profile || null,
+    recoveryCodes: response.recoveryCodes || []
+  };
 }
 
 export async function getCurrentAccessProfile(): Promise<AccessProfile> {

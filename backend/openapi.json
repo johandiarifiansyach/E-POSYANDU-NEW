@@ -132,6 +132,56 @@
         }
       }
     },
+    "/api/v1/auth/mfa/enroll": {
+      "post": {
+        "summary": "Mendaftarkan faktor MFA administrator",
+        "operationId": "adminMfaEnroll",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Faktor MFA dibuat dalam status belum terverifikasi" },
+          "401": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/auth/invite/complete": {
+      "post": {
+        "summary": "Menyelesaikan undangan administrator dan membuat sesi MFA sementara",
+        "operationId": "completeAdminInvite",
+        "responses": {
+          "200": {
+            "description": "Kata sandi disimpan dan sesi menunggu MFA",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MfaPendingLoginResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/challenge": {
+      "post": {
+        "summary": "Membuat challenge MFA administrator",
+        "operationId": "adminMfaChallenge",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Challenge MFA dibuat" },
+          "401": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/verify": {
+      "post": {
+        "summary": "Memverifikasi passkey, TOTP, atau recovery code administrator",
+        "operationId": "adminMfaVerify",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Sesi administrator aktif pada AAL2 atau recovery yang valid" },
+          "401": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
     "/api/v1/auth/logout": {
       "post": {
         "summary": "Menghapus sesi HttpOnly dan sesi Supabase",
@@ -151,6 +201,113 @@
           "200": { "description": "Sesi dan profil aktif" },
           "401": { "$ref": "#/components/responses/ApiError" },
           "403": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/admin/accounts/{userId}": {
+      "parameters": [{ "name": "userId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "patch": {
+        "summary": "Mengubah identitas, role, scope, dan hak akses akun",
+        "operationId": "updateAdminAccount",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminAccountInput" } } }
+        },
+        "responses": {
+          "200": { "description": "Akun diperbarui dan sesi lamanya dibatalkan" },
+          "401": { "$ref": "#/components/responses/ApiError" },
+          "403": { "$ref": "#/components/responses/ApiError" },
+          "409": { "$ref": "#/components/responses/ApiError" },
+          "422": { "$ref": "#/components/responses/ApiError" }
+        }
+      },
+      "delete": {
+        "summary": "Menghapus akun aplikasi dan autentikasi",
+        "operationId": "deleteAdminAccount",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Akun dihapus" },
+          "401": { "$ref": "#/components/responses/ApiError" },
+          "403": { "$ref": "#/components/responses/ApiError" },
+          "409": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/auth/presence": {
+      "post": {
+        "summary": "Memperbarui aktivitas akun untuk status online",
+        "operationId": "touchAccountPresence",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Aktivitas akun tercatat",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PresenceResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/admin/accounts": {
+      "get": {
+        "summary": "Memantau seluruh akun dari halaman administrasi backend",
+        "description": "Khusus super_admin dengan sesi MFA terverifikasi.",
+        "operationId": "adminAccountsOverview",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Ringkasan akses penuh dan status aktivitas akun",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AdminAccountsOverview" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/ApiError" },
+          "403": { "$ref": "#/components/responses/ApiError" }
+        }
+      },
+      "post": {
+        "summary": "Membuat akun dan mengirim undangan aktivasi",
+        "description": "Khusus super_admin dengan sesi MFA terverifikasi.",
+        "operationId": "createAdminAccount",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminAccountInput" } } }
+        },
+        "responses": {
+          "201": { "description": "Undangan akun dikirim" },
+          "401": { "$ref": "#/components/responses/ApiError" },
+          "403": { "$ref": "#/components/responses/ApiError" },
+          "409": { "$ref": "#/components/responses/ApiError" },
+          "422": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/admin/monitoring/stream": {
+      "get": {
+        "summary": "Mengalirkan metrik Oracle secara realtime melalui SSE",
+        "description": "Khusus super_admin dengan sesi MFA terverifikasi. Pengambilan metrik aktif hanya selama koneksi SSE terbuka.",
+        "operationId": "streamAdminMonitoring",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": {
+            "description": "Aliran event metrics setiap lima detik",
+            "content": {
+              "text/event-stream": {
+                "schema": { "type": "string" },
+                "x-event-schema": { "$ref": "#/components/schemas/AdminMonitoringSample" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/ApiError" },
+          "403": { "$ref": "#/components/responses/ApiError" },
+          "429": { "$ref": "#/components/responses/ApiError" }
         }
       }
     },
@@ -191,7 +348,7 @@
     },
     "/api/v1/monitoring/status": {
       "get": {
-        "summary": "Mengambil status worker dan kesiapan infrastruktur untuk Admin Gizi",
+        "summary": "Mengambil status worker dan kesiapan infrastruktur untuk Ahli Gizi",
         "operationId": "monitoringStatus",
         "security": [
           {
@@ -725,7 +882,8 @@
         "type": "object",
         "required": [
           "userId",
-          "role"
+          "role",
+          "accessMode"
         ],
         "properties": {
           "userId": {
@@ -752,6 +910,114 @@
               "string",
               "null"
             ]
+          },
+          "accessMode": {
+            "type": "string",
+            "enum": ["read", "write"]
+          }
+        }
+      },
+      "PresenceResponse": {
+        "type": "object",
+        "required": ["online", "checkedAt"],
+        "properties": {
+          "online": { "type": "boolean", "const": true },
+          "checkedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AdminAccountPresence": {
+        "type": "object",
+        "required": ["userId", "active", "accessMode", "isCurrentAccount", "presenceStatus"],
+        "properties": {
+          "userId": { "type": "string", "format": "uuid" },
+          "username": { "type": ["string", "null"] },
+          "email": { "type": ["string", "null"], "format": "email" },
+          "role": { "type": ["string", "null"] },
+          "village": { "type": ["string", "null"] },
+          "posyandu": { "type": ["string", "null"] },
+          "active": { "type": "boolean" },
+          "accessMode": { "type": "string", "enum": ["read", "write"] },
+          "isCurrentAccount": { "type": "boolean" },
+          "presenceStatus": { "type": "string", "enum": ["online", "offline"] },
+          "lastSeenAt": { "type": ["string", "null"], "format": "date-time" },
+          "createdAt": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "AdminAccountInput": {
+        "type": "object",
+        "required": ["email", "username", "role", "accessMode"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "maxLength": 254 },
+          "username": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[a-z0-9][a-z0-9._-]{2,31}$" },
+          "role": { "type": "string", "enum": ["Kader Posyandu", "Bidan Desa", "Ahli Gizi", "super_admin"] },
+          "village": { "type": ["string", "null"] },
+          "posyandu": { "type": ["string", "null"] },
+          "accessMode": { "type": "string", "enum": ["read", "write"] },
+          "active": { "type": "boolean", "default": true }
+        }
+      },
+      "AdminAccountsOverview": {
+        "type": "object",
+        "required": ["checkedAt", "onlineWindowSeconds", "access", "summary", "accounts"],
+        "properties": {
+          "checkedAt": { "type": "string", "format": "date-time" },
+          "onlineWindowSeconds": { "type": "integer", "minimum": 60 },
+          "access": { "type": "object" },
+          "summary": {
+            "type": "object",
+            "required": ["total", "active", "online", "offline"],
+            "properties": {
+              "total": { "type": "integer", "minimum": 0 },
+              "active": { "type": "integer", "minimum": 0 },
+              "online": { "type": "integer", "minimum": 0 },
+              "offline": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "accounts": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AdminAccountPresence" }
+          }
+        }
+      },
+      "AdminMonitoringSample": {
+        "type": "object",
+        "required": ["sequence", "timestamp", "intervalSeconds", "system", "services"],
+        "properties": {
+          "sequence": { "type": "integer", "minimum": 1 },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "intervalSeconds": { "type": "number", "minimum": 0 },
+          "system": {
+            "type": "object",
+            "required": [
+              "cpuPercent", "memoryPercent", "memoryUsedBytes", "memoryTotalBytes", "loadAverage",
+              "diskReadOperationsPerSecond", "diskWriteOperationsPerSecond", "diskReadBytesPerSecond",
+              "diskWriteBytesPerSecond", "networkReceiveBytesPerSecond", "networkTransmitBytesPerSecond",
+              "uptimeSeconds"
+            ],
+            "properties": {
+              "cpuPercent": { "type": "number", "minimum": 0, "maximum": 100 },
+              "memoryPercent": { "type": "number", "minimum": 0, "maximum": 100 },
+              "memoryUsedBytes": { "type": "integer", "minimum": 0 },
+              "memoryTotalBytes": { "type": "integer", "minimum": 0 },
+              "loadAverage": { "type": "number", "minimum": 0 },
+              "diskReadOperationsPerSecond": { "type": "number", "minimum": 0 },
+              "diskWriteOperationsPerSecond": { "type": "number", "minimum": 0 },
+              "diskReadBytesPerSecond": { "type": "number", "minimum": 0 },
+              "diskWriteBytesPerSecond": { "type": "number", "minimum": 0 },
+              "networkReceiveBytesPerSecond": { "type": "number", "minimum": 0 },
+              "networkTransmitBytesPerSecond": { "type": "number", "minimum": 0 },
+              "uptimeSeconds": { "type": "number", "minimum": 0 }
+            }
+          },
+          "services": {
+            "type": "object",
+            "required": ["api", "database", "redis", "nutritionWorker"],
+            "properties": {
+              "api": { "type": "string", "enum": ["online", "offline"] },
+              "database": { "type": "string", "enum": ["online", "offline"] },
+              "redis": { "type": "string", "enum": ["online", "offline"] },
+              "nutritionWorker": { "type": "string", "enum": ["online", "offline"] }
+            }
           }
         }
       },
@@ -827,7 +1093,7 @@
           }
         }
       },
-      "LoginResponse": {
+      "AuthenticatedLoginResponse": {
         "type": "object",
         "required": [
           "user",
@@ -856,6 +1122,33 @@
             "$ref": "#/components/schemas/AccessProfile"
           }
         }
+      },
+      "MfaPendingLoginResponse": {
+        "type": "object",
+        "required": ["mfaRequired", "setupRequired", "factors", "expiresIn"],
+        "properties": {
+          "mfaRequired": { "const": true },
+          "setupRequired": { "type": "boolean" },
+          "expiresIn": { "type": "integer", "minimum": 1 },
+          "factors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "type"],
+              "properties": {
+                "id": { "type": "string", "format": "uuid" },
+                "type": { "type": "string", "enum": ["webauthn", "totp"] },
+                "name": { "type": ["string", "null"] }
+              }
+            }
+          }
+        }
+      },
+      "LoginResponse": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/AuthenticatedLoginResponse" },
+          { "$ref": "#/components/schemas/MfaPendingLoginResponse" }
+        ]
       },
       "Error": {
         "type": "object",

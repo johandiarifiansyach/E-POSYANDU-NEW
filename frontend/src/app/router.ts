@@ -8,6 +8,7 @@ export const dashboardPages = {
     change_history: Native.lazy(() => import('../pages/ChangeHistoryPage')),
     data_balita: Native.lazy(() => import('../pages/ChildrenTablePage')),
     measurement: Native.lazy(() => import('../pages/MeasurementPage')),
+    admin_backend: Native.lazy(() => import('../pages/AdminBackendPage')),
     add_child: Native.lazy(() => import('../pages/AddChildPage')),
     asi_eksklusif: Native.lazy(() => import('../pages/ExclusiveBreastfeedingPage'))
 };

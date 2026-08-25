@@ -264,6 +264,28 @@
   transition: background-color 160ms ease, color 160ms ease;
 }
 
+.account-admin-button {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 5px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: #0068d9;
+  font-size: 13px;
+  font-weight: 750;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.account-admin-button:hover,
+.account-admin-button:focus-visible {
+  background: rgba(219, 234, 254, 0.82);
+  color: #0054ad;
+  outline: none;
+}
+
 .account-logout-button:hover,
 .account-logout-button:focus-visible {
   background: rgba(255, 228, 230, 0.8);

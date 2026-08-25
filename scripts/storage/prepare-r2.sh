@@ -25,5 +25,5 @@ cat <<EOF
 Langkah berikutnya:
 1. Buka binding [[r2_buckets]] di backend/wrangler.toml.
 2. Jalankan npm run worker:deploy.
-3. Periksa r2Configured=true melalui dashboard Admin Gizi.
+3. Periksa r2Configured=true melalui dashboard Ahli Gizi.
 EOF
