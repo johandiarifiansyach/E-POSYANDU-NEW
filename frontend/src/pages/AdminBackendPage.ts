@@ -7,7 +7,7 @@ import {
 import { DATA_WILAYAH } from '../config/dashboard';
 import AdminMonitoringPanel from './AdminMonitoringPanel';
 import {
-    Activity, CheckCircle2, Clock, Loader2, Pencil, RotateCcw, Search, Trash2,
+    Activity, AlertTriangle, CheckCircle2, Clock, Loader2, Pencil, RotateCcw, Search, Trash2,
     UserPlus, Users, X
 } from '../ui/icons';
 
@@ -79,7 +79,7 @@ export default function AdminBackendPage() {
     const [editor, setEditor] = useState<'new' | string | null>(null);
     const [form, setForm] = useState<AccountForm>(emptyForm);
     const [saving, setSaving] = useState(false);
-    const [deleteCandidate, setDeleteCandidate] = useState<string | null>(null);
+    const [deleteCandidate, setDeleteCandidate] = useState<AdminAccountPresence | null>(null);
     const [activeSection, setActiveSection] = useState<AdminSection>('overview');
 
     useEffect(() => {
@@ -117,10 +117,12 @@ export default function AdminBackendPage() {
     }, [refreshKey]);
 
     useEffect(() => {
-        if (editor !== 'new') return;
+        if (!editor && !deleteCandidate) return;
         const previousOverflow = document.body.style.overflow;
         const closeOnEscape = (event: KeyboardEvent) => {
-            if (event.key === 'Escape' && !saving) setEditor(null);
+            if (event.key !== 'Escape' || saving) return;
+            if (deleteCandidate) setDeleteCandidate(null);
+            else setEditor(null);
         };
         document.body.style.overflow = 'hidden';
         document.addEventListener('keydown', closeOnEscape);
@@ -128,7 +130,7 @@ export default function AdminBackendPage() {
             document.body.style.overflow = previousOverflow;
             document.removeEventListener('keydown', closeOnEscape);
         };
-    }, [editor, saving]);
+    }, [deleteCandidate, editor, saving]);
 
     const filteredAccounts = useMemo(() => {
         const query = search.trim().toLocaleLowerCase('id-ID');
@@ -146,6 +148,7 @@ export default function AdminBackendPage() {
     const isNew = editor === 'new';
     const selectedAccount = editor && editor !== 'new'
         ? overview?.accounts.find((account) => account.userId === editor) || null : null;
+    const selectedDeleteAccount = deleteCandidate;
     const roleNeedsVillage = form.role === 'Kader Posyandu' || form.role === 'Bidan Desa';
     const roleNeedsPosyandu = form.role === 'Kader Posyandu';
 
@@ -155,6 +158,9 @@ export default function AdminBackendPage() {
     };
     const openEdit = (account: AdminAccountPresence) => {
         setForm(accountToForm(account)); setEditor(account.userId); setDeleteCandidate(null); setError(null); setNotice(null);
+    };
+    const openDelete = (account: AdminAccountPresence) => {
+        setEditor(null); setDeleteCandidate(account); setError(null); setNotice(null);
     };
     const changeRole = (role: AccountRole) => {
         if (role === 'super_admin' || role === 'Ahli Gizi') {
@@ -259,49 +265,6 @@ export default function AdminBackendPage() {
                     Native.createElement('span', { className: 'admin-account-count' }, Native.createElement(Users, { className: 'h-4 w-4' }), `${filteredAccounts.length} akun`),
                     Native.createElement('button', { type: 'button', className: 'admin-add-account', onClick: openCreate },
                         Native.createElement(UserPlus, { className: 'h-4 w-4' }), 'Tambah akun'))),
-            editor && !isNew && Native.createElement('form', { className: 'admin-account-editor', onSubmit: saveAccount },
-                Native.createElement('div', { className: 'admin-editor-heading' },
-                    Native.createElement('div', null,
-                        Native.createElement('h4', null, isNew ? 'Tambah akun baru' : `Edit ${selectedAccount?.username || selectedAccount?.email || 'akun'}`),
-                        Native.createElement('p', null, isNew ? 'Undangan aktivasi akan dikirim ke email tanpa membuat kata sandi sementara.' : 'Perubahan hak akses akan membatalkan sesi lama akun ini.')),
-                    Native.createElement('button', { type: 'button', className: 'admin-editor-close', onClick: () => setEditor(null), 'aria-label': 'Tutup formulir' }, Native.createElement(X, { className: 'h-4 w-4' }))),
-                Native.createElement('div', { className: 'admin-editor-grid' },
-                    Native.createElement('label', null, Native.createElement('span', null, 'Email'),
-                        Native.createElement('input', { required: true, type: 'email', value: form.email,
-                            onChange: (event: Event) => setForm((current) => ({ ...current, email: (event.target as HTMLInputElement).value })) })),
-                    Native.createElement('label', null, Native.createElement('span', null, 'Username'),
-                        Native.createElement('input', { required: true, minLength: 3, maxLength: 32,
-                            pattern: '[a-z0-9][a-z0-9._-]{2,31}', value: form.username,
-                            onChange: (event: Event) => setForm((current) => ({ ...current, username: (event.target as HTMLInputElement).value.toLowerCase() })) })),
-                    Native.createElement('label', null, Native.createElement('span', null, 'Role'),
-                        Native.createElement('select', { value: form.role,
-                            onChange: (event: Event) => changeRole((event.target as HTMLSelectElement).value as AccountRole) },
-                        ACCOUNT_ROLES.map((role) => Native.createElement('option', { key: role.value, value: role.value }, role.label)))),
-                    Native.createElement('label', null, Native.createElement('span', null, 'Hak akses data'),
-                        Native.createElement('select', { value: form.role === 'super_admin' ? 'write' : form.accessMode,
-                            disabled: form.role === 'super_admin',
-                            onChange: (event: Event) => setForm((current) => ({ ...current, accessMode: (event.target as HTMLSelectElement).value as 'read' | 'write' })) },
-                        Native.createElement('option', { value: 'write' }, 'Bisa Edit'),
-                        Native.createElement('option', { value: 'read' }, 'Hanya Baca'))),
-                    roleNeedsVillage && Native.createElement('label', null, Native.createElement('span', null, 'Desa'),
-                        Native.createElement('select', { required: true, value: form.village || '', onChange: (event: Event) => {
-                            const village = (event.target as HTMLSelectElement).value;
-                            setForm((current) => ({ ...current, village,
-                                posyandu: current.role === 'Kader Posyandu' ? (locationData[village]?.[0] || '') : null }));
-                        } }, villages.map((village) => Native.createElement('option', { key: village, value: village }, village)))),
-                    roleNeedsPosyandu && Native.createElement('label', null, Native.createElement('span', null, 'Posyandu'),
-                        Native.createElement('select', { required: true, value: form.posyandu || '',
-                            onChange: (event: Event) => setForm((current) => ({ ...current, posyandu: (event.target as HTMLSelectElement).value })) },
-                        (locationData[form.village || initialVillage] || []).map((posyandu) => Native.createElement('option', { key: posyandu, value: posyandu }, posyandu)))),
-                    !isNew && Native.createElement('label', { className: 'admin-active-control' },
-                        Native.createElement('input', { type: 'checkbox', checked: form.active,
-                            onChange: (event: Event) => setForm((current) => ({ ...current, active: (event.target as HTMLInputElement).checked })) }),
-                        Native.createElement('span', null, 'Akun aktif'))),
-                Native.createElement('div', { className: 'admin-editor-actions' },
-                    Native.createElement('button', { type: 'button', className: 'admin-secondary-action', onClick: () => setEditor(null), disabled: saving }, 'Batal'),
-                    Native.createElement('button', { type: 'submit', className: 'admin-primary-action', disabled: saving },
-                        saving ? Native.createElement(Loader2, { className: 'h-4 w-4 animate-spin' }) : Native.createElement(CheckCircle2, { className: 'h-4 w-4' }),
-                        saving ? 'Menyimpan…' : (isNew ? 'Kirim undangan' : 'Simpan perubahan')))),
             Native.createElement('div', { className: 'admin-account-toolbar' },
                 Native.createElement('label', { className: 'admin-search-control' }, Native.createElement(Search, { className: 'h-4 w-4' }),
                     Native.createElement('input', { type: 'search', value: search,
@@ -334,25 +297,51 @@ export default function AdminBackendPage() {
                                         Native.createElement('span', { className: `admin-active-label ${account.active ? 'is-active' : 'is-inactive'}` }, account.active ? 'Akun aktif' : 'Akun nonaktif'))),
                                     Native.createElement('td', null, Native.createElement('div', { className: 'admin-last-seen' },
                                         Native.createElement(Clock, { className: 'h-4 w-4' }), Native.createElement('span', null, formatDateTime(account.lastSeenAt)))),
-                                    Native.createElement('td', null, deleteCandidate === account.userId
-                                        ? Native.createElement('div', { className: 'admin-delete-confirm' },
-                                            Native.createElement('span', null, 'Hapus permanen?'),
-                                            Native.createElement('button', { type: 'button', className: 'is-danger', disabled: saving,
-                                                onClick: () => void removeAccount(account) }, saving ? 'Menghapus…' : 'Ya, hapus'),
-                                            Native.createElement('button', { type: 'button', disabled: saving, onClick: () => setDeleteCandidate(null) }, 'Batal'))
-                                        : Native.createElement('div', { className: 'admin-row-actions' },
-                                            Native.createElement('button', { type: 'button', disabled: account.isCurrentAccount,
-                                                onClick: () => openEdit(account),
-                                                title: account.isCurrentAccount ? 'Akun yang sedang digunakan dilindungi' : 'Edit akun' },
-                                            Native.createElement(Pencil, { className: 'h-4 w-4' }), Native.createElement('span', null, 'Edit')),
-                                            Native.createElement('button', { type: 'button', className: 'is-danger', disabled: account.isCurrentAccount,
-                                                onClick: () => setDeleteCandidate(account.userId),
-                                                title: account.isCurrentAccount ? 'Akun yang sedang digunakan tidak dapat dihapus' : 'Hapus akun' },
-                                            Native.createElement(Trash2, { className: 'h-4 w-4' }), Native.createElement('span', null, 'Hapus'))))))))),
+                                    Native.createElement('td', null, Native.createElement('div', { className: 'admin-row-actions' },
+                                        Native.createElement('button', { type: 'button', disabled: account.isCurrentAccount,
+                                            onClick: () => openEdit(account),
+                                            title: account.isCurrentAccount ? 'Akun yang sedang digunakan dilindungi' : 'Edit akun' },
+                                        Native.createElement(Pencil, { className: 'h-4 w-4' }), Native.createElement('span', null, 'Edit')),
+                                        Native.createElement('button', { type: 'button', className: 'is-danger', disabled: account.isCurrentAccount,
+                                            onClick: () => openDelete(account),
+                                            title: account.isCurrentAccount ? 'Akun yang sedang digunakan tidak dapat dihapus' : 'Hapus akun' },
+                                        Native.createElement(Trash2, { className: 'h-4 w-4' }), Native.createElement('span', null, 'Hapus'))))))))),
             overview && Native.createElement('p', { className: 'admin-checked-at' },
                 `Diperiksa ${formatDateTime(overview.checkedAt)} · diperbarui otomatis setiap 30 detik`)),
         activeSection === 'monitoring' && Native.createElement(AdminMonitoringPanel, null),
-        isNew && Native.createElement('div', {
+        selectedDeleteAccount && Native.createElement('div', {
+            className: 'admin-account-modal-backdrop',
+            onClick: (event: MouseEvent) => {
+                if (event.target === event.currentTarget && !saving) setDeleteCandidate(null);
+            }
+        },
+        Native.createElement('section', {
+            className: 'admin-delete-modal',
+            role: 'alertdialog',
+            'aria-modal': 'true',
+            'aria-labelledby': 'admin-delete-account-title',
+            'aria-describedby': 'admin-delete-account-description'
+        },
+        Native.createElement('span', { className: 'admin-delete-icon' },
+            Native.createElement(AlertTriangle, { className: 'h-6 w-6' })),
+        Native.createElement('div', { className: 'admin-delete-copy' },
+            Native.createElement('h4', { id: 'admin-delete-account-title' }, 'Hapus akun?'),
+            Native.createElement('p', { id: 'admin-delete-account-description' },
+                'Akses akun akan dihapus permanen dan tindakan ini tidak dapat dibatalkan.')),
+        Native.createElement('div', { className: 'admin-delete-account-summary' },
+            Native.createElement('span', { className: 'admin-account-avatar' },
+                (selectedDeleteAccount.username || selectedDeleteAccount.email || 'A').charAt(0).toUpperCase()),
+            Native.createElement('div', null,
+                Native.createElement('strong', null, selectedDeleteAccount.username || 'Tanpa username'),
+                Native.createElement('p', null, selectedDeleteAccount.email || 'Email tidak tersedia'))),
+        Native.createElement('div', { className: 'admin-delete-modal-actions' },
+            Native.createElement('button', { type: 'button', className: 'admin-secondary-action', disabled: saving,
+                onClick: () => setDeleteCandidate(null), autoFocus: true }, 'Batal'),
+            Native.createElement('button', { type: 'button', className: 'admin-danger-action', disabled: saving,
+                onClick: () => void removeAccount(selectedDeleteAccount) },
+                saving ? Native.createElement(Loader2, { className: 'h-4 w-4 animate-spin' }) : Native.createElement(Trash2, { className: 'h-4 w-4' }),
+                saving ? 'Menghapus…' : 'Ya, hapus akun')))),
+        editor && Native.createElement('div', {
             className: 'admin-account-modal-backdrop',
             onClick: (event: MouseEvent) => {
                 if (event.target === event.currentTarget && !saving) setEditor(null);
@@ -363,14 +352,19 @@ export default function AdminBackendPage() {
             onSubmit: saveAccount,
             role: 'dialog',
             'aria-modal': 'true',
-            'aria-labelledby': 'admin-create-account-title'
+            'aria-labelledby': 'admin-account-editor-title'
         },
         Native.createElement('div', { className: 'admin-editor-heading' },
             Native.createElement('div', null,
-                Native.createElement('h4', { id: 'admin-create-account-title' }, 'Tambah akun baru'),
-                Native.createElement('p', null, 'Undangan aktivasi akan dikirim ke email tanpa membuat kata sandi sementara.')),
+                Native.createElement('h4', { id: 'admin-account-editor-title' }, isNew
+                    ? 'Tambah akun baru'
+                    : `Edit ${selectedAccount?.username || selectedAccount?.email || 'akun'}`),
+                Native.createElement('p', null, isNew
+                    ? 'Undangan aktivasi akan dikirim ke email tanpa membuat kata sandi sementara.'
+                    : 'Perubahan hak akses akan membatalkan sesi lama akun ini.')),
             Native.createElement('button', { type: 'button', className: 'admin-editor-close', disabled: saving,
-                onClick: () => setEditor(null), 'aria-label': 'Tutup formulir tambah akun' }, Native.createElement(X, { className: 'h-4 w-4' }))),
+                onClick: () => setEditor(null), 'aria-label': isNew ? 'Tutup formulir tambah akun' : 'Tutup formulir edit akun' },
+            Native.createElement(X, { className: 'h-4 w-4' }))),
         Native.createElement('div', { className: 'admin-editor-grid' },
             Native.createElement('label', null, Native.createElement('span', null, 'Email'),
                 Native.createElement('input', { required: true, type: 'email', autoFocus: true, value: form.email,
@@ -398,10 +392,16 @@ export default function AdminBackendPage() {
             roleNeedsPosyandu && Native.createElement('label', null, Native.createElement('span', null, 'Posyandu'),
                 Native.createElement('select', { required: true, value: form.posyandu || '',
                     onChange: (event: Event) => setForm((current) => ({ ...current, posyandu: (event.target as HTMLSelectElement).value })) },
-                (locationData[form.village || initialVillage] || []).map((posyandu) => Native.createElement('option', { key: posyandu, value: posyandu }, posyandu))))),
+                (locationData[form.village || initialVillage] || []).map((posyandu) => Native.createElement('option', { key: posyandu, value: posyandu }, posyandu)))),
+            !isNew && Native.createElement('label', { className: 'admin-active-control' },
+                Native.createElement('input', { type: 'checkbox', checked: form.active,
+                    onChange: (event: Event) => setForm((current) => ({ ...current, active: (event.target as HTMLInputElement).checked })) }),
+                Native.createElement('span', null, 'Akun aktif'))),
         Native.createElement('div', { className: 'admin-editor-actions' },
             Native.createElement('button', { type: 'button', className: 'admin-secondary-action', onClick: () => setEditor(null), disabled: saving }, 'Batal'),
             Native.createElement('button', { type: 'submit', className: 'admin-primary-action', disabled: saving },
-                saving ? Native.createElement(Loader2, { className: 'h-4 w-4 animate-spin' }) : Native.createElement(UserPlus, { className: 'h-4 w-4' }),
-                saving ? 'Mengirim…' : 'Kirim undangan')))));
+                saving
+                    ? Native.createElement(Loader2, { className: 'h-4 w-4 animate-spin' })
+                    : Native.createElement(isNew ? UserPlus : CheckCircle2, { className: 'h-4 w-4' }),
+                saving ? (isNew ? 'Mengirim…' : 'Menyimpan…') : (isNew ? 'Kirim undangan' : 'Simpan perubahan'))))));
 }
