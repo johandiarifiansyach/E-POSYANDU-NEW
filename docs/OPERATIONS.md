@@ -351,7 +351,7 @@ Setiap update dan hapus membawa `version` serta `updatedAt` yang terakhir diliha
 
 ## Penyimpanan
 
-PostgreSQL tetap menjadi sumber data tunggal. IndexedDB menyimpan cache dan antrean offline per perangkat. Redis menyimpan data domain dinamis selama maksimal 60 detik, dipisahkan menurut cakupan akses, serta state backend yang memiliki TTL masing-masing. Cloudflare KV hanya menyimpan data global yang jarang berubah seperti feature flag, menu, dan referensi; KV tidak menyimpan data balita, penimbangan, sesi, atau token.
+PostgreSQL tetap menjadi sumber data tunggal. IndexedDB menyimpan cache dan antrean offline per perangkat. Redis menyimpan data domain dinamis selama maksimal 5 menit, sedangkan dashboard operasional maksimal 60 detik; key dipisahkan menurut cakupan akses dan state backend memiliki TTL masing-masing. Cloudflare KV hanya menyimpan data global yang jarang berubah seperti feature flag, menu, dan referensi; KV tidak menyimpan data balita, penimbangan, sesi, atau token.
 
 Cloudflare R2 aktif untuk hasil ekspor besar dan lampiran privat. Jalur upload worker dibatasi 50 MB, berkas hanya dapat diunduh oleh pemilik job atau Ahli Gizi, dan PostgreSQL hanya menyimpan metadata objek.
 

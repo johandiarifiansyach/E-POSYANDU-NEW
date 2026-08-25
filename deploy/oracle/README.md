@@ -37,8 +37,8 @@ nutrition yang diarahkan melalui Tunnel ke Oracle.
 ## Cache Redis privat
 
 Deployment menjalankan `redis-cache` pada bridge privat terpisah tanpa port
-host. `oracle-api` menyimpan hasil baca balita, penimbangan, dashboard, dan
-koleksi dinamis selama 60 detik. Key menyertakan versi serta hash cakupan
+host. `oracle-api` menyimpan hasil baca balita, penimbangan, dan koleksi
+dinamis selama 5 menit; dashboard operasional selama 60 detik. Key menyertakan versi serta hash cakupan
 peran/desa/posyandu; mutasi data menaikkan versi sehingga hasil lama langsung
 ditinggalkan. Redis dibatasi 128 MB dengan kebijakan `volatile-lru` dan tidak
 memakai persistence karena PostgreSQL native tetap sumber data utama.

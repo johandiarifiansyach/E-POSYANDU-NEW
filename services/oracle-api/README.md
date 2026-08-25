@@ -21,8 +21,9 @@ Konfigurasi:
 - `ORACLE_API_MIGRATION_PROXY_ENABLED`: `true` selama fase transisi.
 - `ORACLE_API_LISTEN_ADDR`: default `0.0.0.0:8081`.
 - `ORACLE_REDIS_URL`: koneksi Redis privat untuk cache data dinamis. Jika
-  dikonfigurasi, daftar balita, penimbangan, dashboard, dan koleksi dinamis
-  dicache selama 60 detik dengan key terpisah per cakupan akses.
+  dikonfigurasi, daftar balita, penimbangan, dan koleksi dinamis dicache selama
+  5 menit; dashboard operasional dicache selama 60 detik. Key tetap terpisah
+  per cakupan akses.
 
 Redis bersifat cache sementara, bukan sumber data. Mutasi data menaikkan versi
 cache dan PostgreSQL native tetap menjadi satu-satunya sumber kebenaran. Kegagalan

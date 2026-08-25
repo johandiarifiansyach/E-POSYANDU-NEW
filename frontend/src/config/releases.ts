@@ -15,7 +15,7 @@ export const RELEASE_HISTORY: AppRelease[] = [
     releaseDateIso: '2026-08-25',
     title: 'Cache Redis dan Platform Native Lebih Stabil',
     changes: [
-      'Data balita, penimbangan, dashboard, ASI, dan koleksi dinamis kini menggunakan Redis dengan TTL 60 detik agar pembacaan berulang lebih ringan.',
+      'Data balita, penimbangan, ASI, dan koleksi dinamis kini menggunakan Redis dengan TTL 5 menit; dashboard operasional tetap 60 detik agar angka yang sering berubah lebih segar.',
       'Cache dinamis dipisahkan berdasarkan role, desa, dan posyandu serta langsung diinvalisasi setelah perubahan data.',
       'Cloudflare KV dibatasi untuk konfigurasi global yang jarang berubah seperti menu, referensi, dan feature flag.',
       'Oracle menjalankan Redis privat tanpa port host, sementara PostgreSQL native tetap menjadi sumber data utama.',

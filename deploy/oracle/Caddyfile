@@ -66,15 +66,10 @@
 		respond "Rute tidak ditemukan" 404
 	}
 
-	@api host api.eposyandu.app
-	handle @api {
-		# Header CF-Connecting-IP hanya dipercaya pada listener internal Tunnel.
+	handle {
+		# Listener internal Tunnel hanya meneruskan request ke API setelah
+		# route Cloudflare memvalidasi hostname yang dipublikasikan.
 		reverse_proxy oracle-api:8081
 		import api_security_headers
-	}
-
-	handle {
-		import health_security_headers
-		respond "Host origin tidak diizinkan" 421
 	}
 }

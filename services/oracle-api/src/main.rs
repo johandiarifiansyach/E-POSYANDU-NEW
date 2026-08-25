@@ -40,6 +40,7 @@ mod system_metrics;
 
 use native_api::NativeApi;
 use native_auth::NativeAuth;
+use native_cache::{DASHBOARD_CACHE_TTL_SECONDS, DYNAMIC_CACHE_TTL_SECONDS};
 use native_db::NativeDatabase;
 use system_metrics::SystemMetricsSampler;
 
@@ -483,7 +484,8 @@ async fn readiness(State(state): State<Arc<AppState>>) -> Response {
                     "configured": if native_mode_configured { native_cache_configured } else { legacy_cache_configured },
                     "reachable": if native_mode_configured { native_cache_ready } else { legacy_cache_configured },
                     "managedBy": if native_cache_configured { "oracle-redis" } else { "legacy-cloudflare-global-kv" },
-                    "dynamicTtlSeconds": if native_cache_configured { Some(60) } else { None }
+                    "dynamicTtlSeconds": if native_cache_configured { Some(DYNAMIC_CACHE_TTL_SECONDS) } else { None },
+                    "dashboardTtlSeconds": if native_cache_configured { Some(DASHBOARD_CACHE_TTL_SECONDS) } else { None }
                 },
                 "queue": {
                     "configured": queue_configured || native_queue_configured,

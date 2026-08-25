@@ -19,7 +19,8 @@ crons = [
 
 [[kv_namespaces]]
 # KV hanya untuk konfigurasi global yang jarang berubah seperti feature flag,
-# menu, dan referensi. Data balita/penimbangan memakai Redis TTL 60 detik.
+# menu, dan referensi. Data balita/penimbangan memakai Redis TTL 5 menit;
+# dashboard operasional memakai TTL 60 detik.
 binding = "E_POSYANDU_CACHE"
 id = "05421512a237477282deac4d63bd7d8e"
 

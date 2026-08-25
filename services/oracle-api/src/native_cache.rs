@@ -8,7 +8,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
-const DYNAMIC_CACHE_TTL_SECONDS: u64 = 60;
+pub(crate) const DYNAMIC_CACHE_TTL_SECONDS: u64 = 5 * 60;
+pub(crate) const DASHBOARD_CACHE_TTL_SECONDS: u64 = 60;
 const DYNAMIC_CACHE_VERSION_KEY: &str = "e-posyandu:dynamic:version:v1";
 
 #[derive(Clone)]
@@ -64,13 +65,13 @@ impl NativeCache {
         serde_json::from_str(&payload).ok()
     }
 
-    pub(crate) async fn put(&self, key: &str, value: &Value) {
+    pub(crate) async fn put(&self, key: &str, value: &Value, ttl_seconds: u64) {
         let Ok(payload) = serde_json::to_string(value) else {
             return;
         };
         let mut connection = self.connection.clone();
         if let Err(error_value) = connection
-            .set_ex::<_, _, ()>(key, payload, DYNAMIC_CACHE_TTL_SECONDS)
+            .set_ex::<_, _, ()>(key, payload, ttl_seconds)
             .await
         {
             warn!(error = %error_value, "Redis tidak dapat menyimpan cache data dinamis");
@@ -187,7 +188,8 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_cache_ttl_is_one_minute() {
-        assert_eq!(DYNAMIC_CACHE_TTL_SECONDS, 60);
+    fn dynamic_cache_ttl_uses_five_minutes_with_dashboard_exception() {
+        assert_eq!(DYNAMIC_CACHE_TTL_SECONDS, 300);
+        assert_eq!(DASHBOARD_CACHE_TTL_SECONDS, 60);
     }
 }

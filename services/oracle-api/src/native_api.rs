@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{
     native_auth::{AccessScope, NativeAuth},
-    native_cache::NativeCache,
+    native_cache::{DASHBOARD_CACHE_TTL_SECONDS, DYNAMIC_CACHE_TTL_SECONDS, NativeCache},
     native_db::{DatabaseError, NativeDatabase},
 };
 
@@ -249,6 +249,14 @@ fn dynamic_cacheable_request(path: &str, query: &BTreeMap<String, String>) -> bo
                 | "/api/v1/children/page"
                 | "/api/v1/exclusive-breastfeeding/page"
         ) || path.starts_with("/api/v1/collections/"))
+}
+
+fn dynamic_cache_ttl_seconds(path: &str) -> u64 {
+    if path == "/api/v1/dashboard/stats" {
+        DASHBOARD_CACHE_TTL_SECONDS
+    } else {
+        DYNAMIC_CACHE_TTL_SECONDS
+    }
 }
 
 fn dynamic_cache_table(table: &str) -> bool {
@@ -1395,7 +1403,9 @@ impl NativeApi {
             )),
         }?;
         if let (Some(cache), Some(key)) = (self.cache.as_ref(), cache_key.as_deref()) {
-            cache.put(key, &value).await;
+            cache
+                .put(key, &value, dynamic_cache_ttl_seconds(&path))
+                .await;
         }
         Ok((StatusCode::OK, value))
     }
@@ -3073,6 +3083,16 @@ mod tests {
         assert_eq!(
             scoped_value(&scope, Some("Posyandu lain"), false).as_deref(),
             Some("Salak 36")
+        );
+    }
+
+    #[test]
+    fn dashboard_cache_is_shorter_than_other_dynamic_reads() {
+        assert_eq!(dynamic_cache_ttl_seconds("/api/v1/dashboard/stats"), 60);
+        assert_eq!(dynamic_cache_ttl_seconds("/api/v1/children/page"), 300);
+        assert_eq!(
+            dynamic_cache_ttl_seconds("/api/v1/collections/measurements"),
+            300
         );
     }
 }

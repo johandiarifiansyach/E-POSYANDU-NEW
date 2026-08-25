@@ -428,7 +428,7 @@ test('Neon mengambil alih baca hanya untuk sesi Supabase yang pernah diverifikas
   assert.match(worker, /Layanan utama sedang tidak tersedia\. Perubahan data belum dapat dikirim/);
 });
 
-test('data dinamis memakai primary dan cache Redis terversi selama satu menit', async () => {
+test('data dinamis memakai primary dan cache Redis terversi dengan TTL terpisah', async () => {
   const worker = await readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8');
   const dashboard = await readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8');
   const dashboardStart = worker.indexOf('async fn dashboard(');
@@ -441,7 +441,9 @@ test('data dinamis memakai primary dan cache Redis terversi selama satu menit', 
   assert.ok(dashboardStart >= 0, 'route dashboard tidak ditemukan');
   assert.match(dashboardRoute, /rpc\(env, "eposyandu_dashboard_stats"/);
   assert.doesNotMatch(dashboardRoute, /read_rpc\(env/);
-  assert.match(worker, /DYNAMIC_CACHE_TTL_SECONDS: u64 = 60/);
+  assert.match(worker, /DYNAMIC_CACHE_TTL_SECONDS: u64 = 5 \* 60/);
+  assert.match(worker, /DASHBOARD_CACHE_TTL_SECONDS: u64 = 60/);
+  assert.match(worker, /dynamic_cache_ttl_seconds/);
   assert.match(worker, /DYNAMIC_CACHE_VERSION_KEY/);
   assert.match(worker, /dynamic_cache_key/);
   assert.match(worker, /redis_commands/);
@@ -477,13 +479,15 @@ test('KV hanya memuat cache global dan Redis memuat data dinamis', async () => {
   const kvUses = `${worker}\n${api}`.match(/\.kv\("E_POSYANDU_CACHE"\)/g) ?? [];
   assert.equal(kvUses.length, 2, 'KV hanya boleh dipakai untuk status konfigurasi dan feature flag global');
   assert.match(api, /const FEATURE_FLAGS_KEY: &str = "feature:flags:v1"/);
-  assert.match(wrangler, /Data balita\/penimbangan memakai Redis TTL 60 detik/);
+  assert.match(wrangler, /Data balita\/penimbangan memakai Redis TTL 5 menit/);
+  assert.match(wrangler, /dashboard operasional memakai TTL 60 detik/);
   assert.match(compose, /ORACLE_REDIS_URL: redis:\/\/redis-cache:6379/);
   assert.match(compose, /redis:7\.4\.10-alpine/);
   assert.match(compose, /--maxmemory-policy\s+- volatile-lru/);
   assert.match(compose, /subnet: 10\.89\.0\.0\/24/);
   assert.match(compose, /subnet: 10\.89\.1\.0\/24/);
-  assert.match(nativeCache, /DYNAMIC_CACHE_TTL_SECONDS: u64 = 60/);
+  assert.match(nativeCache, /DYNAMIC_CACHE_TTL_SECONDS: u64 = 5 \* 60/);
+  assert.match(nativeCache, /DASHBOARD_CACHE_TTL_SECONDS: u64 = 60/);
   assert.match(nativeCache, /DYNAMIC_CACHE_VERSION_KEY/);
 });
 
@@ -579,7 +583,9 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(caddy, /@health path \/health/);
   assert.match(caddy, /respond "Rute tidak ditemukan" 404/);
   assert.match(caddy, /:8088/);
-  assert.match(caddy, /host api\.eposyandu\.app/);
+  assert.match(caddy, /Listener internal Tunnel hanya meneruskan request ke API/);
+  assert.match(caddy, /reverse_proxy oracle-api:8081/);
+  assert.doesNotMatch(caddy, /@api host api\.eposyandu\.app/);
   assert.doesNotMatch(caddy, /host (?:www\.)?eposyandu\.app|reverse_proxy frontend/);
   assert.match(caddy, /header_up -CF-Connecting-IP/);
   assert.match(bootstrap, /install -m 0600 .*nutrition-grpc\.env/);

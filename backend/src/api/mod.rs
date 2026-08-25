@@ -20,7 +20,8 @@ enum Resource {
     ChangeLogs,
 }
 
-const DYNAMIC_CACHE_TTL_SECONDS: u64 = 60;
+const DYNAMIC_CACHE_TTL_SECONDS: u64 = 5 * 60;
+const DASHBOARD_CACHE_TTL_SECONDS: u64 = 60;
 const DYNAMIC_CACHE_VERSION_KEY: &str = "dynamic:data:version:v1";
 const REPLICA_PRIMARY_PIN_SECONDS: u64 = 360;
 const FEATURE_FLAGS_KEY: &str = "feature:flags:v1";
@@ -812,6 +813,14 @@ fn dynamic_cacheable_target(method: &Method, path: &str, export: bool) -> bool {
         ) || path.starts_with("/api/v1/collections/"))
 }
 
+fn dynamic_cache_ttl_seconds(path: &str) -> u64 {
+    if path == "/api/v1/dashboard/stats" {
+        DASHBOARD_CACHE_TTL_SECONDS
+    } else {
+        DYNAMIC_CACHE_TTL_SECONDS
+    }
+}
+
 fn dynamic_cache_key(scope: &AccessScope, request_target: &str, version: &str) -> String {
     let value = [
         version,
@@ -854,15 +863,11 @@ async fn cached_dynamic_data(env: &Env, key: &str) -> Option<Value> {
     serde_json::from_str(encoded).ok()
 }
 
-async fn cache_dynamic_data(env: &Env, key: &str, value: &Value) {
+async fn cache_dynamic_data(env: &Env, key: &str, value: &Value, ttl_seconds: u64) {
     let Ok(encoded) = serde_json::to_string(value) else {
         return;
     };
-    let _ = redis_commands(
-        env,
-        json!([["SET", key, encoded, "EX", DYNAMIC_CACHE_TTL_SECONDS]]),
-    )
-    .await;
+    let _ = redis_commands(env, json!([["SET", key, encoded, "EX", ttl_seconds]])).await;
 }
 
 fn replica_primary_pin_key(user_id: &str) -> String {
@@ -3688,6 +3693,7 @@ pub async fn dispatch(request: Request, env: &Env) -> ApiResult<Value> {
             return Err(api_error(403, "Akun ini hanya memiliki hak baca."));
         }
     }
+    let cache_ttl_seconds = dynamic_cache_ttl_seconds(request.path().as_str());
     let cache_key = if dynamic_cacheable_request(&request) {
         let scope = require_scope(&request, env).await?;
         let url = request
@@ -3739,7 +3745,7 @@ pub async fn dispatch(request: Request, env: &Env) -> ApiResult<Value> {
         _ => Err(api_error(404, "Rute API tidak ditemukan.")),
     }?;
     if let Some(key) = cache_key {
-        cache_dynamic_data(env, &key, &value).await;
+        cache_dynamic_data(env, &key, &value, cache_ttl_seconds).await;
     }
     Ok(value)
 }
@@ -3749,8 +3755,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn caches_only_dynamic_reads_for_one_minute() {
-        assert_eq!(DYNAMIC_CACHE_TTL_SECONDS, 60);
+    fn caches_dynamic_reads_with_dashboard_exception() {
+        assert_eq!(DYNAMIC_CACHE_TTL_SECONDS, 300);
+        assert_eq!(DASHBOARD_CACHE_TTL_SECONDS, 60);
+        assert_eq!(dynamic_cache_ttl_seconds("/api/v1/dashboard/stats"), 60);
+        assert_eq!(dynamic_cache_ttl_seconds("/api/v1/children/page"), 300);
         assert!(dynamic_cacheable_target(
             &Method::Get,
             "/api/v1/children/page",

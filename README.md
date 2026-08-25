@@ -25,7 +25,7 @@ tests/                 Pengujian kontrak lintas komponen
 | Pekerjaan berat | Rust `nutrition-grpc` di Oracle Compute + Cloudflare Queue |
 | Rollback darurat | Cloudflare Pages + Worker lama, tetap tersedia tetapi bukan jalur normal |
 | File job privat | Cloudflare R2 |
-| Cache data dinamis (TTL 60 detik) | Redis |
+| Cache data dinamis (TTL umum 5 menit; dashboard 60 detik) | Redis |
 | Cache menu/referensi/feature flag global | Cloudflare KV |
 | Sesi sementara dan pembatas login Worker | Upstash Redis |
 
