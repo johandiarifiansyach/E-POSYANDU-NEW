@@ -163,6 +163,96 @@ export function AppLoadingSkeleton() {
   );
 }
 
+/**
+ * Login has a deliberately different shell from the authenticated app. Keep
+ * its loading state inside the same glass card so the transition never jumps
+ * from the dashboard layout into the login form.
+ */
+export function LoginLoadingSkeleton({ includeTurnstile = false }: { includeTurnstile?: boolean } = {}) {
+  return Native.createElement(
+    'div',
+    {
+      className: 'login-shell login-loading-shell',
+      role: 'status',
+      'aria-live': 'polite',
+      'aria-label': 'Memuat halaman login'
+    },
+    Native.createElement('div', { className: 'login-batik-background', 'aria-hidden': 'true' }),
+    Native.createElement(
+      'div',
+      { className: 'login-theme-toggle login-loading-theme-toggle', 'aria-hidden': 'true' },
+      SkeletonBlock({ className: 'login-loading-theme-icon' })
+    ),
+    Native.createElement(
+      'main',
+      { className: 'login-stage' },
+      Native.createElement(
+        'div',
+        { className: 'login-stack' },
+        Native.createElement(
+          'section',
+          { className: 'login-glass-card login-loading-card', 'aria-hidden': 'true' },
+          Native.createElement(
+            'div',
+            { className: 'login-brand' },
+            Native.createElement(
+              'div',
+              { className: 'login-logo-shell' },
+              SkeletonBlock({ className: 'login-loading-logo' })
+            ),
+            SkeletonBlock({ className: 'login-loading-title' }),
+            SkeletonBlock({ className: 'login-loading-organization' }),
+            Native.createElement(
+              'div',
+              { className: 'login-brand-rule', 'aria-hidden': 'true' },
+              SkeletonBlock({ className: 'login-loading-rule' })
+            )
+          ),
+          Native.createElement(
+            'div',
+            { className: 'login-form login-loading-form' },
+            Native.createElement(
+              'div',
+              { className: 'login-field' },
+              SkeletonBlock({ className: 'login-loading-label login-loading-label-username' }),
+              SkeletonBlock({ className: 'login-loading-input' })
+            ),
+            Native.createElement(
+              'div',
+              { className: 'login-field' },
+              SkeletonBlock({ className: 'login-loading-label login-loading-label-password' }),
+              Native.createElement(
+                'div',
+                { className: 'login-password-field login-loading-password-field' },
+                SkeletonBlock({ className: 'login-loading-input' }),
+                SkeletonBlock({ className: 'login-loading-password-toggle' })
+              )
+            ),
+            includeTurnstile
+              ? Native.createElement(
+                'div',
+                { className: 'login-turnstile login-loading-turnstile' },
+                SkeletonBlock({ className: 'login-loading-turnstile-block' })
+              )
+              : null,
+            SkeletonBlock({ className: 'login-loading-submit' })
+          )
+        )
+      )
+    ),
+    Native.createElement(
+      'footer',
+      { className: 'login-footer login-loading-footer', 'aria-hidden': 'true' },
+      Native.createElement('p', null, SkeletonBlock({ className: 'login-loading-footer-copy' })),
+      Native.createElement(
+        'div',
+        { className: 'login-version-button' },
+        SkeletonBlock({ className: 'login-loading-footer-version' })
+      )
+    )
+  );
+}
+
 export function DashboardPageSkeleton() {
   return Native.createElement(
     'div',

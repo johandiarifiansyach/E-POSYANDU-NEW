@@ -8,7 +8,7 @@ import {
   signInWithPassword,
   signOut
 } from './api/authApi';
-import { AppLoadingSkeleton } from './ui/skeleton';
+import { AppLoadingSkeleton, LoginLoadingSkeleton } from './ui/skeleton';
 
 type UserRole = {
   role: string;
@@ -58,6 +58,12 @@ function clearStoredUser() {
 
 function showLoading(container: HTMLElement) {
   container.replaceChildren(AppLoadingSkeleton() as Node);
+}
+
+function showLoginLoading(container: HTMLElement) {
+  container.replaceChildren(LoginLoadingSkeleton({
+    includeTurnstile: Boolean(import.meta.env.VITE_TURNSTILE_SITE_KEY?.trim())
+  }) as Node);
 }
 
 function showStartupError(container: HTMLElement) {
@@ -176,7 +182,7 @@ export function mountApp(container: HTMLElement): Cleanup {
   const renderLogin = async () => {
     if (disposed) return;
     window.localStorage.removeItem(IDLE_ACTIVITY_KEY);
-    showLoading(container);
+    showLoginLoading(container);
     const { mountLoginPage } = await import('./pages/LoginPage');
     if (disposed) return;
     replaceView(() => mountLoginPage(container, {

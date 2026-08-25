@@ -21,6 +21,27 @@ test('skeleton awal mengikuti shell aplikasi tanpa teks persiapan', async ({ pag
   }
 });
 
+test('skeleton login mengikuti struktur login box', async ({ page }, testInfo) => {
+  await page.goto('/');
+  await page.evaluate(async () => {
+    const { LoginLoadingSkeleton } = await import('/src/ui/skeleton.ts');
+    document.body.replaceChildren(LoginLoadingSkeleton());
+  });
+
+  const skeleton = page.locator('.login-loading-shell');
+  await expect(skeleton).toBeVisible();
+  await expect(skeleton).toHaveAttribute('aria-label', 'Memuat halaman login');
+  await expect(skeleton.locator('.login-glass-card')).toHaveCount(1);
+  await expect(skeleton.locator('.login-loading-input')).toHaveCount(2);
+  await expect(skeleton.locator('.login-loading-submit')).toHaveCount(1);
+  await expect(skeleton.locator('.login-footer')).toHaveCount(1);
+  await expect(skeleton.locator('.app-loading-shell')).toHaveCount(0);
+
+  if (process.env.E2E_CAPTURE_UI) {
+    await page.screenshot({ path: `${process.env.E2E_CAPTURE_UI}/login-skeleton-${testInfo.project.name}.png`, fullPage: true });
+  }
+});
+
 test('login dapat dipakai dengan keyboard, footer rilis, dan pengaturan password', async ({ page }, testInfo) => {
   await page.goto('/');
 
