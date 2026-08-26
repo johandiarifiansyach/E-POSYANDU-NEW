@@ -5,3 +5,8 @@
 !services/nutrition-grpc/data/**
 !services/nutrition-grpc/proto/**
 !services/nutrition-grpc/src/**
+!services/eposyandu-proto/Cargo.toml
+!services/eposyandu-proto/Cargo.lock
+!services/eposyandu-proto/build.rs
+!services/eposyandu-proto/src/**
+!services/eposyandu-proto/proto/**

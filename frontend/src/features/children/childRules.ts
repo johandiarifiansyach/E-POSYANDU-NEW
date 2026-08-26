@@ -26,17 +26,67 @@ export function generateTemporaryKk() {
   return `350904${randomDigits(10)}`;
 }
 
+const RANDOM_TEMPORARY_POSYANDU_CODES = new Set(['61', '98', '99']);
+
+function getPosyanduNumber(posyandu) {
+  const text = String(posyandu || '').trim();
+  return text.match(/(\d+)\s*$/)?.[1]
+    || text.match(/\d+/)?.[0]
+    || '';
+}
+
+function getTemporaryPosyanduCode(posyandu) {
+  const number = getPosyanduNumber(posyandu);
+  return number ? String(Number(number) % 100).padStart(2, '0') : '00';
+}
+
+function randomTemporaryPosyanduCode() {
+  return String(10 + Math.floor(Math.random() * 51)).padStart(2, '0');
+}
+
+function getExistingNiks(allChildren, currentId) {
+  return new Set((Array.isArray(allChildren) ? allChildren : [])
+    .filter((child) => currentId == null || String(child?.id ?? '') !== String(currentId))
+    .map((child) => child?.nik ?? child?.national_id ?? child?.nationalId)
+    .map((nik) => String(nik || '').trim())
+    .filter((nik) => /^\d{16}$/.test(nik)));
+}
+
 export function generateTemporaryNik(data, allChildren = []) {
   const [year = '', month = '', day = ''] = String(data?.tglLahir || '').split('-');
   const birthDate = /^\d{4}$/.test(year) && /^\d{2}$/.test(month) && /^\d{2}$/.test(day)
     ? `${day}${month}${year.slice(-2)}`
     : randomDigits(6);
-  const existing = new Set((allChildren || []).map((child) => String(child?.nik || '')));
+  const posyanduCode = getTemporaryPosyanduCode(data?.posyandu);
+  const randomize = RANDOM_TEMPORARY_POSYANDU_CODES.has(posyanduCode);
+  const prefix = `350904${birthDate}00`;
+  const existingNiks = getExistingNiks(allChildren, data?.id);
+  const deterministicNik = `${prefix}${posyanduCode}`;
+
+  // SALAK 61/98/99 use a random 10–60 suffix. For every other Posyandu,
+  // retain the Posyandu code unless that complete temporary NIK is already in
+  // use; a collision then receives the same random 10–60 fallback.
+  if (!randomize && !existingNiks.has(deterministicNik)) return deterministicNik;
+
+  const attempts = new Set();
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const candidate = `350904${birthDate}${randomDigits(4)}`;
-    if (!existing.has(candidate)) return candidate;
+    const suffix = randomTemporaryPosyanduCode();
+    if (attempts.has(suffix)) continue;
+    attempts.add(suffix);
+    const candidate = `${prefix}${suffix}`;
+    if (!existingNiks.has(candidate)) return candidate;
   }
-  return `350904${birthDate}${String(Date.now()).slice(-4)}`;
+
+  // Make the result unique whenever at least one slot in the 10–60 range is
+  // still available, even if a random source repeatedly returns the same value.
+  for (let suffix = 10; suffix <= 60; suffix += 1) {
+    const candidate = `${prefix}${String(suffix).padStart(2, '0')}`;
+    if (!existingNiks.has(candidate)) return candidate;
+  }
+
+  // All 51 slots are occupied; preserve the requested random range as the
+  // only possible fallback and let the server report any subsequent conflict.
+  return `${prefix}${randomTemporaryPosyanduCode()}`;
 }
 
 export function createInitialChildForm(user) {

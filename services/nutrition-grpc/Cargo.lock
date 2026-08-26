@@ -277,18 +277,29 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
+ "e-posyandu-proto",
  "hex",
  "hmac",
- "prost",
- "protoc-bin-vendored",
  "reqwest",
  "rust_xlsxwriter",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-health",
+ "tonic-prost",
+]
+
+[[package]]
+name = "e-posyandu-proto"
+version = "3.7.0"
+dependencies = [
+ "prost",
+ "protoc-bin-vendored",
+ "tokio",
+ "tonic",
  "tonic-prost",
  "tonic-prost-build",
 ]

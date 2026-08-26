@@ -2,7 +2,11 @@ import {
   challengeMfaFactor,
   enrollMfaFactor,
   signOut,
+  startPasskeyAuthentication,
+  startPasskeyRegistration,
   verifyMfaFactor,
+  verifyPasskeyAuthentication,
+  verifyPasskeyRegistration,
   type AccessProfile,
   type Auth,
   type MfaFactor,
@@ -10,7 +14,10 @@ import {
 } from '../api/authApi';
 import { APP_VERSION } from '../config/app';
 import { createElement as h } from '../runtime/dom';
-import { completeWebAuthnChallenge } from '../security/webauthn';
+import {
+  completeWebAuthnAuthentication,
+  completeWebAuthnRegistration
+} from '../security/webauthn';
 
 type AuthenticatedResult = {
   profile: AccessProfile | null;
@@ -79,22 +86,29 @@ export function mountMfaPage(container: HTMLElement, options: Options): () => vo
 
   const runPasskey = async (factor?: MfaFactor) => {
     if (busy) return;
+    const totp = factorOfType(options.pending.factors, 'totp');
+    if (!factor && totp) {
+      renderChoice('Masuk dengan authenticator TOTP terlebih dahulu. Setelah masuk, daftarkan passkey dari Administrasi Backend.');
+      return;
+    }
     setBusy(true);
     show(h('div', { className: 'login-form admin-mfa-panel' },
-      h('p', { className: 'admin-mfa-help' }, 'Ikuti permintaan passkey pada perangkat Anda…')
+      h('p', { className: 'admin-mfa-help' }, factor
+        ? 'Konfirmasi passkey pada perangkat Anda…'
+        : 'Daftarkan passkey pada perangkat Anda…')
     ) as Node);
     try {
-      const enrolled = factor || await enrollMfaFactor('webauthn');
-      const factorId = enrolled.id;
-      const challenge = await challengeMfaFactor(factorId, 'webauthn');
-      const ceremony = await completeWebAuthnChallenge(challenge);
-      const result = await verifyMfaFactor(options.auth, {
-        factorType: 'webauthn',
-        factorId,
-        challengeId: ceremony.challengeId,
-        operation: ceremony.operation,
-        credentialResponse: ceremony.credentialResponse
-      });
+      const result = factor
+        ? await (async () => {
+            const challenge = await startPasskeyAuthentication();
+            const ceremony = await completeWebAuthnAuthentication(challenge);
+            return verifyPasskeyAuthentication(options.auth, ceremony.challengeId, ceremony.credential);
+          })()
+        : await (async () => {
+            const challenge = await startPasskeyRegistration();
+            const ceremony = await completeWebAuthnRegistration(challenge);
+            return verifyPasskeyRegistration(options.auth, ceremony.challengeId, ceremony.credential);
+          })();
       await finish({ profile: result.profile, recoveryCodes: result.recoveryCodes });
     } catch (error) {
       renderChoice(error instanceof Error ? error.message : 'Passkey tidak dapat diverifikasi.');

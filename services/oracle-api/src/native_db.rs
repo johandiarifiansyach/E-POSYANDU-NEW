@@ -1,14 +1,17 @@
-use std::{env, str::FromStr};
+use std::{env, str::FromStr, time::Duration};
 
 use axum::http::Method;
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
-use serde_json::{Map, Value};
+use futures_util::{StreamExt, stream::poll_fn};
+use serde_json::{Map, Value, json};
 use tokio_postgres::{
-    NoTls,
+    AsyncMessage, NoTls,
     error::SqlState,
     types::{Json, ToSql},
 };
-use tracing::error;
+use tracing::{error, warn};
+
+use crate::realtime::{NOTIFY_CHANNEL, RealtimeEvent, RealtimeHub};
 
 const DEFAULT_POOL_SIZE: usize = 5;
 
@@ -28,6 +31,7 @@ pub(crate) struct QueryResult {
 
 pub(crate) struct NativeDatabase {
     pool: Pool,
+    config: tokio_postgres::Config,
 }
 
 impl NativeDatabase {
@@ -49,7 +53,7 @@ impl NativeDatabase {
             return Err("ORACLE_DATABASE_POOL_SIZE wajib antara 1 dan 10.".into());
         }
         let manager = Manager::from_config(
-            config,
+            config.clone(),
             NoTls,
             ManagerConfig {
                 recycling_method: RecyclingMethod::Fast,
@@ -59,7 +63,63 @@ impl NativeDatabase {
             .max_size(pool_size)
             .build()
             .map_err(|_| "Pool PostgreSQL native Oracle tidak dapat dibuat.".to_string())?;
-        Ok(Self { pool })
+        Ok(Self { pool, config })
+    }
+
+    pub(crate) async fn notify_realtime(&self, event: &RealtimeEvent) -> bool {
+        let Ok(payload) = serde_json::to_string(event) else {
+            return false;
+        };
+        let Ok(client) = self.pool.get().await else {
+            return false;
+        };
+        client
+            .query_one("SELECT pg_notify($1, $2)", &[&NOTIFY_CHANNEL, &payload])
+            .await
+            .is_ok()
+    }
+
+    pub(crate) async fn listen_realtime(&self, hub: RealtimeHub) {
+        let config = self.config.clone();
+        loop {
+            let connection = config.connect(NoTls).await;
+            let (client, mut connection) = match connection {
+                Ok(value) => value,
+                Err(error_value) => {
+                    warn!(error = %error_value, "listener realtime PostgreSQL tidak dapat terhubung");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+            if let Err(error_value) = client
+                .batch_execute(&format!("LISTEN {NOTIFY_CHANNEL}"))
+                .await
+            {
+                warn!(error = %error_value, "listener realtime PostgreSQL gagal mendaftar channel");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+            let mut messages = Box::pin(poll_fn(move |context| connection.poll_message(context)));
+            while let Some(message) = messages.next().await {
+                match message {
+                    Ok(AsyncMessage::Notification(notification))
+                        if notification.channel() == NOTIFY_CHANNEL =>
+                    {
+                        if let Ok(event) =
+                            serde_json::from_str::<RealtimeEvent>(notification.payload())
+                        {
+                            hub.publish(event);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error_value) => {
+                        warn!(error = %error_value, "listener realtime PostgreSQL terputus");
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     }
 
     pub(crate) async fn ready(&self) -> bool {
@@ -251,6 +311,10 @@ impl NativeDatabase {
             .await
             .map_err(|error| map_postgres_query_error(error, "rpc", sql, 1))?;
         Ok(row.get::<_, Json<Value>>("value").0)
+    }
+
+    pub(crate) async fn cleanup_retention(&self) -> Result<Value, DatabaseError> {
+        self.rpc("eposyandu_cleanup_retention", json!({})).await
     }
 }
 
@@ -598,6 +662,9 @@ fn rpc_sql(name: &str) -> Result<&'static str, DatabaseError> {
         ),
         "eposyandu_sigizi_measurement_export" => Ok(
             "SELECT public.eposyandu_sigizi_measurement_export(a.p_month_start, a.p_month_end, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_month_start date, p_month_end date, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
+        ),
+        "eposyandu_cleanup_retention" => Ok(
+            "SELECT public.eposyandu_cleanup_retention(coalesce(a.p_now, clock_timestamp())) AS value FROM jsonb_to_record($1::jsonb) AS a(p_now timestamptz)",
         ),
         _ => Err(DatabaseError::Invalid),
     }

@@ -89,11 +89,17 @@ mengirim password melalui chat. Pemilik akun melakukan aktivasi berikut:
 5. Login ulang dan pastikan nama `Administrator` tampil di pojok kanan atas.
 
 Passkey dapat dijadikan metode utama setelah Passkeys diaktifkan pada Supabase
-Dashboard. Selama pengaturan project itu masih nonaktif, gunakan TOTP. Login
-password `super_admin` hanya menghasilkan session MFA sementara selama lima
-menit; session tersebut tidak boleh membaca data sampai MFA berhasil. Recovery
-code bersifat satu kali pakai dan hanya hash-nya yang disimpan terenkripsi pada
-session store Oracle.
+Dashboard. Passkey memakai endpoint Supabase Passkeys khusus, bukan faktor MFA
+`/auth/v1/factors`. Jika akun sudah memiliki TOTP, login dengan TOTP terlebih
+dahulu, lalu gunakan tombol `Daftarkan passkey` pada halaman Administrasi Backend.
+Header `Permissions-Policy` frontend mengizinkan `publickey-credentials-create`
+dan `publickey-credentials-get` hanya untuk origin aplikasi sendiri (`self`),
+sehingga browser dapat menjalankan WebAuthn tanpa membuka kemampuan tersebut ke
+frame pihak ketiga.
+Login password `super_admin` hanya menghasilkan session MFA sementara selama
+lima menit; session tersebut tidak boleh membaca data sampai MFA berhasil.
+Recovery code bersifat satu kali pakai dan hanya hash-nya yang disimpan
+terenkripsi pada session store Oracle.
 
 Pada Supabase production, `Authentication > URL Configuration` wajib memakai:
 
@@ -153,6 +159,15 @@ Frontend membuka stream hanya saat tab Monitoring terlihat dan langsung
 menutupnya saat pengguna berpindah tab, browser disembunyikan, jaringan offline,
 atau halaman dilepas. Stream tidak memuat data kesehatan maupun identitas akun.
 
+Data aplikasi memakai kanal terpisah `GET /api/v1/realtime/stream`. Mutasi
+native menerbitkan metadata perubahan melalui PostgreSQL `NOTIFY`, kemudian
+Oracle meneruskannya sebagai SSE. Event hanya berisi resource, operasi, ID
+event, dan waktu perubahan; tidak ada NIK, nama, atau nilai pengukuran. Server
+memfilter event berdasarkan desa/posyandu akun, sedangkan browser mengambil
+ulang query aktif sehingga aturan otorisasi dan cache tetap berlaku. Klien
+menutup koneksi ketika tab tidak terlihat, offline, atau tidak ada tampilan
+data yang berlangganan.
+
 Buat topic OCI Notifications khusus operasional, lalu buat alarm berikut pada
 Monitoring dengan topic tersebut sebagai destination:
 
@@ -178,7 +193,11 @@ operasional; jangan masukkan data kesehatan ke dalam pesan notifikasi.
 4. Jalankan `npm run worker:deploy:staging` dan `npm run pages:deploy:staging`.
 5. Uji alur online, offline, konflik edit, fallback replika, dan request berulang.
 6. Terapkan migrasi di production.
-7. Deploy private Neon Read Worker production sebelum menjalankan `npm run worker:deploy`, lalu deploy Pages.
+7. Deploy hanya service yang berubah: `oracle-api`, `nutrition-worker`, Neon Read
+   Worker, Cloudflare Worker, atau Pages. Deployment Oracle menerima target
+   service sebagai argumen ketiga dan tidak me-restart service lain.
+8. Deploy private Neon Read Worker production sebelum menjalankan Worker yang
+   mengaktifkan binding replica, lalu deploy Pages bila frontend ikut berubah.
 
 Worker dan migration `027` menutup akses RPC browser langsung. Uji login,
 kata sandi salah, refresh sesi, pembatasan percobaan, logout, dan pemulihan akun
@@ -205,6 +224,17 @@ Untuk staging, `SMOKE_SESSION_COOKIE` opsional dapat diisi sesaat dengan pasanga
 ## Audit dan dokumentasi API
 
 Audit database mencatat login berhasil/gagal, CRUD, ekspor XLS, serta perubahan role/wilayah akun. Audit tidak menyimpan kata sandi, token, NIK, KK, nama balita, atau isi formulir. Tabel `audit_events` hanya dapat diakses service role dan administrator database.
+
+Job retensi berjalan otomatis setiap pemicu terjadwal Worker dan setiap 24 jam pada
+`oracle-api`. Fungsi database `eposyandu_cleanup_retention` menghapus item Recycle
+Bin yang lebih lama dari 30 hari. Data balita yang mencapai 60 bulan tetap disimpan
+selama lima tahun pasca-kelulusan, lalu dihapus tepat ketika tanggal retensi itu
+tercapai, beserta
+data turunannya. Job memakai advisory lock agar dua instance tidak menghapus baris
+yang sama, menulis tombstone tanpa payload untuk replika, lalu menaikkan versi cache
+Redis. Jalankan migration `031_child_data_retention.sql` pada primary sebelum
+menyalakan rilis API yang memanggil job ini; kegagalan job hanya dicatat sebagai
+peringatan dan akan dicoba lagi pada jadwal berikutnya.
 
 Kontrak API tersedia pada `GET /api/v1/openapi.json`. Saat menambah atau mengubah endpoint, perbarui kontrak tersebut; contract test akan gagal bila endpoint operasional utama hilang.
 

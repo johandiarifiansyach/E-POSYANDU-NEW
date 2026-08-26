@@ -244,8 +244,37 @@
 
 .admin-service-grid {
   display: grid;
+  gap: 22px;
+}
+
+.admin-service-group {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-service-group + .admin-service-group {
+  padding-top: 4px;
+}
+
+.admin-service-group h4 {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.admin-service-group-grid {
+  display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+}
+
+.admin-service-empty {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
 }
 
 .admin-service-card {
@@ -615,6 +644,45 @@
   text-align: center;
 }
 
+.admin-account-loading-row {
+  pointer-events: none;
+}
+
+.admin-account-loading-row td {
+  height: 74px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.admin-account-loading-identity,
+.admin-account-loading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-account-loading-copy {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.admin-account-loading-avatar {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 11px;
+}
+
+.admin-account-loading-name { width: 116px; height: 12px; }
+.admin-account-loading-email { width: 154px; height: 9px; }
+.admin-account-loading-role { width: 104px; height: 12px; }
+.admin-account-loading-scope { width: 128px; height: 9px; }
+.admin-account-loading-access { width: 72px; height: 24px; border-radius: 8px; }
+.admin-account-loading-status { width: 68px; height: 22px; border-radius: 8px; }
+.admin-account-loading-active { width: 82px; height: 8px; }
+.admin-account-loading-seen { width: 112px; height: 10px; }
+.admin-account-loading-action { width: 58px; height: 32px; border-radius: 9px; }
+
 .admin-checked-at {
   margin-top: 12px;
   color: #94a3b8;
@@ -943,9 +1011,10 @@ html[data-theme="dark"] .admin-chart-value { fill: #a1a1aa; }
 html[data-theme="dark"] .admin-account-table-wrap,
 html[data-theme="dark"] .admin-account-table td { border-color: rgba(255, 255, 255, 0.08); }
 html[data-theme="dark"] .admin-account-table tbody tr:hover { background: rgba(10, 132, 255, 0.08); }
+html[data-theme="dark"] .admin-account-loading-row td { background: rgba(35, 35, 40, 0.72); }
 
 @media (max-width: 1023px) {
-  .admin-service-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-service-group-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-live-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-live-services { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -961,7 +1030,7 @@ html[data-theme="dark"] .admin-account-table tbody tr:hover { background: rgba(1
   .admin-summary-card strong { font-size: 26px; }
   .admin-backend-section { padding: 17px; }
   .admin-section-heading { align-items: flex-start; flex-direction: column; }
-  .admin-service-grid { grid-template-columns: 1fr; }
+  .admin-service-group-grid { grid-template-columns: 1fr; }
   .admin-account-toolbar { grid-template-columns: 1fr; }
   .admin-account-toolbar select { width: 100%; }
   .admin-heading-actions { width: 100%; justify-content: space-between; }

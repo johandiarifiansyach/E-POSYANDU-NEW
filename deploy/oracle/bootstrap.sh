@@ -4,6 +4,8 @@ set -euo pipefail
 archive_file="${1:-}"
 secret_file="${2:-}"
 release_id="${3:-}"
+deployment_service="${4:-all}"
+skip_build="${ORACLE_DEPLOY_SKIP_BUILD:-false}"
 
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   echo "Bootstrap Oracle harus dijalankan melalui sudo/root." >&2
@@ -19,6 +21,22 @@ if [[ ! "$release_id" =~ ^[0-9]{14}$ ]]; then
   echo "ID rilis Oracle tidak valid." >&2
   exit 1
 fi
+
+case "$deployment_service" in
+  all|oracle-api|identity-service|operations-service|realtime-service|monitoring-service|nutrition-worker) ;;
+  *)
+    echo "Service Oracle tidak valid: $deployment_service" >&2
+    exit 1
+    ;;
+esac
+
+case "$skip_build" in
+  true|false) ;;
+  *)
+    echo "ORACLE_DEPLOY_SKIP_BUILD harus bernilai true atau false." >&2
+    exit 1
+    ;;
+esac
 
 if [[ ! -f /etc/os-release ]]; then
   echo "Sistem operasi Oracle tidak dapat dikenali." >&2
@@ -85,6 +103,7 @@ fi
 release_dir="/opt/e-posyandu/releases/$release_id"
 install -d -m 0750 /opt/e-posyandu/releases /etc/e-posyandu /var/lib/e-posyandu "$release_dir"
 install -d -o 10001 -g 10001 -m 0700 /var/lib/e-posyandu/oracle-api
+install -d -o 10001 -g 10001 -m 0700 /var/lib/e-posyandu/grpc
 tar -xzf "$archive_file" --no-same-owner -C "$release_dir"
 
 # Nilai berikut merupakan state migrasi/cutover di server. Pertahankan bila
@@ -98,7 +117,8 @@ if [[ -f /etc/e-posyandu/nutrition-grpc.env ]]; then
     ORACLE_API_NATIVE_AUTH_ENABLED \
     ORACLE_API_NATIVE_READS_ENABLED \
     ORACLE_API_NATIVE_WRITES_ENABLED \
-    ORACLE_API_MIGRATION_PROXY_ENABLED; do
+    ORACLE_API_MIGRATION_PROXY_ENABLED \
+    ORACLE_API_NUTRITION_GRPC_URL; do
     deployment_value="$(sed -n "s/^${deployment_name}=//p" /etc/e-posyandu/nutrition-grpc.env | tail -n 1)"
     if [[ -n "$deployment_value" ]]; then
       preserved_deployment_values["$deployment_name"]="$deployment_value"
@@ -249,12 +269,19 @@ rollback_on_failure() {
   if [[ "$exit_code" -ne 0 && "$deployment_started" == true \
     && "$release_activated" != true && -n "$previous_compose" ]]; then
     echo "Rilis baru gagal; memulihkan konfigurasi Oracle sebelumnya." >&2
-    "${compose_command[@]}" \
-      --project-name e-posyandu-oracle \
-      --file "$previous_compose" \
-      --env-file /etc/e-posyandu/nutrition-grpc.env \
-      up --detach --remove-orphans >&2 || \
-      echo "Rollback otomatis gagal; pemeriksaan operator diperlukan." >&2
+    if [[ "$deployment_service" == "all" ]]; then
+      "${compose_command[@]}" \
+        --project-name e-posyandu-oracle \
+        --file "$previous_compose" \
+        --env-file /etc/e-posyandu/nutrition-grpc.env \
+        up --detach --remove-orphans >&2
+    else
+      "${compose_command[@]}" \
+        --project-name e-posyandu-oracle \
+        --file "$previous_compose" \
+        --env-file /etc/e-posyandu/nutrition-grpc.env \
+        up --detach --no-deps "$deployment_service" >&2
+    fi || echo "Rollback otomatis gagal; pemeriksaan operator diperlukan." >&2
   fi
   exit "$exit_code"
 }
@@ -267,11 +294,51 @@ deployment_started=true
   --env-file /etc/e-posyandu/nutrition-grpc.env \
   config >/dev/null
 
-"${compose_command[@]}" \
-  --project-name e-posyandu-oracle \
-  --file "$compose_file" \
-  --env-file /etc/e-posyandu/nutrition-grpc.env \
-  up --detach --build --remove-orphans
+if [[ "$deployment_service" == "all" && "$skip_build" != "true" ]]; then
+  # Build satu per satu. VM Oracle Always Free hanya memiliki disk/CPU
+  # terbatas; membangun enam image Rust bersamaan membuat setiap target
+  # menyimpan artefak Cargo duplikat dan dapat menghabiskan disk sebelum
+  # container baru dibuat. Container lama tetap berjalan selama tahap build.
+  for build_service in \
+    identity-service \
+    operations-service \
+    realtime-service \
+    monitoring-service \
+    nutrition-worker \
+    oracle-api; do
+    echo "Membangun image $build_service secara berurutan ..."
+    "${compose_command[@]}" \
+      --project-name e-posyandu-oracle \
+      --file "$compose_file" \
+      --env-file /etc/e-posyandu/nutrition-grpc.env \
+      build "$build_service"
+    if [[ "$container_engine" == "podman" ]]; then
+      # Hanya hapus layer/image dangling; image yang sedang dipakai container
+      # lama maupun image service yang baru selesai tetap dipertahankan.
+      podman image prune --force >/dev/null || true
+    fi
+  done
+  "${compose_command[@]}" \
+    --project-name e-posyandu-oracle \
+    --file "$compose_file" \
+    --env-file /etc/e-posyandu/nutrition-grpc.env \
+    up --detach --no-build --remove-orphans
+elif [[ "$deployment_service" == "all" ]]; then
+  # Mode ini hanya dipakai ketika image bertag sudah dibangun pada release
+  # sebelumnya. Tidak ada compile/pull image pada tahap aktivasi.
+  echo "Mengaktifkan image Oracle yang sudah tersedia tanpa build ..."
+  "${compose_command[@]}" \
+    --project-name e-posyandu-oracle \
+    --file "$compose_file" \
+    --env-file /etc/e-posyandu/nutrition-grpc.env \
+    up --detach --no-build --remove-orphans
+else
+  "${compose_command[@]}" \
+    --project-name e-posyandu-oracle \
+    --file "$compose_file" \
+    --env-file /etc/e-posyandu/nutrition-grpc.env \
+    up --detach --no-deps --build "$deployment_service"
+fi
 
 health_site="$(sed -n 's/^ORACLE_HEALTH_SITE=//p' /etc/e-posyandu/nutrition-grpc.env | tail -n 1)"
 if [[ "$health_site" == http://* ]]; then
@@ -284,11 +351,32 @@ fi
 api_health_check=(curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8081/api/v1/health/ready)
 
 for attempt in $(seq 1 30); do
-  if "${health_check[@]}" 2>/dev/null | grep -Fq "E-Posyandu nutrition worker aktif" \
-    && "${api_health_check[@]}" 2>/dev/null | grep -Fq '"ok":true'; then
+  service_healthy=true
+  if [[ "$deployment_service" == "all" || "$deployment_service" == "nutrition-worker" ]]; then
+    "${health_check[@]}" 2>/dev/null | grep -Fq "E-Posyandu nutrition worker aktif" || service_healthy=false
+  fi
+  if [[ "$deployment_service" == "all" || "$deployment_service" == "oracle-api" ]]; then
+    "${api_health_check[@]}" 2>/dev/null | grep -Fq '"ok":true' || service_healthy=false
+  fi
+  for internal_service in identity-service operations-service realtime-service monitoring-service; do
+    if [[ "$deployment_service" == "all" || "$deployment_service" == "$internal_service" ]]; then
+      # podman-compose versi yang tersedia di Oracle Linux tidak menerima
+      # nama service sebagai argumen `ps`. Periksa container yang dibuat
+      # Compose secara langsung agar health gate tidak selalu false.
+      internal_container="e-posyandu-oracle_${internal_service}_1"
+      internal_status="$($container_engine inspect \
+        --format '{{.State.Status}}' "$internal_container" 2>/dev/null || true)"
+      [[ "$internal_status" == "running" ]] || service_healthy=false
+    fi
+  done
+  if [[ "$service_healthy" == true ]]; then
     ln -sfn "$release_dir" /opt/e-posyandu/current
     release_activated=true
-    echo "API dan nutrition worker Oracle aktif."
+    if [[ "$deployment_service" == "all" ]]; then
+      echo "API dan nutrition worker Oracle aktif."
+    else
+      echo "Service Oracle $deployment_service aktif; service lain tidak di-restart."
+    fi
     "${compose_command[@]}" \
       --project-name e-posyandu-oracle \
       --file "$compose_file" \
@@ -299,7 +387,7 @@ for attempt in $(seq 1 30); do
   sleep 2
 done
 
-echo "API atau nutrition worker belum sehat setelah 60 detik." >&2
+echo "Service Oracle $deployment_service belum sehat setelah 60 detik." >&2
 "${compose_command[@]}" \
   --project-name e-posyandu-oracle \
   --file "$compose_file" \

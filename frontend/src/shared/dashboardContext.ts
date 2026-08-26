@@ -1,13 +1,14 @@
 // @ts-nocheck
 import Native, { useState, useEffect, useLayoutEffect, useMemo, useRef } from '../runtime/dom';
 import { initializeApp, reportAccountPresence } from '../api/authApi';
-import { getCachedChildrenPage, getChildDetail, getChildrenPage } from '../api/childrenApi';
+import { getCachedChildrenPage, getChildDetail, getChildrenPage, peekCachedChildrenPage, peekCachedExclusiveBreastfeedingPage } from '../api/childrenApi';
 import { getChangeHistory, getDashboardStats, getMonitoringStatus } from '../api/dashboardApi';
 import { getDocsForExport } from '../api/exportApi';
 import { getSigiziMeasurementExport } from '../api/measurementApi';
-import { addDoc, collection, deleteDoc, doc, getDocs, getFirestore, onSnapshot, orderBy, query, resolveSyncConflict, serverTimestamp, subscribeToSyncConflicts, subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations, updateDoc, where, listSyncConflicts } from '../api/syncApi';
+import { addDoc, collection, deleteDoc, doc, getDocs, getFirestore, onSnapshot, orderBy, query, resolveSyncConflict, serverTimestamp, subscribeToRealtime, subscribeToSyncConflicts, subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations, updateDoc, where, listSyncConflicts } from '../api/syncApi';
 import { DATA_WILAYAH, ROLES, isFullAccessRole, DASHBOARD_TABS, COMPACT_SIDEBAR_MEDIA_QUERY, MONTHS, YEARS } from '../config/dashboard';
 import { formatChildName, getKBM, formatDate, formatIndoDate, formatIndoDateTime, getAgeInMonths, calculateZScore, calculateGiziStatus, generateRandomDigits, normalizeDecimalInput, parseLocaleNumber, parseLocaleNumberForRange } from './dashboardUtils';
+import { generateTemporaryNik } from '../features/children/childRules';
 import { ensureXlsx } from '../services/xlsx';
 import { Card, InputGroup, LocationFilterPanel } from '../ui/dashboardPrimitives';
 import { Button, Select, Badge, KenaikanBadge, StatusBadge } from '../components';
@@ -21,15 +22,15 @@ import { db, appId } from '../app/session';
 export {
     Native, useState, useEffect, useLayoutEffect, useMemo, useRef,
     getFirestore, collection, addDoc, query, where, onSnapshot, serverTimestamp,
-    updateDoc, doc, deleteDoc, getDocs, getDocsForExport, getCachedChildrenPage,
+    updateDoc, doc, deleteDoc, getDocs, getDocsForExport, getCachedChildrenPage, peekCachedChildrenPage, peekCachedExclusiveBreastfeedingPage,
     getChangeHistory, getChildDetail, getChildrenPage, getDashboardStats,
     getMonitoringStatus, getSigiziMeasurementExport, initializeApp, reportAccountPresence,
     listSyncConflicts, resolveSyncConflict, subscribeToSyncConflicts,
-    subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations,
+    subscribeToRealtime, subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations,
     orderBy, DATA_WILAYAH, ROLES, isFullAccessRole, DASHBOARD_TABS, COMPACT_SIDEBAR_MEDIA_QUERY,
     MONTHS, YEARS, formatChildName, getKBM, formatDate, formatIndoDate,
     formatIndoDateTime, getAgeInMonths, calculateZScore, calculateGiziStatus,
-    generateRandomDigits, normalizeDecimalInput, parseLocaleNumber,
+    generateRandomDigits, generateTemporaryNik, normalizeDecimalInput, parseLocaleNumber,
     parseLocaleNumberForRange, ensureXlsx, Card, Button, InputGroup, Select,
     LocationFilterPanel, Badge, KenaikanBadge, StatusBadge,
     getPreferredColorScheme, saveColorScheme, subscribeColorScheme,

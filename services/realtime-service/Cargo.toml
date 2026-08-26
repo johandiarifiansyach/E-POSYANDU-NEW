@@ -1,0 +1,16 @@
+[package]
+name = "e-posyandu-realtime-service"
+version = "3.7.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+axum = "0.8"
+e-posyandu-oracle-domain = { path = "../oracle-domain" }
+e-posyandu-proto = { path = "../eposyandu-proto" }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+futures-util = "0.3"
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { version = "0.14", features = ["transport"] }
+tonic-health = "0.14"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }

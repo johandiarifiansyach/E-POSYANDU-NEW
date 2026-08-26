@@ -173,12 +173,60 @@
     },
     "/api/v1/auth/mfa/verify": {
       "post": {
-        "summary": "Memverifikasi passkey, TOTP, atau recovery code administrator",
+        "summary": "Memverifikasi TOTP atau recovery code administrator",
         "operationId": "adminMfaVerify",
         "security": [{ "sessionCookie": [] }],
         "responses": {
           "200": { "description": "Sesi administrator aktif pada AAL2 atau recovery yang valid" },
           "401": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/auth/passkey/registration/options": {
+      "post": {
+        "summary": "Membuat opsi pendaftaran passkey administrator",
+        "operationId": "adminPasskeyRegistrationOptions",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Opsi WebAuthn dan challenge pendaftaran" },
+          "403": { "$ref": "#/components/responses/ApiError" },
+          "503": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/auth/passkey/registration/verify": {
+      "post": {
+        "summary": "Memverifikasi dan menyimpan passkey administrator",
+        "operationId": "adminPasskeyRegistrationVerify",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Passkey tersimpan dan sesi administrator aktif" },
+          "401": { "$ref": "#/components/responses/ApiError" },
+          "422": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/auth/passkey/authentication/options": {
+      "post": {
+        "summary": "Membuat opsi autentikasi passkey administrator",
+        "operationId": "adminPasskeyAuthenticationOptions",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Opsi WebAuthn dan challenge autentikasi" },
+          "403": { "$ref": "#/components/responses/ApiError" },
+          "503": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/auth/passkey/authentication/verify": {
+      "post": {
+        "summary": "Memverifikasi passkey administrator",
+        "operationId": "adminPasskeyAuthenticationVerify",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Sesi administrator aktif" },
+          "401": { "$ref": "#/components/responses/ApiError" },
+          "422": { "$ref": "#/components/responses/ApiError" }
         }
       }
     },
@@ -307,6 +355,36 @@
           },
           "401": { "$ref": "#/components/responses/ApiError" },
           "403": { "$ref": "#/components/responses/ApiError" },
+          "429": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/realtime/stream": {
+      "get": {
+        "summary": "Mengalirkan notifikasi perubahan data aplikasi melalui SSE",
+        "description": "SSE terautentikasi yang hanya mengirim metadata perubahan tanpa isi data sensitif. Klien mengambil ulang data melalui endpoint berotorisasi.",
+        "operationId": "streamRealtimeData",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Aliran event data atau resync",
+            "content": {
+              "text/event-stream": {
+                "schema": { "type": "string" },
+                "x-event-schema": {
+                  "type": "object",
+                  "required": ["id", "resource", "operation", "changedAt"],
+                  "properties": {
+                    "id": { "type": "string", "format": "uuid" },
+                    "resource": { "type": "string" },
+                    "operation": { "type": "string", "enum": ["create", "update", "delete"] },
+                    "changedAt": { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/ApiError" },
           "429": { "$ref": "#/components/responses/ApiError" }
         }
       }

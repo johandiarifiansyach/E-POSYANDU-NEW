@@ -310,8 +310,12 @@ export function mountApp(container: HTMLElement): Cleanup {
   };
 
   const initialize = async () => {
-    showLoading(container);
     const activation = consumeAdminActivationTokens();
+    // The first paint represents an unknown session, not a known login page.
+    // Keep the application shell visible while the session check is pending;
+    // renderLogin() switches to the login-shaped skeleton only after the
+    // server confirms that no session is available.
+    showLoading(container);
     if (activation) {
       await renderAdminInvite(activation);
       return;

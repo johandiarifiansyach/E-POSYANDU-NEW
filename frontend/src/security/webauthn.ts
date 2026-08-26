@@ -49,7 +49,7 @@ function serializeCredential(credential: PublicKeyCredential, operation: 'create
   if (typeof (credential as any).toJSON === 'function') return (credential as any).toJSON();
   const base = {
     id: credential.id,
-    rawId: credential.id,
+    rawId: encodeBase64Url(credential.rawId),
     type: 'public-key',
     clientExtensionResults: credential.getClientExtensionResults(),
     authenticatorAttachment: (credential as any).authenticatorAttachment || undefined
@@ -76,35 +76,44 @@ function serializeCredential(credential: PublicKeyCredential, operation: 'create
   };
 }
 
-export async function completeWebAuthnChallenge(challenge: any): Promise<{
+type PasskeyCeremony = {
   challengeId: string;
-  operation: 'create' | 'request';
-  credentialResponse: unknown;
-}> {
+  credential: unknown;
+};
+
+function passkeyOptions(challenge: any): any {
+  const challengeId = challenge?.id || challenge?.challenge_id;
+  const options = challenge?.options;
+  if (typeof challengeId !== 'string' || !options || typeof options !== 'object') {
+    throw new Error('Challenge passkey tidak valid.');
+  }
+  return { challengeId, options };
+}
+
+async function completePasskeyCeremony(
+  challenge: any,
+  operation: 'create' | 'request'
+): Promise<PasskeyCeremony> {
   if (!window.PublicKeyCredential || !navigator.credentials) {
     throw new Error('Perangkat atau browser ini belum mendukung passkey.');
   }
-  const operation = challenge?.webauthn?.type;
-  const publicKey = challenge?.webauthn?.credential_options?.publicKey;
-  if (!challenge?.id || !publicKey || !matchesOperation(operation)) {
-    throw new Error('Challenge passkey tidak valid.');
-  }
-  let credential: Credential | null;
-  if (operation === 'create') {
-    credential = await navigator.credentials.create({ publicKey: creationOptions(publicKey) });
-  } else {
-    credential = await navigator.credentials.get({ publicKey: requestOptions(publicKey) });
-  }
+  const parsed = passkeyOptions(challenge);
+  const credential = operation === 'create'
+    ? await navigator.credentials.create({ publicKey: creationOptions(parsed.options) })
+    : await navigator.credentials.get({ publicKey: requestOptions(parsed.options) });
   if (!(credential instanceof PublicKeyCredential)) {
     throw new Error('Verifikasi passkey dibatalkan atau tidak menghasilkan kredensial.');
   }
   return {
-    challengeId: challenge.id,
-    operation,
-    credentialResponse: serializeCredential(credential, operation)
+    challengeId: parsed.challengeId,
+    credential: serializeCredential(credential, operation)
   };
 }
 
-function matchesOperation(value: unknown): value is 'create' | 'request' {
-  return value === 'create' || value === 'request';
+export async function completeWebAuthnRegistration(challenge: any): Promise<PasskeyCeremony> {
+  return completePasskeyCeremony(challenge, 'create');
+}
+
+export async function completeWebAuthnAuthentication(challenge: any): Promise<PasskeyCeremony> {
+  return completePasskeyCeremony(challenge, 'request');
 }

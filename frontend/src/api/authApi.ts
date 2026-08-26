@@ -23,5 +23,9 @@ export {
   signInAnonymously,
   signInWithPassword,
   signOut,
-  verifyMfaFactor
+  verifyMfaFactor,
+  startPasskeyRegistration,
+  verifyPasskeyRegistration,
+  startPasskeyAuthentication,
+  verifyPasskeyAuthentication
 } from './legacyClient';

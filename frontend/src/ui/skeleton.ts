@@ -281,29 +281,81 @@ export function DashboardPageSkeleton() {
 
 export function TableLoadingSkeleton({ columnCount, rowCount = 6 }: TableLoadingSkeletonProps) {
   return Native.createElement(
-    'tr',
+    Native.Fragment,
     null,
-    Native.createElement(
-      'td',
-      { colSpan: columnCount, className: 'px-4 py-5' },
+    ...Array.from({ length: rowCount }, (_, rowIndex) =>
       Native.createElement(
-        'div',
-        { className: 'app-table-skeleton', 'aria-hidden': 'true' },
-        ...Array.from({ length: rowCount }, (_, index) =>
+        'tr',
+        { className: 'app-table-loading-row', key: `table-row-${rowIndex}`, 'aria-hidden': 'true' },
+        ...Array.from({ length: columnCount }, (_, columnIndex) =>
           Native.createElement(
-            'div',
-            { className: 'app-table-skeleton-row', key: `table-row-${index}` },
-            SkeletonBlock({ className: 'app-table-skeleton-index' }),
+            'td',
+            { className: 'app-table-loading-cell', key: `table-cell-${rowIndex}-${columnIndex}` },
             Native.createElement(
               'div',
-              { className: 'app-table-skeleton-main' },
-              SkeletonBlock({ className: 'app-table-skeleton-name' }),
-              SkeletonBlock({ className: 'app-table-skeleton-meta' })
-            ),
-            SkeletonBlock({ className: 'app-table-skeleton-chip' }),
-            SkeletonBlock({ className: 'app-table-skeleton-action' })
+              { className: columnIndex === 1 ? 'app-table-loading-stack' : 'app-table-loading-content' },
+              SkeletonBlock({ className: `app-table-cell-skeleton app-table-cell-skeleton-${columnIndex === 0 ? 'index' : columnIndex === columnCount - 1 ? 'action' : 'line'}` }),
+              columnIndex === 1 && SkeletonBlock({ className: 'app-table-cell-skeleton app-table-cell-skeleton-secondary' })
+            )
           )
         )
+      )
+    )
+  );
+}
+
+export function AdminAccountTableSkeleton({ rowCount = 6 }: { rowCount?: number } = {}) {
+  return Native.createElement(
+    Native.Fragment,
+    null,
+    ...Array.from({ length: rowCount }, (_, rowIndex) =>
+      Native.createElement(
+        'tr',
+        { className: 'admin-account-loading-row', key: `admin-account-loading-${rowIndex}`, 'aria-hidden': 'true' },
+        Native.createElement(
+          'td',
+          null,
+          Native.createElement('div', { className: 'admin-account-loading-identity' },
+            SkeletonBlock({ className: 'admin-account-loading-avatar' }),
+            Native.createElement('div', { className: 'admin-account-loading-copy' },
+              SkeletonBlock({ className: 'admin-account-loading-name' }),
+              SkeletonBlock({ className: 'admin-account-loading-email' })))
+        ),
+        Native.createElement('td', null,
+          Native.createElement('div', { className: 'admin-account-loading-copy' },
+            SkeletonBlock({ className: 'admin-account-loading-role' }),
+            SkeletonBlock({ className: 'admin-account-loading-scope' }))),
+        Native.createElement('td', null, SkeletonBlock({ className: 'admin-account-loading-access' })),
+        Native.createElement('td', null,
+          Native.createElement('div', { className: 'admin-account-loading-copy' },
+            SkeletonBlock({ className: 'admin-account-loading-status' }),
+            SkeletonBlock({ className: 'admin-account-loading-active' }))),
+        Native.createElement('td', null, SkeletonBlock({ className: 'admin-account-loading-seen' })),
+        Native.createElement('td', null,
+          Native.createElement('div', { className: 'admin-account-loading-actions' },
+            SkeletonBlock({ className: 'admin-account-loading-action' }),
+            SkeletonBlock({ className: 'admin-account-loading-action' })))
+      )
+    )
+  );
+}
+
+export function ChangeHistoryLoadingSkeleton({ rowCount = 4 }: { rowCount?: number } = {}) {
+  return Native.createElement(
+    'div',
+    { className: 'change-history-loading-list', 'aria-hidden': 'true' },
+    ...Array.from({ length: rowCount }, (_, index) =>
+      Native.createElement(
+        'article',
+        { className: 'app-card change-history-loading-card', key: `change-history-loading-${index}` },
+        Native.createElement('div', { className: 'change-history-loading-heading' },
+          Native.createElement('div', { className: 'change-history-loading-copy' },
+            SkeletonBlock({ className: 'change-history-loading-title' }),
+            SkeletonBlock({ className: 'change-history-loading-meta' })),
+          SkeletonBlock({ className: 'change-history-loading-icon' })),
+        Native.createElement('div', { className: 'change-history-loading-details' },
+          SkeletonBlock({ className: 'change-history-loading-detail' }),
+          SkeletonBlock({ className: 'change-history-loading-detail change-history-loading-detail-short' }))
       )
     )
   );

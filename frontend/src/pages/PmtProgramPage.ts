@@ -13,6 +13,7 @@ import {
   numericValue,
 } from '../features/pmt/pmtRules';
 import { formatIndoDate } from './DashboardApp';
+import { TableLoadingSkeleton } from '../ui/skeleton';
 import type { PageState } from '../shared/pageState';
 
 function categoryIcon(category) {
@@ -39,6 +40,20 @@ function MeasurementCell({ category, status, date, weight, height }) {
     Native.createElement('div', { className: 'mt-1' },
       Native.createElement(StatusResult, { category, status }))
   );
+}
+
+function PmtTableHeader({ weeks }) {
+  return Native.createElement('thead', null,
+    Native.createElement('tr', null,
+      Native.createElement('th', { className: 'pmt-col-number' }, 'No.'),
+      Native.createElement('th', { className: 'pmt-col-child' }, 'Balita'),
+      Native.createElement('th', null, 'Kategori / Indikator'),
+      Native.createElement('th', null, 'Sumber Anggaran'),
+      Native.createElement('th', null, 'Mitra'),
+      Native.createElement('th', null, 'Tanggal Awal'),
+      Native.createElement('th', { className: 'pmt-week-column' }, 'Pengukuran Awal'),
+      ...weeks.map((week) => Native.createElement('th', { key: week, className: 'pmt-week-column' }, `Minggu ${week}`)),
+      Native.createElement('th', { className: 'pmt-col-action' }, 'Aksi')));
 }
 
 export default function PmtProgramPage({ childrenData, pmtPrograms, onExportPmt, onDeleteProgram, onOpenMonitoring, pageState: externalPageState }) {
@@ -96,9 +111,10 @@ export default function PmtProgramPage({ childrenData, pmtPrograms, onExportPmt,
         }, option.shortLabel)))),
     Native.createElement('div', { className: 'pmt-table-card ios-table-card' },
       pageLoading
-        ? Native.createElement('div', { className: 'pmt-empty-state', role: 'status' },
-            Native.createElement(Loader2, { className: 'h-8 w-8 animate-spin' }),
-            Native.createElement('p', null, 'Memuat program PMT...'))
+        ? Native.createElement(DataTable, { className: 'pmt-table-scroll', ariaLabel: 'Memuat tabel pemantauan PMT' },
+            Native.createElement('table', { className: 'pmt-data-table ios-data-table', 'aria-busy': 'true' },
+              PmtTableHeader({ weeks }),
+              Native.createElement('tbody', null, Native.createElement(TableLoadingSkeleton, { columnCount: 8 + weeks.length, rowCount: 5 }))))
         : pageError
           ? Native.createElement('div', { className: 'pmt-empty-state ios-inline-notification ios-inline-notification-error', role: 'alert' },
               Native.createElement(AlertCircle, { className: 'h-8 w-8' }),
@@ -109,17 +125,7 @@ export default function PmtProgramPage({ childrenData, pmtPrograms, onExportPmt,
             Native.createElement('p', null, 'Belum ada program PMT pada kategori ini.'))
         : Native.createElement(DataTable, { className: 'pmt-table-scroll', ariaLabel: 'Tabel pemantauan PMT' },
             Native.createElement('table', { className: 'pmt-data-table ios-data-table' },
-              Native.createElement('thead', null,
-                Native.createElement('tr', null,
-                  Native.createElement('th', { className: 'pmt-col-number' }, 'No.'),
-                  Native.createElement('th', { className: 'pmt-col-child' }, 'Balita'),
-                  Native.createElement('th', null, 'Kategori / Indikator'),
-                  Native.createElement('th', null, 'Sumber Anggaran'),
-                  Native.createElement('th', null, 'Mitra'),
-                  Native.createElement('th', null, 'Tanggal Awal'),
-                  Native.createElement('th', { className: 'pmt-week-column' }, 'Pengukuran Awal'),
-                  ...weeks.map((week) => Native.createElement('th', { key: week, className: 'pmt-week-column' }, `Minggu ${week}`)),
-                  Native.createElement('th', { className: 'pmt-col-action' }, 'Aksi'))),
+              PmtTableHeader({ weeks }),
               Native.createElement('tbody', null,
                 filteredPrograms.map((program, index) => {
                   const child = childById.get(program.childId);

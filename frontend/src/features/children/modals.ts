@@ -5,7 +5,7 @@ import { errorMessage, type PageState } from '../../shared/pageState';
 const {
     Native, useState, useEffect, useMemo, useRef, collection, addDoc,
     serverTimestamp, updateDoc, doc, db, appId, formatDate, formatChildName,
-    generateRandomDigits, normalizeDecimalInput, parseLocaleNumber,
+    generateRandomDigits, generateTemporaryNik, normalizeDecimalInput, parseLocaleNumber,
     parseLocaleNumberForRange, showSuccess, Button, InputGroup, Select,
     syncPendingMutations, DATA_WILAYAH, ROLES, Baby, X, AlertTriangle
 } = Context;
@@ -76,46 +76,12 @@ export const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = nu
             setFormData(prev => ({ ...prev, noKK: newKK }));
         }
     }, [formData.hasKK, isEdit]);
-    // Updated NIK Generation Logic
     useEffect(() => {
-        if (!isEdit || (isEdit && !formData.hasNIK)) {
-            let newNIK = formData.nik;
-            if (!formData.hasNIK && formData.tglLahir && formData.posyandu) {
-                const d = new Date(formData.tglLahir);
-                const dd = String(d.getDate()).padStart(2, '0');
-                const mm = String(d.getMonth() + 1).padStart(2, '0');
-                const yy = String(d.getFullYear()).slice(-2);
-                const posyanduNumMatch = formData.posyandu.match(/\d+/);
-                const posyanduCode = posyanduNumMatch ? String(posyanduNumMatch[0]).padStart(2, '0') : '00';
-                const baseNIK = `350904${dd}${mm}${yy}00${posyanduCode}`;
-                const specialPosyandus = ['SALAK 61', 'SALAK 98', 'SALAK 99'];
-                const isSpecial = specialPosyandus.includes(formData.posyandu);
-                let finalNIK = baseNIK;
-                let isUnique = false;
-                let attempts = 0;
-                // Function to check uniqueness
-                const checkUnique = (nik) => !(allChildren || []).some(c => c.nik === nik && c.id !== initialData?.id);
-                // 1. Try standard first (if not special)
-                if (!isSpecial && checkUnique(baseNIK)) {
-                    finalNIK = baseNIK;
-                    isUnique = true;
-                }
-                // 2. If special or standard collision, generate random last 2 digits
-                while (!isUnique && attempts < 100) {
-                    const maxRange = isSpecial ? 60 : 99;
-                    const randomSuffix = String(Math.floor(Math.random() * maxRange) + 1).padStart(2, '0');
-                    const prefix = `350904${dd}${mm}${yy}00`;
-                    const candidateNIK = prefix + randomSuffix;
-                    if (checkUnique(candidateNIK)) {
-                        finalNIK = candidateNIK;
-                        isUnique = true;
-                    }
-                    attempts++;
-                }
-                newNIK = finalNIK;
-            }
-            setFormData(prev => ({ ...prev, nik: newNIK }));
-        }
+        if (formData.hasNIK || !formData.tglLahir || !formData.posyandu) return;
+        const generatedNik = generateTemporaryNik(formData, allChildren);
+        setFormData((previous) => previous.nik === generatedNik
+            ? previous
+            : { ...previous, nik: generatedNik });
     }, [formData.hasNIK, formData.tglLahir, formData.posyandu, isEdit, allChildren, initialData?.id]);
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -467,25 +433,7 @@ export const AddChildModal = ({ user, onClose, onSuccess, initialData = null, is
     useEffect(() => {
         if (formData.hasNIK || !formData.tglLahir || !formData.posyandu)
             return;
-        const birthDate = new Date(formData.tglLahir);
-        const day = String(birthDate.getDate()).padStart(2, '0');
-        const month = String(birthDate.getMonth() + 1).padStart(2, '0');
-        const year = String(birthDate.getFullYear()).slice(-2);
-        const posyanduNumber = formData.posyandu.match(/\d+/)?.[0] || '00';
-        const standardNik = `350904${day}${month}${year}00${String(posyanduNumber).padStart(2, '0')}`;
-        const specialPosyandu = ['SALAK 61', 'SALAK 98', 'SALAK 99'];
-        const nikIsAvailable = (nik) => !allChildren.some((child) => child.nik === nik && child.id !== initialData?.id);
-        let generatedNik = standardNik;
-        if (specialPosyandu.includes(formData.posyandu) || !nikIsAvailable(standardNik)) {
-            for (let attempts = 0; attempts < 100; attempts += 1) {
-                const suffix = String(Math.floor(Math.random() * (specialPosyandu.includes(formData.posyandu) ? 60 : 99)) + 1).padStart(2, '0');
-                const candidate = `350904${day}${month}${year}00${suffix}`;
-                if (nikIsAvailable(candidate)) {
-                    generatedNik = candidate;
-                    break;
-                }
-            }
-        }
+        const generatedNik = generateTemporaryNik(formData, allChildren);
         setFormData((previous) => ({ ...previous, nik: generatedNik }));
     }, [allChildren, formData.hasNIK, formData.posyandu, formData.tglLahir, initialData?.id]);
     const handleDecimalFieldChange = (field) => (event) => {

@@ -26,6 +26,13 @@ E-POSYANDU/
 │       ├── graphql.rs       Query baca GraphQL dengan scope wilayah yang sama
 │       └── lib.rs           Entry point Worker, auth, keamanan, dan routing
 ├── services/
+│   ├── eposyandu-proto/     Kontrak protobuf/gRPC bersama antarservice
+│   ├── oracle-api/           API gateway native dan proxy gRPC
+│   ├── oracle-domain/        Implementasi domain bersama selama migrasi kode
+│   ├── identity-service/     Microservice autentikasi dan administrasi akun
+│   ├── operations-service/   Microservice CRUD, cache, dan sinkronisasi
+│   ├── realtime-service/     Microservice stream perubahan data
+│   ├── monitoring-service/   Microservice metrik operasional admin
 │   ├── neon-read-worker/    Gateway privat baca-only menuju replika Neon
 │   └── nutrition-grpc/      Worker job berat Rust dan pull consumer Queue
 ├── deploy/oracle/           Runtime terisolasi dan bootstrap worker Oracle
@@ -42,8 +49,14 @@ E-POSYANDU/
 - Akses jaringan frontend hanya ditambahkan melalui `frontend/src/api`.
 - Kode penyimpanan browser dan sinkronisasi lokal ditempatkan di `frontend/src/services`.
 - Endpoint backend ditempatkan di `backend/src/api`; `lib.rs` hanya mengurus pintu masuk, autentikasi, keamanan, dan dispatch.
-- REST dipakai untuk autentikasi, CRUD, sinkronisasi ringan, pembuatan job, progres, dan unduhan. GraphQL hanya untuk query baca dashboard dan laporan terpaginasikan; gRPC hanya untuk validasi, kalkulasi, ekspor, dan normalisasi batch internal.
+- Browser memakai HTTPS ke gateway untuk autentikasi, CRUD, sinkronisasi ringan,
+  progres, dan unduhan. GraphQL hanya untuk query baca dashboard dan laporan
+  terpaginasikan. `oracle-api` tidak mengakses implementasi domain saat mode
+  microservices aktif; ia meneruskan envelope HTTP internal melalui gRPC ke
+  service pemilik domain. Komunikasi service-to-service native memakai
+  gRPC/HTTP2 dengan kontrak pada `services/eposyandu-proto`; gRPC tidak pernah
+  dibuka langsung ke browser.
 - Cloudflare Queue hanya membawa ID job. Payload dan status tetap berada di PostgreSQL agar pesan kecil, dapat diulang secara idempoten, dan tidak menyimpan data kesehatan di antrean.
-- PostgreSQL Supabase adalah sumber kebenaran dan satu-satunya tujuan tulis aplikasi. Neon menyimpan replika baca asinkron yang diperbarui lewat HTTPS untuk query berat; Rust Worker selalu memvalidasi scope dan otomatis fallback ke Supabase.
+- PostgreSQL Oracle native adalah sumber kebenaran dan tujuan tulis aplikasi pada mode produksi. Supabase tetap dipertahankan sebagai jalur legacy/rollback, sedangkan Rust Worker dan domain service selalu memvalidasi scope sebelum membaca atau menulis.
 - Setiap perubahan struktur database wajib menjadi migration baru di `database/migrations`.
 - Jangan menyimpan output build, cache, `.env`, `.dev.vars`, backup, atau credential ke Git.

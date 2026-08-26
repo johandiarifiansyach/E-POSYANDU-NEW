@@ -7,6 +7,7 @@ import { CheckCircle2, ChevronLeft, History, Loader2, Pencil, Plus, Scale, Trash
 import { showError, showSuccess } from '../ui/notifications';
 import GrowthChartsDialog from '../features/measurements/GrowthChartsDialog';
 import { fetchChildMeasurementHistory } from '../services/measurementService';
+import { TableLoadingSkeleton } from '../ui/skeleton';
 import {
     calculateWeightGainStatus as calculateMeasurementWeightGainStatus,
     getMeasurementStatuses,
@@ -353,9 +354,25 @@ export default function MeasurementPage({ child, onBack }) {
             historyError && (Native.createElement("div", { className: "ios-inline-notification ios-inline-notification-error mb-4", role: "alert" },
                 Native.createElement("strong", null, "Riwayat penimbangan tidak dapat dimuat"),
                 Native.createElement("span", null, historyError))),
-            loadingHistory ? (Native.createElement("div", { className: "py-12 text-center text-slate-400" },
-                Native.createElement(Loader2, { className: "w-8 h-8 animate-spin mx-auto mb-2" }),
-                "Memuat riwayat...")) : monthlyHistory.length === 0 ? (Native.createElement("p", { className: "measurement-history-empty" }, "Belum ada riwayat pengukuran.")) : (Native.createElement(DataTable, { className: "measurement-history-scroll", ariaLabel: "Riwayat penimbangan yang dapat digulir" },
+            loadingHistory ? (Native.createElement(DataTable, { className: "measurement-history-scroll", ariaLabel: "Memuat riwayat penimbangan" },
+                Native.createElement("table", { className: "ios-data-table ios-measurement-table text-xs", "aria-busy": "true" },
+                    Native.createElement("thead", null,
+                        Native.createElement("tr", { className: "text-slate-500 border-b border-slate-200" },
+                            Native.createElement("th", { className: "text-left py-2 pr-4" }, "Bulan"),
+                            Native.createElement("th", { className: "text-left py-2 pr-4" }, "Tanggal Ukur"),
+                            Native.createElement("th", { className: "text-center py-2 px-2" }, "BB"),
+                            Native.createElement("th", { className: "text-center py-2 px-2" }, "PB/TB"),
+                            Native.createElement("th", { className: "text-center py-2 px-2" }, "LILA"),
+                            Native.createElement("th", { className: "text-center py-2 px-2" }, "LK"),
+                            Native.createElement("th", { className: "text-center py-2 px-2" }, "Status BB/U"),
+                            Native.createElement("th", { className: "text-center py-2 px-2" }, "Status PB/TB-U"),
+                            Native.createElement("th", { className: "text-center py-2 px-2" }, "Status BB/PB atau BB/TB"),
+                            Native.createElement("th", { className: "text-center py-2 px-2" }, "Status IMT/U"),
+                            Native.createElement("th", { className: "text-center py-2 px-2" }, "Status LILA/U"),
+                            Native.createElement("th", { className: "text-center py-2 px-2" }, "Status LK/U"),
+                            Native.createElement("th", { className: "text-center py-2 px-2" }, "Naik BB"),
+                            Native.createElement("th", { className: "text-center py-2 pl-2" }, "Aksi"))),
+                    Native.createElement("tbody", null, Native.createElement(TableLoadingSkeleton, { columnCount: 14, rowCount: 6 }))))) : monthlyHistory.length === 0 ? (Native.createElement("p", { className: "measurement-history-empty" }, "Belum ada riwayat pengukuran.")) : (Native.createElement(DataTable, { className: "measurement-history-scroll", ariaLabel: "Riwayat penimbangan yang dapat digulir" },
                 Native.createElement("table", { className: "ios-data-table ios-measurement-table text-xs", "data-measurement-history-table": true },
                     Native.createElement("thead", null,
                         Native.createElement("tr", { className: "text-slate-500 border-b border-slate-200" },

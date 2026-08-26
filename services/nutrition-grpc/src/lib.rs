@@ -7,10 +7,56 @@ use std::{
     collections::{HashMap, HashSet},
     sync::OnceLock,
 };
-use tonic::{Request, Response, Status};
+use tonic::{
+    Request, Response, Status,
+    metadata::{Ascii, MetadataValue},
+    service::Interceptor,
+};
 
-pub mod proto {
-    tonic::include_proto!("eposyandu.nutrition.v1");
+pub use e_posyandu_proto::proto;
+
+pub const GRPC_SERVICE_TOKEN_HEADER: &str = "x-eposyandu-service-token";
+
+#[derive(Clone)]
+pub struct ServiceAuthInterceptor {
+    token: Option<MetadataValue<Ascii>>,
+    required: bool,
+}
+
+impl Interceptor for ServiceAuthInterceptor {
+    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
+        let Some(expected) = &self.token else {
+            return if self.required {
+                Err(Status::failed_precondition(
+                    "Secret service gRPC belum dikonfigurasi.",
+                ))
+            } else {
+                Ok(request)
+            };
+        };
+        let supplied = request
+            .metadata()
+            .get(GRPC_SERVICE_TOKEN_HEADER)
+            .ok_or_else(|| Status::unauthenticated("Token service gRPC tidak ditemukan."))?;
+        if supplied != expected {
+            return Err(Status::unauthenticated("Token service gRPC tidak valid."));
+        }
+        Ok(request)
+    }
+}
+
+pub fn service_auth_interceptor(required: bool) -> Result<ServiceAuthInterceptor, String> {
+    let value = std::env::var("RUST_WORKER_SHARED_SECRET")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let token = value
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| "Secret service gRPC harus berupa metadata ASCII.")
+        })
+        .transpose()?;
+    Ok(ServiceAuthInterceptor { token, required })
 }
 
 pub mod queue_consumer;

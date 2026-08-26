@@ -29,6 +29,53 @@ function createIcon(nodes: IconNode[]) {
   };
 }
 
+function createBrandIcon(nodes: IconNode[]) {
+  return function NativeBrandIcon(props: IconProps = {}) {
+    const { className, size = 24, ...rest } = props;
+    const hasAccessibleName = Boolean(rest['aria-label'] || rest['aria-labelledby']);
+    return Native.createElement(
+      'svg',
+      {
+        ...rest,
+        xmlns: 'http://www.w3.org/2000/svg',
+        width: size,
+        height: size,
+        viewBox: '0 0 24 24',
+        focusable: false,
+        ...(hasAccessibleName ? {} : { 'aria-hidden': 'true' }),
+        className: `service-brand-icon${className ? ` ${className}` : ''}`
+      },
+      nodes.map(([tag, attributes]) => Native.createElement(tag, attributes))
+    );
+  };
+}
+
+// Provider marks are kept inline so the status page does not depend on a third-party icon CDN.
+export const CloudflareLogo = createBrandIcon([
+  ['path', { fill: '#f48120', d: 'M20.75 15.15a4.6 4.6 0 0 0-4.45-3.45c-.46 0-.9.07-1.31.2A5.65 5.65 0 0 0 4.1 13.15H18.9a2.4 2.4 0 0 1 1.85 2Z' }],
+  ['path', { fill: '#faad3f', d: 'M19.15 14.4H7.25a2.9 2.9 0 0 0 0 5.8h11.9a2.15 2.15 0 0 0 0-4.3Z' }]
+]);
+export const RedisLogo = createBrandIcon([
+  ['polygon', { fill: '#dc382d', points: '12 2.7 21 7.1 12 11.55 3 7.1' }],
+  ['polygon', { fill: '#a41e11', points: '3 7.1 12 11.55 12 21.3 3 16.85' }],
+  ['polygon', { fill: '#c42a20', points: '21 7.1 12 11.55 12 21.3 21 16.85' }],
+  ['path', { fill: '#fff', d: 'M7.1 6.75h3.25c1.15 0 1.8.5 1.8 1.35 0 .58-.3 1.02-.84 1.25.7.2 1.08.66 1.08 1.3 0 .98-.76 1.55-2.06 1.55H7.1Zm1.45 1.05v.95h1.48c.45 0 .67-.16.67-.48 0-.31-.22-.47-.67-.47Zm0 1.95v1.1h1.62c.48 0 .72-.18.72-.55 0-.36-.24-.55-.72-.55Z' }]
+]);
+export const SupabaseLogo = createBrandIcon([
+  ['path', { fill: '#3ecf8e', d: 'M13.35 2.7 4.8 12.7a1.15 1.15 0 0 0 .88 1.9h5.45l-1.1 6.7a.72.72 0 0 0 1.28.56l8.7-10.35a1.15 1.15 0 0 0-.88-1.9h-5.2l.7-6.2a.72.72 0 0 0-1.28-.71Z' }],
+  ['path', { fill: '#249b68', d: 'm11.15 14.6-1.1 6.7a.72.72 0 0 0 1.28.56l8.7-10.35a1.15 1.15 0 0 0-.88-1.9h-5.2l-.22 1.92h2.6l-5.18 3.07Z' }]
+]);
+export const NeonLogo = createBrandIcon([
+  ['path', { fill: '#00e599', d: 'M4.3 4.1h3.1l8.3 10.1V4.1h3.9v15.8h-3.1L8.2 9.75v10.15H4.3Z' }],
+  ['path', { fill: '#8a5cf6', d: 'M15.7 4.1h3.9v15.8h-3.9Z' }]
+]);
+export const PostgreSQLLogo = createBrandIcon([
+  ['path', { fill: '#336791', d: 'M6.15 18.55c-1.58-2.08-1.8-6.5-.4-9.84C7.08 5.55 9.75 3.1 13 3.1c3.48 0 5.6 2.18 5.6 5.45 0 2.65-1.16 4.63-3.45 5.88v3.95c0 .84-.68 1.52-1.52 1.52h-4.7v-1.55h2.48v-3.2c-2.17.2-3.94-.58-5.26-2.32Z' }],
+  ['circle', { fill: '#fff', cx: '14.35', cy: '8.45', r: '1.15' }],
+  ['circle', { fill: '#336791', cx: '14.55', cy: '8.35', r: '.42' }],
+  ['path', { fill: '#fff', d: 'M15.8 11.3c1.1-.3 2.05-.82 2.83-1.55-.1 1.35-.74 2.48-1.9 3.37Z' }]
+]);
+
 // Original Apple-system-inspired glyphs. These avoid bundling Apple's proprietary SF Symbols.
 export const Activity = createIcon([["path", { "d": "M2.5 12h4l2.35-7.3 4.3 14.6 2.35-7.3h6", "key": "pulse" }]]);
 export const AlertCircle = createIcon([["circle", { "cx": "12", "cy": "12", "r": "9.25", "key": "ring" }], ["path", { "d": "M12 7.2v5.9", "key": "mark" }], ["circle", { "cx": "12", "cy": "16.65", "r": ".7", "fill": "currentColor", "stroke": "none", "key": "dot" }]]);

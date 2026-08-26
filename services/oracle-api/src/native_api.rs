@@ -6,6 +6,7 @@ use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use rand::{Rng, thread_rng};
 use reqwest::{Client, Url};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -15,6 +16,7 @@ use crate::{
     native_auth::{AccessScope, NativeAuth},
     native_cache::{DASHBOARD_CACHE_TTL_SECONDS, DYNAMIC_CACHE_TTL_SECONDS, NativeCache},
     native_db::{DatabaseError, NativeDatabase},
+    realtime::{RealtimeEvent, RealtimeHub},
 };
 
 const ORACLE_ORIGIN_HEADER: &str = "x-e-posyandu-origin";
@@ -112,6 +114,7 @@ pub(crate) struct NativeApi {
     auth: Arc<NativeAuth>,
     cache: Option<NativeCache>,
     queue: Option<CloudflareQueueConfig>,
+    realtime: RealtimeHub,
     reads_enabled: bool,
     writes_enabled: bool,
 }
@@ -728,6 +731,31 @@ fn now_iso() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
+fn optional_location(value: Option<&Value>) -> Option<String> {
+    let value = string_value(value);
+    (!value.is_empty()).then_some(value)
+}
+
+fn raw_location(resource: Resource, raw: &Value) -> (Option<String>, Option<String>) {
+    let Ok(row) = row(raw) else {
+        return (None, None);
+    };
+    match resource {
+        Resource::Children => (
+            optional_location(row.get("village")),
+            optional_location(row.get("posyandu")),
+        ),
+        Resource::Measurements => (
+            optional_location(row.get("legacy_village").or_else(|| row.get("village"))),
+            optional_location(row.get("legacy_posyandu").or_else(|| row.get("posyandu"))),
+        ),
+        Resource::MpasiLogs | Resource::PmtPrograms | Resource::ChangeLogs => (
+            optional_location(child_value(row, "village")),
+            optional_location(child_value(row, "posyandu")),
+        ),
+    }
+}
+
 fn set_value(target: &mut Map<String, Value>, column: &str, value: Option<Value>) {
     if let Some(value) = value {
         target.insert(column.into(), value);
@@ -1212,6 +1240,66 @@ fn deterministic_digits(seed: &str, length: usize) -> String {
         .collect()
 }
 
+fn temporary_birth_segment(data: &Map<String, Value>, seed: &str) -> String {
+    let birth_date = string_value(data.get("tglLahir"));
+    let parts = birth_date.split('-').collect::<Vec<_>>();
+    if parts.len() == 3
+        && parts[0].len() == 4
+        && parts[1].len() == 2
+        && parts[2].len() == 2
+        && parts
+            .iter()
+            .all(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        format!("{}{}{}", parts[2], parts[1], &parts[0][2..])
+    } else {
+        deterministic_digits(&format!("birth:{seed}"), 6)
+    }
+}
+
+fn temporary_posyandu_segment(data: &Map<String, Value>) -> String {
+    let posyandu = string_value(data.get("posyandu"));
+    let numeric_suffix = posyandu
+        .split_whitespace()
+        .last()
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .map(str::to_owned)
+        .or_else(|| {
+            let suffix = posyandu
+                .chars()
+                .rev()
+                .take_while(|character| character.is_ascii_digit())
+                .collect::<String>();
+            (!suffix.is_empty()).then(|| suffix.chars().rev().collect::<String>())
+        })
+        .unwrap_or_default();
+    let value = numeric_suffix.parse::<u16>().unwrap_or(0) % 100;
+    format!("{value:02}")
+}
+
+fn random_temporary_posyandu_segment() -> String {
+    let value = thread_rng().gen_range(10..=60);
+    format!("{value:02}")
+}
+
+fn temporary_nik_prefix(data: &Map<String, Value>, id: &str) -> String {
+    format!("350904{}00", temporary_birth_segment(data, id))
+}
+
+fn temporary_suffix_is_usable(data: &Map<String, Value>, id: &str, nik: &str) -> bool {
+    if !is_sixteen_digits(nik) {
+        return false;
+    }
+    let prefix = temporary_nik_prefix(data, id);
+    if !nik.starts_with(&prefix) {
+        return false;
+    }
+    let suffix = &nik[14..];
+    let value = suffix.parse::<u16>().unwrap_or_default();
+    let posyandu_code = temporary_posyandu_segment(data);
+    value == posyandu_code.parse::<u16>().unwrap_or_default() || (10..=60).contains(&value)
+}
+
 fn normalize_child_identity(data: &mut Map<String, Value>, id: &str) -> Result<(), ApiError> {
     let has_kk = bool_value(data.get("hasKK"));
     let no_kk = string_value(data.get("noKK"));
@@ -1229,16 +1317,23 @@ fn normalize_child_identity(data: &mut Map<String, Value>, id: &str) -> Result<(
     }
     let has_nik = bool_value(data.get("hasNIK"));
     let nik = string_value(data.get("nik"));
-    if has_nik && !is_sixteen_digits(&nik) {
-        return Err(ApiError::validation("NIK balita harus berisi 16 digit."));
-    }
-    if !has_nik && !is_sixteen_digits(&nik) {
+    if has_nik {
+        if !is_sixteen_digits(&nik) {
+            return Err(ApiError::validation("NIK balita harus berisi 16 digit."));
+        }
+    } else {
+        let posyandu_code = temporary_posyandu_segment(data);
+        let is_random_posyandu = matches!(posyandu_code.as_str(), "61" | "98" | "99");
+        let suffix = if temporary_suffix_is_usable(data, id, &nik) {
+            nik[14..].to_owned()
+        } else if is_random_posyandu {
+            random_temporary_posyandu_segment()
+        } else {
+            posyandu_code
+        };
         data.insert(
             "nik".into(),
-            Value::String(format!(
-                "350904{}",
-                deterministic_digits(&format!("national-id:{id}"), 10)
-            )),
+            Value::String(format!("{}{}", temporary_nik_prefix(data, id), suffix)),
         );
     }
     Ok(())
@@ -1272,10 +1367,17 @@ impl NativeApi {
         }
     }
 
+    pub(crate) async fn invalidate_dynamic_cache(&self) {
+        if let Some(cache) = self.cache.as_ref() {
+            cache.invalidate().await;
+        }
+    }
+
     pub(crate) async fn from_env(
         http: Client,
         auth: Arc<NativeAuth>,
         database: Arc<NativeDatabase>,
+        realtime: RealtimeHub,
         reads_enabled: bool,
         writes_enabled: bool,
     ) -> Result<Self, String> {
@@ -1285,9 +1387,18 @@ impl NativeApi {
             auth,
             cache: NativeCache::from_env().await?,
             queue: optional_queue_config()?,
+            realtime,
             reads_enabled,
             writes_enabled,
         })
+    }
+
+    async fn publish_realtime(&self, event: RealtimeEvent) {
+        // Publish locally first so a temporary LISTEN reconnect never delays
+        // clients on this instance. PostgreSQL NOTIFY fans the same event out
+        // to other API instances; RealtimeHub de-duplicates by event ID.
+        self.realtime.publish(event.clone());
+        let _ = self.database.notify_realtime(&event).await;
     }
 
     pub(crate) fn handles(&self, request: &Request) -> bool {
@@ -2208,6 +2319,15 @@ impl NativeApi {
             document.get("data").cloned(),
         )
         .await?;
+        let (village, posyandu) = raw_location(resource, &raw);
+        self.publish_realtime(RealtimeEvent::new(
+            resource.name(),
+            "create",
+            now_iso(),
+            village,
+            posyandu,
+        ))
+        .await;
         Ok(document)
     }
 
@@ -2334,6 +2454,15 @@ impl NativeApi {
             document.get("data").cloned(),
         )
         .await?;
+        let (village, posyandu) = raw_location(resource, &updated);
+        self.publish_realtime(RealtimeEvent::new(
+            resource.name(),
+            "update",
+            now_iso(),
+            village,
+            posyandu,
+        ))
+        .await;
         Ok(document)
     }
 
@@ -2425,6 +2554,14 @@ impl NativeApi {
             None,
         )
         .await?;
+        self.publish_realtime(RealtimeEvent::new(
+            resource.name(),
+            "delete",
+            now_iso(),
+            (!village.is_empty()).then_some(village),
+            (!posyandu.is_empty()).then_some(posyandu),
+        ))
+        .await;
         Ok(json!({}))
     }
 
@@ -3094,5 +3231,37 @@ mod tests {
             dynamic_cache_ttl_seconds("/api/v1/collections/measurements"),
             300
         );
+    }
+
+    #[test]
+    fn temporary_nik_uses_birth_date_and_posyandu_code() {
+        let data = serde_json::json!({
+            "tglLahir": "2026-07-31",
+            "hasNIK": false,
+            "nik": "",
+            "posyandu": "SALAK 1"
+        })
+        .as_object()
+        .cloned()
+        .expect("child payload");
+        assert_eq!(temporary_birth_segment(&data, "child-test"), "310726");
+        assert_eq!(temporary_posyandu_segment(&data), "01");
+    }
+
+    #[test]
+    fn temporary_nik_preserves_random_suffix_for_special_posyandu() {
+        let mut data = serde_json::json!({
+            "tglLahir": "2026-07-31",
+            "hasNIK": false,
+            "nik": "3509043107260012",
+            "posyandu": "SALAK 98"
+        })
+        .as_object()
+        .cloned()
+        .expect("child payload");
+
+        normalize_child_identity(&mut data, "child-special").expect("temporary identity");
+
+        assert_eq!(string_value(data.get("nik")), "3509043107260012");
     }
 }

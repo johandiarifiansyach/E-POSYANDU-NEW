@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import pwd
+import re
 import shutil
 import subprocess
 import tempfile
@@ -23,6 +24,9 @@ LOG = logging.getLogger("eposyandu-postgresql-backup")
 CONFIG_FILE = Path("/etc/e-posyandu/backup.env")
 WORK_ROOT = Path("/var/lib/pgsql/backup")
 IMDS_URL = "http://169.254.169.254/opc/v2/instance/"
+BACKUP_OBJECT_PATTERN = re.compile(
+    r"^e-posyandu-postgresql-(?P<timestamp>\d{8}T\d{6}Z)\.dump\.gpg$"
+)
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -74,6 +78,38 @@ def run(command: list[str], *, timeout: int = 600) -> None:
         raise RuntimeError(f"Perintah backup gagal: {detail[0]}")
 
 
+def cleanup_old_backups(
+    objects: oci.object_storage.ObjectStorageClient,
+    namespace: str,
+    bucket: str,
+    prefix: str,
+    retention_days: int,
+) -> int:
+    """Remove only this job's encrypted dumps beyond the configured window."""
+
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=retention_days)
+    listed = objects.list_objects(
+        namespace,
+        bucket,
+        prefix=f"{prefix}/",
+        fields="name,timeCreated",
+        limit=1000,
+    ).data
+    deleted = 0
+    for item in listed.objects or []:
+        name = str(item.name or "")
+        match = BACKUP_OBJECT_PATTERN.fullmatch(name.rsplit("/", 1)[-1])
+        if match is None or item.time_created is None:
+            continue
+        created_at = dt.datetime.strptime(
+            match.group("timestamp"), "%Y%m%dT%H%M%SZ"
+        ).replace(tzinfo=dt.timezone.utc)
+        if created_at < cutoff:
+            objects.delete_object(namespace, bucket, name)
+            deleted += 1
+    return deleted
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     config = parse_env(CONFIG_FILE)
@@ -88,6 +124,13 @@ def main() -> int:
     if not database.replace("_", "").isalnum():
         raise RuntimeError("Nama database backup tidak valid")
     prefix = config.get("OCI_BACKUP_PREFIX", "production/oracle").strip("/")
+    retention_text = config.get("OCI_BACKUP_RETENTION_DAYS", "30")
+    try:
+        retention_days = int(retention_text)
+    except ValueError as exc:
+        raise RuntimeError("OCI_BACKUP_RETENTION_DAYS harus berupa angka") from exc
+    if not 7 <= retention_days <= 365:
+        raise RuntimeError("OCI_BACKUP_RETENTION_DAYS harus antara 7 dan 365 hari")
     timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     object_name = f"{prefix}/e-posyandu-postgresql-{timestamp}.dump.gpg"
 
@@ -163,6 +206,11 @@ def main() -> int:
             object_name,
             encrypted.stat().st_size,
         )
+        deleted = cleanup_old_backups(
+            objects, namespace, config["OCI_BACKUP_BUCKET"], prefix, retention_days
+        )
+        if deleted:
+            LOG.info("backup PostgreSQL lama dihapus: %s objek", deleted)
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
     return 0

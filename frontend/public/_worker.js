@@ -1,7 +1,11 @@
 const PRODUCTION_API_ORIGIN = 'https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev';
 const STAGING_API_ORIGIN = 'https://e-posyandu-api-staging.eposyandu-puskesmas-gumukmas.workers.dev';
 const SAFE_RETRY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
-const RETRYABLE_GATEWAY_STATUSES = new Set([502, 503, 504]);
+// During the Oracle microservices migration an existing browser may still
+// carry a valid legacy Cloudflare session. A 401 from the new gateway is
+// therefore retried against the legacy origin for safe read requests; native
+// sessions continue to be served by Oracle and mutations are never retried.
+const RETRYABLE_GATEWAY_STATUSES = new Set([401, 502, 503, 504]);
 
 function safeConfiguredOrigin(value, fallback) {
   if (!value) return fallback;

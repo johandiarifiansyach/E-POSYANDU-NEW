@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package eposyandu.platform.v1;
+
+// The public browser contract remains HTTPS. These envelopes are only used
+// on the private service network, where the gateway delegates a request to the
+// domain service that owns it.
+message HttpHeader {
+  string name = 1;
+  string value = 2;
+}
+
+message ServiceRequest {
+  string request_id = 1;
+  string method = 2;
+  string path_and_query = 3;
+  repeated HttpHeader headers = 4;
+  bytes body = 5;
+}
+
+message ServiceResponse {
+  uint32 status = 1;
+  repeated HttpHeader headers = 2;
+  bytes body = 3;
+}
+
+service IdentityService {
+  rpc Handle(ServiceRequest) returns (ServiceResponse);
+}
+
+service OperationsService {
+  rpc Handle(ServiceRequest) returns (ServiceResponse);
+}
+
+message RealtimeSubscribeRequest {
+  string request_id = 1;
+  repeated HttpHeader headers = 2;
+}
+
+message RealtimeEvent {
+  string id = 1;
+  string resource = 2;
+  string operation = 3;
+  string changed_at = 4;
+}
+
+service RealtimeService {
+  rpc Subscribe(RealtimeSubscribeRequest) returns (stream RealtimeEvent);
+}
+
+message MonitoringSnapshotRequest {
+  string request_id = 1;
+  repeated HttpHeader headers = 2;
+}
+
+message MonitoringSnapshot {
+  string payload_json = 1;
+}
+
+service MonitoringService {
+  rpc Snapshot(MonitoringSnapshotRequest) returns (MonitoringSnapshot);
+}

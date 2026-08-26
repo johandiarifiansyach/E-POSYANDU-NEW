@@ -1,7 +1,8 @@
 import Native from '../runtime/dom';
 import { Pagination } from '../components';
-import { History, Loader2, RotateCcw } from '../ui/icons';
+import { History, RotateCcw } from '../ui/icons';
 import { Card, formatIndoDateTime } from './DashboardApp';
+import { ChangeHistoryLoadingSkeleton } from '../ui/skeleton';
 import type { PageState } from '../shared/pageState';
 
 type TimestampLike = Date | string | number | {
@@ -122,9 +123,7 @@ export default function ChangeHistoryPage({
         Native.createElement("div", null,
             Native.createElement("h2", { className: "text-2xl font-bold text-slate-800" }, "Riwayat Perubahan Identitas"),
             Native.createElement("p", { className: "text-slate-500 text-sm" }, "Mencatat semua perubahan data identitas balita yang dilakukan oleh petugas.")),
-        Native.createElement("div", { className: "space-y-4" }, resolvedLoading ? (Native.createElement("div", { className: "app-card p-8 flex items-center justify-center gap-3 text-slate-500 rounded-2xl" },
-            Native.createElement(Loader2, { className: "w-5 h-5 animate-spin", "aria-hidden": "true" }),
-            Native.createElement("span", null, "Memuat riwayat perubahan..."))) : resolvedError ? (Native.createElement("div", { className: "app-card p-8 text-center rounded-2xl border border-rose-200" },
+        Native.createElement("div", { className: "space-y-4" }, resolvedLoading ? (Native.createElement(ChangeHistoryLoadingSkeleton, { rowCount: 4 })) : resolvedError ? (Native.createElement("div", { className: "app-card p-8 text-center rounded-2xl border border-rose-200" },
             Native.createElement("p", { className: "text-rose-600 font-semibold" }, "Riwayat perubahan tidak dapat dimuat."),
             Native.createElement("p", { className: "text-slate-500 text-sm mt-1" }, resolvedError),
             Native.createElement("button", { type: "button", onClick: onRetry, className: "ios-action-button ios-action-button-blue mt-4 inline-flex items-center gap-2" },

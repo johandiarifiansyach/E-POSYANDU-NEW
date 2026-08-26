@@ -4,11 +4,15 @@ import {
     updateAdminAccount, type AdminAccountInput, type AdminAccountPresence,
     type AdminAccountsOverview, type BackendReadiness
 } from '../api/adminApi';
+import { getAuth, startPasskeyRegistration, verifyPasskeyRegistration } from '../api/authApi';
 import { DATA_WILAYAH } from '../config/dashboard';
 import AdminMonitoringPanel from './AdminMonitoringPanel';
+import { AdminAccountTableSkeleton } from '../ui/skeleton';
+import { completeWebAuthnRegistration } from '../security/webauthn';
 import {
-    Activity, AlertTriangle, CheckCircle2, Clock, Loader2, Pencil, RotateCcw, Search, Trash2,
-    UserPlus, Users, X
+    Activity, AlertTriangle, CheckCircle2, ClipboardCheck, CloudflareLogo, Clock, Loader2, NeonLogo,
+    Pencil, PostgreSQLLogo, RedisLogo, RotateCcw, Search, SupabaseLogo, Trash2, TrendingUp,
+    UserPlus, UserRound, Users, Utensils, X
 } from '../ui/icons';
 
 type AccountRole = AdminAccountInput['role'];
@@ -48,17 +52,49 @@ const formatDateTime = (value: string | null) => {
 const serviceLabel = (key: string) => ({
     api: 'API Utama', database: 'Database', authentication: 'Autentikasi', cache: 'Cache',
     queue: 'Antrean', storage: 'Penyimpanan', nutritionWorker: 'Worker Gizi',
-    nativeCore: 'Backend Native', migrationProxy: 'Jalur Migrasi'
+    nativeCore: 'Backend Native', migrationProxy: 'Jalur Migrasi',
+    'oracle-api': 'Oracle API Gateway',
+    'identity-service': 'Identity Service',
+    'operations-service': 'Operations Service',
+    'realtime-service': 'Realtime Service',
+    'monitoring-service': 'Monitoring Service',
+    'redis-cache': 'Redis Cache',
+    'nutrition-worker': 'Nutrition Worker',
+    'health-proxy': 'Health Proxy',
+    'oracle-database': 'Database Oracle',
+    'supabase-database': 'Database Supabase',
+    'neon-database': 'Database Neon',
+    'edge-api': 'Edge API',
+    'cloudflare-pages': 'Frontend Cloudflare Pages',
+    'cloudflare-queue': 'Queue Cloudflare'
 }[key] || key);
+const serviceIcon = (key: string) => ({
+    'oracle-api': Activity,
+    'identity-service': UserRound,
+    'operations-service': ClipboardCheck,
+    'realtime-service': Activity,
+    'monitoring-service': TrendingUp,
+    'redis-cache': RedisLogo,
+    'nutrition-worker': Utensils,
+    'health-proxy': CheckCircle2,
+    'oracle-database': PostgreSQLLogo,
+    'supabase-database': SupabaseLogo,
+    'neon-database': NeonLogo,
+    'edge-api': CloudflareLogo,
+    'cloudflare-pages': CloudflareLogo,
+    'cloudflare-queue': CloudflareLogo
+}[key] || Activity);
 const serviceOnline = (component: Record<string, unknown>) => {
     if (component.enabled === false || component.configured === false) return false;
     if (component.reachable === false || component.databaseReachable === false) return false;
     return !['unavailable', 'unhealthy', 'down', 'disabled'].includes(String(component.status || '').toLowerCase());
 };
 const serviceDetail = (component: Record<string, unknown>) => {
-    const detail = component.primary || component.origin || component.managedBy || component.provider || component.status;
+    const detail = component.primary || component.origin || component.managedBy || component.provider || component.protocol || component.status;
     return detail ? String(detail).replace(/-/g, ' ') : 'Terhubung ke backend aplikasi';
 };
+const statusEntries = (value: unknown): Array<[string, Record<string, unknown>]> =>
+    Object.entries(value && typeof value === 'object' ? value as Record<string, Record<string, unknown>> : {});
 const accountToForm = (account: AdminAccountPresence): AccountForm => ({
     email: account.email || '', username: account.username || '',
     role: (account.role || 'Kader Posyandu') as AccountRole,
@@ -81,6 +117,7 @@ export default function AdminBackendPage() {
     const [saving, setSaving] = useState(false);
     const [deleteCandidate, setDeleteCandidate] = useState<AdminAccountPresence | null>(null);
     const [activeSection, setActiveSection] = useState<AdminSection>('overview');
+    const [passkeySaving, setPasskeySaving] = useState(false);
 
     useEffect(() => {
         let active = true;
@@ -142,8 +179,23 @@ export default function AdminBackendPage() {
         });
     }, [overview, roleFilter, search]);
 
-    const services = Object.entries(readiness?.components || {}).filter(([key]) =>
-        ['api', 'database', 'authentication', 'cache', 'queue', 'storage', 'nutritionWorker', 'nativeCore'].includes(key));
+    const serviceGroups = [
+        {
+            key: 'frontend',
+            title: 'Frontend & layanan Cloudflare',
+            entries: statusEntries(readiness?.components?.frontendServices)
+        },
+        {
+            key: 'oracle',
+            title: 'Backend Oracle · 8 layanan',
+            entries: statusEntries(readiness?.components?.oracleServices)
+        },
+        {
+            key: 'databases',
+            title: 'Layanan database',
+            entries: statusEntries(readiness?.components?.databases)
+        }
+    ];
     const summary = overview?.summary || { total: 0, active: 0, online: 0, offline: 0 };
     const isNew = editor === 'new';
     const selectedAccount = editor && editor !== 'new'
@@ -207,6 +259,21 @@ export default function AdminBackendPage() {
         } finally { setSaving(false); }
     };
 
+    const registerPasskey = async () => {
+        if (passkeySaving) return;
+        setPasskeySaving(true); setError(null); setNotice(null);
+        try {
+            const challenge = await startPasskeyRegistration();
+            const ceremony = await completeWebAuthnRegistration(challenge);
+            const result = await verifyPasskeyRegistration(getAuth(), ceremony.challengeId, ceremony.credential);
+            setNotice(result.recoveryCodes.length > 0
+                ? 'Passkey berhasil didaftarkan. Simpan recovery code yang baru ditampilkan secara offline.'
+                : 'Passkey berhasil didaftarkan untuk akun Administrator.');
+        } catch (passkeyError) {
+            setError(passkeyError instanceof Error ? passkeyError.message : 'Passkey belum dapat didaftarkan.');
+        } finally { setPasskeySaving(false); }
+    };
+
     return Native.createElement('div', { className: 'admin-backend-page', 'data-admin-backend-page': 'true' },
         Native.createElement('section', { className: 'admin-backend-hero' },
             Native.createElement('div', { className: 'admin-backend-hero-copy' },
@@ -241,6 +308,14 @@ export default function AdminBackendPage() {
                 ['Offline', summary.offline, 'slate'], ['Akun aktif', summary.active, 'purple']]
                 .map(([label, value, tone]) => Native.createElement('article', { key: String(label), className: `admin-summary-card is-${tone}` },
                     Native.createElement('span', null, label), Native.createElement('strong', null, loading ? '—' : value)))),
+        activeSection === 'overview' && Native.createElement('section', { className: 'admin-backend-section admin-security-section' },
+            Native.createElement('div', { className: 'admin-section-heading' },
+                Native.createElement('div', null,
+                    Native.createElement('h3', null, 'Keamanan Administrator'),
+                    Native.createElement('p', null, 'Passkey dikelola melalui Supabase Passkeys dan digunakan untuk mengaktifkan akses penuh tanpa menjadikannya faktor MFA palsu.')),
+                Native.createElement('button', { type: 'button', className: 'admin-primary-action', onClick: () => void registerPasskey(), disabled: passkeySaving },
+                    passkeySaving ? Native.createElement(Loader2, { className: 'h-4 w-4 animate-spin' }) : Native.createElement(CheckCircle2, { className: 'h-4 w-4' }),
+                    passkeySaving ? 'Mendaftarkan…' : 'Daftarkan passkey'))),
         activeSection === 'overview' && Native.createElement('section', { className: 'admin-backend-section' },
             Native.createElement('div', { className: 'admin-section-heading' },
                 Native.createElement('div', null, Native.createElement('h3', null, 'Status layanan backend'),
@@ -248,15 +323,27 @@ export default function AdminBackendPage() {
                 readiness && Native.createElement('span', { className: `admin-system-badge ${readiness.ok ? 'is-online' : 'is-offline'}` },
                     Native.createElement('span', { className: 'admin-presence-dot' }), readiness.ok ? 'Sistem siap' : 'Perlu perhatian')),
             Native.createElement('div', { className: 'admin-service-grid' },
-                loading && services.length === 0
+                loading && serviceGroups.every((group) => group.entries.length === 0)
                     ? Native.createElement('div', { className: 'admin-loading-state' }, Native.createElement(Loader2, { className: 'h-5 w-5 animate-spin' }), 'Memeriksa backend...')
-                    : services.map(([key, component]) => {
-                        const online = serviceOnline(component);
-                        return Native.createElement('article', { key, className: 'admin-service-card' },
-                            Native.createElement('span', { className: `admin-service-icon ${online ? 'is-online' : 'is-offline'}` }, Native.createElement(Activity, { className: 'h-5 w-5' })),
-                            Native.createElement('div', null, Native.createElement('strong', null, serviceLabel(key)), Native.createElement('p', null, serviceDetail(component))),
-                            Native.createElement('span', { className: `admin-service-state ${online ? 'is-online' : 'is-offline'}` }, online ? 'Online' : 'Offline'));
-                    }))),
+                    : serviceGroups.map((group) =>
+                        Native.createElement('div', { key: group.key, className: 'admin-service-group' },
+                            Native.createElement('h4', null, group.title),
+                            Native.createElement('div', { className: 'admin-service-group-grid' },
+                                group.entries.length === 0
+                                    ? Native.createElement('p', { className: 'admin-service-empty' }, 'Status belum tersedia.')
+                                    : group.entries.map(([key, component]) => {
+                                        const online = serviceOnline(component);
+                                        const ServiceIcon = serviceIcon(key);
+                                        return Native.createElement('article', { key, className: 'admin-service-card' },
+                                            Native.createElement('span', { className: `admin-service-icon ${online ? 'is-online' : 'is-offline'}` }, Native.createElement(ServiceIcon, { className: 'h-5 w-5' })),
+                                            Native.createElement('div', null, Native.createElement('strong', null, serviceLabel(key)), Native.createElement('p', null, serviceDetail(component))),
+                                            Native.createElement('span', { className: `admin-service-state ${online ? 'is-online' : 'is-offline'}` }, online ? 'Online' : 'Offline'));
+                                    })
+                            )
+                        )
+                    ),
+            ),
+        ),
         activeSection === 'accounts' && Native.createElement('section', { className: 'admin-backend-section admin-account-section' },
             Native.createElement('div', { className: 'admin-section-heading admin-account-heading' },
                 Native.createElement('div', null, Native.createElement('h3', null, 'Manajemen akun'),
@@ -281,7 +368,7 @@ export default function AdminBackendPage() {
                         Native.createElement('th', null, 'Aktivitas terakhir'), Native.createElement('th', null, 'Tindakan'))),
                     Native.createElement('tbody', null,
                         loading && filteredAccounts.length === 0
-                            ? Native.createElement('tr', null, Native.createElement('td', { colSpan: 6, className: 'admin-table-empty' }, 'Memuat akun...'))
+                            ? Native.createElement(AdminAccountTableSkeleton, { rowCount: 6 })
                             : filteredAccounts.length === 0
                                 ? Native.createElement('tr', null, Native.createElement('td', { colSpan: 6, className: 'admin-table-empty' }, 'Tidak ada akun yang sesuai.'))
                                 : filteredAccounts.map((account) => Native.createElement('tr', { key: account.userId },

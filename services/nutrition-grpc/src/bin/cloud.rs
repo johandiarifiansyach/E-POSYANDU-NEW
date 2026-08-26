@@ -1,8 +1,10 @@
 use axum::{Router, routing::get};
-use e_posyandu_nutrition_grpc::NutritionService;
 use e_posyandu_nutrition_grpc::proto::nutrition_worker_server::NutritionWorkerServer;
 use e_posyandu_nutrition_grpc::queue_consumer::{self, QueueConfig, QueueConfigInput};
+use e_posyandu_nutrition_grpc::{NutritionService, service_auth_interceptor};
+use e_posyandu_proto::transport::{ListenAddress, bind_unix, parse_listen_address};
 use std::{env, io, net::SocketAddr};
+use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
 fn required_env(name: &str) -> Result<String, io::Error> {
@@ -54,21 +56,37 @@ async fn shutdown_signal() {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let grpc_address: SocketAddr = env::var("GRPC_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:50051".into())
-        .parse()?;
+    let grpc_target = env::var("GRPC_ADDR").unwrap_or_default();
+    let grpc_address = parse_listen_address(
+        &grpc_target,
+        "unix:///run/e-posyandu/nutrition.sock",
+        "GRPC_ADDR",
+    )?;
     let (health_reporter, health_service) = tonic_health::server::health_reporter();
     health_reporter
         .set_serving::<NutritionWorkerServer<NutritionService>>()
         .await;
+    let service_auth = service_auth_interceptor(true).map_err(io::Error::other)?;
 
     let mut grpc_task = tokio::spawn(async move {
-        println!("nutrition-grpc internal listening on {grpc_address}");
-        Server::builder()
+        println!("nutrition-grpc internal listening on {grpc_address:?}");
+        let server = Server::builder()
+            .layer(tonic::service::InterceptorLayer::new(service_auth))
             .add_service(health_service)
-            .add_service(NutritionWorkerServer::new(NutritionService))
-            .serve(grpc_address)
-            .await
+            .add_service(NutritionWorkerServer::new(NutritionService));
+        match grpc_address {
+            ListenAddress::Tcp(address) => server
+                .serve(address)
+                .await
+                .map_err(|error| io::Error::other(error.to_string())),
+            ListenAddress::Unix(path) => {
+                let listener = bind_unix(&path)?;
+                server
+                    .serve_with_incoming(UnixListenerStream::new(listener))
+                    .await
+                    .map_err(|error| io::Error::other(error.to_string()))
+            }
+        }
     });
 
     let queue_config = QueueConfig::new(QueueConfigInput {
@@ -77,7 +95,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         api_token: required_env("CLOUDFLARE_QUEUES_API_TOKEN")?,
         api_url: required_env("EPOSYANDU_API_URL")?,
         shared_secret: required_env("RUST_WORKER_SHARED_SECRET")?,
-        grpc_url: format!("http://{grpc_address}"),
+        grpc_url: if grpc_target.trim().is_empty() {
+            "unix:///run/e-posyandu/nutrition.sock".to_owned()
+        } else {
+            grpc_target
+        },
         batch_size: optional_number("QUEUE_BATCH_SIZE", 2_u8)?,
         poll_interval_ms: optional_number("QUEUE_POLL_INTERVAL_MS", 15_000_u64)?,
     })

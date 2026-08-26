@@ -1,7 +1,9 @@
 # Deployment Platform Oracle
 
-Cloudflare Pages menjalankan frontend, sedangkan Oracle menjalankan `oracle-api`
-dan `nutrition-grpc` sebagai origin backend produksi. PostgreSQL native pada
+Cloudflare Pages menjalankan frontend, sedangkan Oracle menjalankan gateway
+`oracle-api`, `identity-service`, `operations-service`, `realtime-service`,
+`monitoring-service`, dan `nutrition-grpc` sebagai origin backend produksi.
+PostgreSQL native pada
 OCI Block Volume adalah primary writable untuk data inti aplikasi. Supabase
 masih menyediakan Auth serta jalur legacy untuk Queue/R2 dan job berkas selama
 masa transisi; tabel inti tidak lagi ditulis melalui Supabase.
@@ -28,7 +30,35 @@ jalur legacy agar metadata Queue dan berkas R2 tidak terpecah antar-database.
 
 Jangan menghapus Worker Cloudflare atau Pages. Keduanya adalah rollback
 darurat, sedangkan Queue dan R2 tetap komponen produksi yang aktif. Pastikan
-hanya satu consumer Queue (`nutrition-grpc` Oracle) yang berjalan.
+Hanya satu consumer Queue (`nutrition-grpc` Oracle) yang berjalan. Setiap service
+dapat dirilis terpisah; deployment service tidak me-restart service lain yang
+sedang sehat.
+
+Untuk deployment microservice Oracle, argumen ketiga pada script menentukan
+target: `oracle-api`, `identity-service`, `operations-service`, `realtime-service`,
+`monitoring-service`, `nutrition-worker`, atau `all`.
+
+```bash
+# Hanya API native Oracle
+npm run oracle:deploy:api -- eposyandu-oracle nutrition.example.go.id
+
+# Hanya worker gizi
+npm run oracle:deploy:nutrition -- eposyandu-oracle nutrition.example.go.id
+
+# Hanya satu domain service
+npm run oracle:deploy:identity -- eposyandu-oracle nutrition.example.go.id
+npm run oracle:deploy:operations -- eposyandu-oracle nutrition.example.go.id
+npm run oracle:deploy:realtime -- eposyandu-oracle nutrition.example.go.id
+npm run oracle:deploy:monitoring -- eposyandu-oracle nutrition.example.go.id
+```
+
+Setiap service memakai Dockerfile dan image sendiri. Service yang berada pada
+VM yang sama berkomunikasi melalui gRPC di atas UDS pada volume
+`/var/lib/e-posyandu/grpc`; endpoint gRPC TCP tetap dapat dipilih dengan
+environment URL bila service dipindahkan ke server/platform lain. Compose hanya menjalankan
+`up --no-deps` pada target, sehingga Redis, Caddy, Tunnel, dan service lain tidak
+ikut di-restart. Migration database dijalankan terpisah sebelum service yang
+membutuhkan skema baru dirilis.
 
 Frontend tidak dibangun atau dijalankan pada VM Oracle. `eposyandu.app` dan
 `www.eposyandu.app` dilayani oleh Cloudflare Pages; hanya hostname API dan
@@ -253,8 +283,9 @@ ssh eposyandu-oracle \
 ```
 
 Endpoint lain harus mengembalikan `404`. Hanya Caddy yang menerbitkan port;
-gRPC berada pada `127.0.0.1:50051` di dalam container. Periksa log tanpa
-menyalin secret:
+service satu host memakai UDS dan tidak diterbitkan ke host. Bila worker
+dipisahkan ke server lain, gunakan URL TCP privat dan firewall allowlist.
+Periksa log tanpa menyalin secret:
 
 ```bash
 ssh eposyandu-oracle \
@@ -268,7 +299,8 @@ lama karena keduanya akan saling mengambil pesan.
 ## Tahap 2 selesai
 
 Replika PostgreSQL standby Oracle telah dihentikan dan dihapus setelah dump
-terenkripsi diverifikasi serta diunggah ke OCI Object Storage. Supabase tetap
-menjadi satu-satunya sumber database aplikasi; Oracle hanya menjalankan API,
-nutrition worker, dan health proxy. Jangan memasang kembali standby tanpa
-keputusan migrasi baru yang terdokumentasi.
+terenkripsi diverifikasi serta diunggah ke OCI Object Storage. Oracle
+PostgreSQL native menjadi sumber kebenaran aplikasi; Supabase tetap
+dipertahankan sebagai jalur legacy/rollback dan untuk komponen yang belum
+dipindahkan. Jangan memasang kembali standby read-only tanpa keputusan migrasi
+baru yang terdokumentasi.

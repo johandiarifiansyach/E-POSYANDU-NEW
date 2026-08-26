@@ -10,5 +10,7 @@ export {
   getCachedChildrenPage,
   getChildDetail,
   getChildrenPage,
-  getExclusiveBreastfeedingPage
+  getExclusiveBreastfeedingPage,
+  peekCachedChildrenPage,
+  peekCachedExclusiveBreastfeedingPage
 } from './legacyClient';

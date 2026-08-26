@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { getExclusiveBreastfeedingPage } from '../api/childrenApi';
+import { getExclusiveBreastfeedingPage, peekCachedExclusiveBreastfeedingPage } from '../api/childrenApi';
 import { DataTable, Pagination } from '../components';
 import Native, { useEffect, useState } from '../runtime/dom';
 import { Baby, CalendarDays, CheckCircle2 } from '../ui/icons';
@@ -22,8 +22,7 @@ export default function ExclusiveBreastfeedingPage({ filterMonth, filterYear, re
         let current = true;
         const month = String(filterMonth).padStart(2, '0');
         const lastDay = String(new Date(filterYear, filterMonth, 0).getDate()).padStart(2, '0');
-        setDataState({ status: 'loading' });
-        void getExclusiveBreastfeedingPage({
+        const request = {
             ageGroup: ageFilter,
             measurementEnd: `${filterYear}-${month}-${lastDay}`,
             measurementStart: `${filterYear}-${month}-01`,
@@ -31,7 +30,21 @@ export default function ExclusiveBreastfeedingPage({ filterMonth, filterYear, re
             posyandu: viewPosyandu || undefined,
             size: ITEMS_PER_PAGE,
             village: viewDesa || undefined
-        })
+        };
+        const memoryCached = peekCachedExclusiveBreastfeedingPage(request);
+        if (memoryCached) {
+            setDataState({
+                status: 'success',
+                data: {
+                    items: memoryCached.items.map((item) => ({ id: item.id, ...item.data })),
+                    total: memoryCached.total
+                }
+            });
+        }
+        else {
+            setDataState({ status: 'loading' });
+        }
+        void getExclusiveBreastfeedingPage(request)
             .then((result) => {
             if (!current)
                 return;

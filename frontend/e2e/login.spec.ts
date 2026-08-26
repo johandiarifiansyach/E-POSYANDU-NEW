@@ -1,5 +1,17 @@
 import { expect, test } from '@playwright/test';
 
+test('bootstrap memakai shell aplikasi sampai sesi diketahui lalu beralih ke skeleton login', async ({ page }) => {
+  await page.route('**/api/v1/auth/session', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await route.fulfill({ status: 401, json: { detail: 'Sesi belum tersedia.' } });
+  });
+
+  await page.goto('/');
+  await expect(page.locator('.app-loading-shell')).toBeVisible();
+  await expect(page.locator('.login-loading-shell')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'E-Posyandu' })).toBeVisible();
+});
+
 test('skeleton awal mengikuti shell aplikasi tanpa teks persiapan', async ({ page }, testInfo) => {
   await page.goto('/');
   await page.evaluate(async () => {

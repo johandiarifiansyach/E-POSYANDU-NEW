@@ -46,7 +46,23 @@ Pembatasan wajib diterapkan berlapis pada UI, Worker/API, dan Row Level Security
 | Laporan error frontend dan CSP | Target maksimum 30 hari | Atur retensi log Cloudflare sebelum production; laporan tidak boleh memuat identitas, query, referrer, IP mentah, atau isi form |
 | PNG/PDF/XLS yang sudah diunduh | Di luar kendali aplikasi | Pengguna bertanggung jawab atas penyimpanan dan pengiriman ke sistem resmi; aplikasi tidak mengubah alur ekspor ini |
 
-Tidak ada penghapusan otomatis untuk rekam utama sebelum aturan 25 tahun terpenuhi. Backup berotasi pendek tidak mengurangi kewajiban retensi karena salinan utama tetap dipertahankan. Pemusnahan harus menghasilkan berita acara, mencakup primary, replika, cache, dan backup yang sudah melewati masa rotasinya, serta tidak boleh merusak legal hold.
+E-Posyandu bukan repositori rekam medis resmi; aplikasi ini adalah salinan operasional
+sementara untuk menyiapkan unggahan ke Sigizi-Kesga. Karena itu job retensi database
+`eposyandu_cleanup_retention` menjalankan aturan tambahan berikut: baris Recycle Bin
+dihapus permanen setelah 30 hari. Ketika balita mencapai 60 bulan, tanggal tersebut
+menjadi awal masa simpan kelulusan lima tahun; baris baru dihapus ketika tanggal lima
+tahun pasca-kelulusan tercapai (umumnya sekitar usia 10 tahun). Penghapusan mencakup
+pengukuran, MPASI, PMT, riwayat perubahan, dan payload audit yang terkait. Tombstone
+sinkronisasi yang tidak memuat payload identitas dipertahankan agar replika baca ikut
+menghapus baris tersebut. Tidak ada status kelulusan terpisah pada skema saat ini;
+usia 60 bulan menjadi awal kriteria kelulusan operasional.
+
+Aturan 25 tahun di atas tetap berlaku untuk rekam medis resmi yang menjadi tanggung
+jawab pengendali data. Sebelum mengaktifkan retensi lima tahun pada production,
+pengendali data harus mengesahkan bahwa salinan E-Posyandu memang bukan rekam medis
+resmi dan memastikan legal hold atau kewajiban lain tidak berlaku. Backup terenkripsi,
+replika, cache, dan ekspor sementara harus mengikuti masa rotasi yang sama atau lebih
+pendek agar penghapusan permanen tidak hanya terjadi pada primary.
 
 ## Hak subjek data dan koreksi
 

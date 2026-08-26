@@ -34,6 +34,9 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
     const pageItems = resolvedState.status === 'success' ? resolvedState.data.items : paginatedData;
     const totalItems = resolvedState.status === 'success' ? resolvedState.data.total : fallbackTotal;
     const totalPages = Math.ceil(totalItems / itemsPerPage);
+    const identityColumnCount = 3 + (activeTab === 'recycle_bin' ? 1 : 0) + (isFullAccessRole(user.role) ? 1 : 0) + (user.role === ROLES.BIDAN || isFullAccessRole(user.role) ? 1 : 0);
+    const dataColumnCount = activeTab === 'mpasi' ? 10 : 9;
+    const tableColumnCount = identityColumnCount + dataColumnCount + 1;
     return (Native.createElement("div", { className: "apple-page space-y-6" },
         Native.createElement("div", { className: "flex flex-col xl:flex-row xl:items-center justify-between gap-4" },
             Native.createElement("div", null,
@@ -108,6 +111,7 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                             Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-200 md:sticky md:left-0 bg-slate-50 z-20" }, "No"),
                             Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-200 md:sticky md:left-[48px] bg-slate-50 z-20 md:shadow-lg" }, "Identitas"),
                             Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-200" }, "Ortu"),
+                            activeTab === 'recycle_bin' && (Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-rose-600 uppercase tracking-wider border-r border-slate-200 bg-rose-50/60" }, "Alasan Dihapus")),
                             isFullAccessRole(user.role) && (Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-200" }, "Desa")),
                             (user.role === ROLES.BIDAN || isFullAccessRole(user.role)) && (Native.createElement("th", { className: "px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-200" }, "Posyandu")),
                             activeTab === 'mpasi' ? (Native.createElement(Native.Fragment, null,
@@ -158,8 +162,8 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                                     Native.createElement("br", null),
                                     "IMT/U"))),
                             Native.createElement("th", { className: "px-4 py-3 text-center text-[10px] font-bold text-slate-500 uppercase tracking-wider" }, "Aksi"))),
-                    Native.createElement("tbody", { className: "bg-white divide-y divide-slate-100" }, pageLoading ? (Native.createElement(TableLoadingSkeleton, { columnCount: 15 })) : pageItems.length === 0 ? (Native.createElement("tr", null,
-                        Native.createElement("td", { colSpan: 15, className: "px-6 py-12 text-center text-slate-400" }, "Tidak ada data ditemukan"))) : (pageItems.map((child, index) => {
+                    Native.createElement("tbody", { className: "bg-white divide-y divide-slate-100" }, pageLoading ? (Native.createElement(TableLoadingSkeleton, { columnCount: tableColumnCount })) : pageItems.length === 0 ? (Native.createElement("tr", null,
+                        Native.createElement("td", { colSpan: tableColumnCount, className: "px-6 py-12 text-center text-slate-400" }, "Tidak ada data ditemukan"))) : (pageItems.map((child, index) => {
                         if (!child.id)
                             return null;
                         const realIndex = (currentPage - 1) * itemsPerPage + index + 1;
@@ -186,6 +190,8 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                                         " Bln)"))),
                             Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap border-r border-slate-100" },
                                 Native.createElement("div", { className: "font-medium text-slate-700" }, child.namaOrtu)),
+                            activeTab === 'recycle_bin' && (Native.createElement("td", { className: "px-4 py-3 min-w-[11rem] border-r border-slate-100 bg-rose-50/30" },
+                                Native.createElement("span", { className: "font-semibold text-rose-700" }, child.deleteReason || 'Alasan tidak tercatat'))),
                             isFullAccessRole(user.role) && (Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap border-r border-slate-100 text-slate-600" }, child.desa)),
                             (user.role === ROLES.BIDAN || isFullAccessRole(user.role)) && (Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap border-r border-slate-100 text-slate-600" }, child.posyandu)),
                             activeTab === 'mpasi' ? (Native.createElement(Native.Fragment, null,

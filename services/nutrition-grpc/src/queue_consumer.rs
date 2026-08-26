@@ -5,8 +5,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Sha256;
 use std::{env, time::Duration};
-use tonic::Request;
+use tonic::{
+    Request,
+    metadata::{Ascii, MetadataValue},
+};
 
+use crate::GRPC_SERVICE_TOKEN_HEADER;
 use crate::proto::{
     ProcessJobRequest, ProcessJobResponse, nutrition_worker_client::NutritionWorkerClient,
 };
@@ -57,7 +61,7 @@ impl QueueConfig {
                 .into(),
             shared_secret: required("RUST_WORKER_SHARED_SECRET", input.shared_secret)?,
             grpc_url: if input.grpc_url.trim().is_empty() {
-                "http://127.0.0.1:50051".into()
+                "unix:///tmp/e-posyandu/nutrition.sock".into()
             } else {
                 input.grpc_url
             },
@@ -95,7 +99,8 @@ impl QueueConfig {
             api_token: required("CLOUDFLARE_QUEUES_API_TOKEN")?,
             api_url: required("EPOSYANDU_API_URL")?,
             shared_secret: required("RUST_WORKER_SHARED_SECRET")?,
-            grpc_url: env::var("GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".into()),
+            grpc_url: env::var("GRPC_URL")
+                .unwrap_or_else(|_| "unix:///tmp/e-posyandu/nutrition.sock".into()),
             batch_size,
             poll_interval_ms: poll_interval,
         })
@@ -286,15 +291,23 @@ async fn process_message(
     let mut grpc = NutritionWorkerClient::connect(config.grpc_url.clone())
         .await
         .map_err(|error| format!("Layanan gRPC belum siap: {error}"))?;
+    let mut grpc_request = Request::new(ProcessJobRequest {
+        job_id: job.id.clone(),
+        kind: job.kind,
+        payload_json: job.payload.to_string(),
+        actor_role: job.actor_role,
+        village: job.village,
+        posyandu: job.posyandu,
+    });
+    let service_token = config
+        .shared_secret
+        .parse::<MetadataValue<Ascii>>()
+        .map_err(|_| "Secret komunikasi gRPC tidak valid sebagai metadata.".to_owned())?;
+    grpc_request
+        .metadata_mut()
+        .insert(GRPC_SERVICE_TOKEN_HEADER, service_token);
     let result = grpc
-        .process_job(Request::new(ProcessJobRequest {
-            job_id: job.id.clone(),
-            kind: job.kind,
-            payload_json: job.payload.to_string(),
-            actor_role: job.actor_role,
-            village: job.village,
-            posyandu: job.posyandu,
-        }))
+        .process_job(grpc_request)
         .await
         .map_err(|error| format!("gRPC gagal memproses job: {}", error.message()))?
         .into_inner();

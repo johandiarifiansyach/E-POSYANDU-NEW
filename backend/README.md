@@ -27,7 +27,7 @@ Alamat produksi:
 - gRPC `services/nutrition-grpc`: validasi impor, kalkulasi laporan gizi, normalisasi sinkronisasi, dan pembuatan XLSX/PDF pada jaringan privat. Service ini tidak dipanggil langsung oleh browser dan tidak dijalankan di runtime Cloudflare Worker.
 - Cloudflare Queue `e-posyandu-jobs`: antrean pekerjaan berat agar login dan CRUD tetap responsif. Status job dibaca melalui REST `/api/v1/jobs/{jobId}`.
 
-Schema GraphQL dapat dibaca melalui `GET /api/v1/graphql/schema`. Service gRPC lokal dijalankan dari root dengan `npm run grpc:dev` dan hanya membuka `127.0.0.1:50051` secara default.
+Schema GraphQL dapat dibaca melalui `GET /api/v1/graphql/schema`. Service gRPC lokal dijalankan dari root dengan `npm run grpc:dev` dan memakai UDS `unix:///tmp/e-posyandu/nutrition.sock` secara default; URL TCP tetap dapat dipilih lewat `GRPC_ADDR`/`GRPC_URL` untuk lintas server.
 
 ## Penyimpanan Data
 

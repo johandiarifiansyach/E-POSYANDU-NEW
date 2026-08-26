@@ -1,11 +1,193 @@
 name: e-posyandu-oracle
 
 services:
+  identity-service:
+    build:
+      context: ../..
+      dockerfile: services/oracle-domain/Dockerfile
+      args:
+        SERVICE_DIR: identity-service
+        SERVICE_BIN: e-posyandu-identity-service
+    image: ${IDENTITY_SERVICE_IMAGE:-e-posyandu-identity-service:oracle}
+    restart: unless-stopped
+    env_file:
+      - ${ORACLE_API_VAULT_ENV_FILE:-/run/e-posyandu/oracle-api-vault.env}
+    environment:
+      IDENTITY_GRPC_ADDR: ${IDENTITY_GRPC_ADDR:-unix:///run/e-posyandu/identity.sock}
+      ORACLE_API_NATIVE_AUTH_ENABLED: "true"
+      ORACLE_API_SESSION_DB_PATH: /var/lib/e-posyandu-api/sessions.sqlite
+      ORACLE_API_ENVIRONMENT: production
+      TURNSTILE_HOSTNAMES: ${ORACLE_API_TURNSTILE_HOSTNAMES:-eposyandu.app}
+      CORS_ORIGINS: ${ORACLE_API_CORS_ORIGINS:-https://eposyandu.app,https://www.eposyandu.app}
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_QUEUE_ID: ${CLOUDFLARE_QUEUE_ID:-}
+      ORACLE_DATABASE_POOL_SIZE: ${ORACLE_DATABASE_POOL_SIZE:-5}
+    expose:
+      - "50052"
+    volumes:
+      - /var/lib/e-posyandu/oracle-api:/var/lib/e-posyandu-api:rw,z
+      - /var/lib/e-posyandu/grpc:/run/e-posyandu:rw,z
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 0.35
+    networks:
+      - default
+    logging:
+      driver: journald
+
+  operations-service:
+    build:
+      context: ../..
+      dockerfile: services/oracle-domain/Dockerfile
+      args:
+        SERVICE_DIR: operations-service
+        SERVICE_BIN: e-posyandu-operations-service
+    image: ${OPERATIONS_SERVICE_IMAGE:-e-posyandu-operations-service:oracle}
+    restart: unless-stopped
+    env_file:
+      - ${ORACLE_API_VAULT_ENV_FILE:-/run/e-posyandu/oracle-api-vault.env}
+    environment:
+      OPERATIONS_GRPC_ADDR: ${OPERATIONS_GRPC_ADDR:-unix:///run/e-posyandu/operations.sock}
+      ORACLE_API_NATIVE_AUTH_ENABLED: "true"
+      ORACLE_API_SESSION_DB_PATH: /var/lib/e-posyandu-api/sessions.sqlite
+      ORACLE_API_ENVIRONMENT: production
+      TURNSTILE_HOSTNAMES: ${ORACLE_API_TURNSTILE_HOSTNAMES:-eposyandu.app}
+      CORS_ORIGINS: ${ORACLE_API_CORS_ORIGINS:-https://eposyandu.app,https://www.eposyandu.app}
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_QUEUE_ID: ${CLOUDFLARE_QUEUE_ID:-}
+      ORACLE_DATABASE_POOL_SIZE: ${ORACLE_DATABASE_POOL_SIZE:-5}
+      ORACLE_REDIS_URL: redis://redis-cache:6379
+      ORACLE_API_NATIVE_READS_ENABLED: "true"
+      ORACLE_API_NATIVE_WRITES_ENABLED: "true"
+    expose:
+      - "50053"
+    depends_on:
+      - redis-cache
+    volumes:
+      - /var/lib/e-posyandu/oracle-api:/var/lib/e-posyandu-api:rw,z
+      - /var/lib/e-posyandu/grpc:/run/e-posyandu:rw,z
+    extra_hosts:
+      - "host.containers.internal:10.89.0.1"
+      - "host.docker.internal:10.89.0.1"
+    networks:
+      - default
+      - dynamic-cache
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 768m
+    cpus: 0.65
+    logging:
+      driver: journald
+
+  realtime-service:
+    build:
+      context: ../..
+      dockerfile: services/oracle-domain/Dockerfile
+      args:
+        SERVICE_DIR: realtime-service
+        SERVICE_BIN: e-posyandu-realtime-service
+    image: ${REALTIME_SERVICE_IMAGE:-e-posyandu-realtime-service:oracle}
+    restart: unless-stopped
+    env_file:
+      - ${ORACLE_API_VAULT_ENV_FILE:-/run/e-posyandu/oracle-api-vault.env}
+    environment:
+      REALTIME_GRPC_ADDR: ${REALTIME_GRPC_ADDR:-unix:///run/e-posyandu/realtime.sock}
+      ORACLE_API_NATIVE_AUTH_ENABLED: "true"
+      ORACLE_API_SESSION_DB_PATH: /var/lib/e-posyandu-api/sessions.sqlite
+      ORACLE_API_ENVIRONMENT: production
+      TURNSTILE_HOSTNAMES: ${ORACLE_API_TURNSTILE_HOSTNAMES:-eposyandu.app}
+      CORS_ORIGINS: ${ORACLE_API_CORS_ORIGINS:-https://eposyandu.app,https://www.eposyandu.app}
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_QUEUE_ID: ${CLOUDFLARE_QUEUE_ID:-}
+      ORACLE_DATABASE_POOL_SIZE: ${ORACLE_DATABASE_POOL_SIZE:-5}
+    expose:
+      - "50054"
+    volumes:
+      - /var/lib/e-posyandu/oracle-api:/var/lib/e-posyandu-api:rw,z
+      - /var/lib/e-posyandu/grpc:/run/e-posyandu:rw,z
+    networks:
+      - default
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 384m
+    cpus: 0.25
+    logging:
+      driver: journald
+
+  monitoring-service:
+    build:
+      context: ../..
+      dockerfile: services/oracle-domain/Dockerfile
+      args:
+        SERVICE_DIR: monitoring-service
+        SERVICE_BIN: e-posyandu-monitoring-service
+    image: ${MONITORING_SERVICE_IMAGE:-e-posyandu-monitoring-service:oracle}
+    restart: unless-stopped
+    env_file:
+      - ${ORACLE_API_VAULT_ENV_FILE:-/run/e-posyandu/oracle-api-vault.env}
+    environment:
+      MONITORING_GRPC_ADDR: ${MONITORING_GRPC_ADDR:-unix:///run/e-posyandu/monitoring.sock}
+      ORACLE_API_NATIVE_AUTH_ENABLED: "true"
+      ORACLE_API_SESSION_DB_PATH: /var/lib/e-posyandu-api/sessions.sqlite
+      ORACLE_API_ENVIRONMENT: production
+      TURNSTILE_HOSTNAMES: ${ORACLE_API_TURNSTILE_HOSTNAMES:-eposyandu.app}
+      CORS_ORIGINS: ${ORACLE_API_CORS_ORIGINS:-https://eposyandu.app,https://www.eposyandu.app}
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_QUEUE_ID: ${CLOUDFLARE_QUEUE_ID:-}
+      ORACLE_DATABASE_POOL_SIZE: ${ORACLE_DATABASE_POOL_SIZE:-5}
+      ORACLE_REDIS_URL: redis://redis-cache:6379
+      ORACLE_API_NATIVE_READS_ENABLED: "true"
+      ORACLE_API_NATIVE_WRITES_ENABLED: "true"
+    expose:
+      - "50055"
+    depends_on:
+      - redis-cache
+    volumes:
+      - /var/lib/e-posyandu/oracle-api:/var/lib/e-posyandu-api:rw,z
+      - /var/lib/e-posyandu/grpc:/run/e-posyandu:rw,z
+    extra_hosts:
+      - "host.containers.internal:10.89.0.1"
+      - "host.docker.internal:10.89.0.1"
+    networks:
+      - default
+      - dynamic-cache
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 0.3
+    logging:
+      driver: journald
+
   oracle-api:
     build:
       context: ../..
       dockerfile: services/oracle-api/Dockerfile
-    image: e-posyandu-oracle-api:oracle
+    image: ${ORACLE_API_IMAGE:-e-posyandu-oracle-api:oracle}
     restart: unless-stopped
     env_file:
       - ${ORACLE_API_VAULT_ENV_FILE:-/run/e-posyandu/oracle-api-vault.env}
@@ -22,8 +204,16 @@ services:
       TURNSTILE_HOSTNAMES: ${ORACLE_API_TURNSTILE_HOSTNAMES:-eposyandu.app}
       ORACLE_API_PUBLIC_ORIGIN: ${ORACLE_API_PUBLIC_ORIGIN:-https://api.eposyandu.app}
       ORACLE_API_LEGACY_ORIGIN: ${ORACLE_API_LEGACY_ORIGIN:-https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev}
-      ORACLE_API_NUTRITION_HEALTH_URL: ${ORACLE_API_NUTRITION_HEALTH_URL:-http://nutrition-worker:8080/health}
-      ORACLE_API_MIGRATION_PROXY_ENABLED: ${ORACLE_API_MIGRATION_PROXY_ENABLED:-true}
+      ORACLE_API_NUTRITION_GRPC_URL: ${ORACLE_API_NUTRITION_GRPC_URL:-unix:///run/e-posyandu/nutrition.sock}
+      ORACLE_API_MICROSERVICES_ENABLED: ${ORACLE_API_MICROSERVICES_ENABLED:-true}
+      ORACLE_API_IDENTITY_GRPC_URL: ${ORACLE_API_IDENTITY_GRPC_URL:-unix:///run/e-posyandu/identity.sock}
+      ORACLE_API_OPERATIONS_GRPC_URL: ${ORACLE_API_OPERATIONS_GRPC_URL:-unix:///run/e-posyandu/operations.sock}
+      ORACLE_API_REALTIME_GRPC_URL: ${ORACLE_API_REALTIME_GRPC_URL:-unix:///run/e-posyandu/realtime.sock}
+      ORACLE_API_MONITORING_GRPC_URL: ${ORACLE_API_MONITORING_GRPC_URL:-unix:///run/e-posyandu/monitoring.sock}
+      # Production selalu microservices-only. Jalur migration proxy tetap ada
+      # di source untuk rollback darurat, tetapi tidak boleh aktif pada gateway
+      # saat seluruh domain service sudah dirilis.
+      ORACLE_API_MIGRATION_PROXY_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
       CLOUDFLARE_QUEUE_ID: ${CLOUDFLARE_QUEUE_ID:-}
       RUST_LOG: ${ORACLE_API_LOG_LEVEL:-e_posyandu_oracle_api=info,tower_http=info}
@@ -32,6 +222,14 @@ services:
     depends_on:
       redis-cache:
         condition: service_healthy
+      identity-service:
+        condition: service_started
+      operations-service:
+        condition: service_started
+      realtime-service:
+        condition: service_started
+      monitoring-service:
+        condition: service_started
     # Podman memilih gateway dari network terakhir untuk host.containers.internal.
     # Kunci nama host database ke bridge aplikasi tempat PostgreSQL mendengar.
     extra_hosts:
@@ -41,7 +239,8 @@ services:
       - default
       - dynamic-cache
     volumes:
-      - /var/lib/e-posyandu/oracle-api:/var/lib/e-posyandu-api:rw,Z
+      - /var/lib/e-posyandu/oracle-api:/var/lib/e-posyandu-api:rw,z
+      - /var/lib/e-posyandu/grpc:/run/e-posyandu:rw,z
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m
@@ -99,19 +298,24 @@ services:
     build:
       context: ../..
       dockerfile: services/nutrition-grpc/Dockerfile
-    image: e-posyandu-nutrition-worker:oracle
+    image: ${NUTRITION_WORKER_IMAGE:-e-posyandu-nutrition-worker:oracle}
     restart: unless-stopped
     env_file:
       - ${ORACLE_NUTRITION_ENV_FILE:-/etc/e-posyandu/nutrition-grpc.env}
       - ${ORACLE_NUTRITION_VAULT_ENV_FILE:-/run/e-posyandu/nutrition-grpc-vault.env}
     environment:
-      GRPC_ADDR: 127.0.0.1:50051
+      # Service satu host memakai UDS. Set GRPC_ADDR=host:port bila worker
+      # dipindahkan ke server/platform lain.
+      GRPC_ADDR: ${GRPC_ADDR:-unix:///run/e-posyandu/nutrition.sock}
       PORT: "8080"
       QUEUE_BATCH_SIZE: ${QUEUE_BATCH_SIZE:-2}
       QUEUE_POLL_INTERVAL_MS: ${QUEUE_POLL_INTERVAL_MS:-15000}
     expose:
       - "8080"
+      - "50051"
     read_only: true
+    volumes:
+      - /var/lib/e-posyandu/grpc:/run/e-posyandu:rw,z
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
     cap_drop:

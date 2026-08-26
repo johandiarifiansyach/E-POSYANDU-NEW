@@ -159,6 +159,49 @@ export type ChildrenPageResponse = {
   total: number;
 };
 
+// Keep the most recently resolved page in memory so switching tabs can paint
+// immediately while the next request revalidates it in the background. The
+// encrypted IndexedDB cache remains the durable/offline fallback.
+const childrenPageMemoryCache = new Map<string, ChildrenPageResponse>();
+const exclusiveBreastfeedingMemoryCache = new Map<string, ExclusiveBreastfeedingPageResponse>();
+
+function childrenPageCacheKey(request: ChildrenPageRequest): string {
+  return JSON.stringify({
+    account: authState.currentUser?.uid || 'anonymous',
+    asOf: request.asOf,
+    measurementEnd: request.measurementEnd,
+    measurementStart: request.measurementStart,
+    page: request.page,
+    posyandu: request.posyandu || '',
+    search: request.search || '',
+    size: request.size || 10,
+    sort: request.sort,
+    view: request.view || 'data',
+    village: request.village || ''
+  });
+}
+
+export function peekCachedChildrenPage(request: ChildrenPageRequest): ChildrenPageResponse | null {
+  return childrenPageMemoryCache.get(childrenPageCacheKey(request)) || null;
+}
+
+function exclusiveBreastfeedingCacheKey(request: ExclusiveBreastfeedingPageRequest): string {
+  return JSON.stringify({
+    account: authState.currentUser?.uid || 'anonymous',
+    ageGroup: request.ageGroup,
+    measurementEnd: request.measurementEnd,
+    measurementStart: request.measurementStart,
+    page: request.page,
+    posyandu: request.posyandu || '',
+    size: request.size || 10,
+    village: request.village || ''
+  });
+}
+
+export function peekCachedExclusiveBreastfeedingPage(request: ExclusiveBreastfeedingPageRequest): ExclusiveBreastfeedingPageResponse | null {
+  return exclusiveBreastfeedingMemoryCache.get(exclusiveBreastfeedingCacheKey(request)) || null;
+}
+
 export type ExclusiveBreastfeedingPageRequest = {
   ageGroup: '0-5' | '6';
   measurementEnd: string;
@@ -397,12 +440,85 @@ const API_RETRY_DELAY_MS = 10 * 60 * 1000;
 const SYNC_STATE_PREFIX = 'e-posyandu:sync-state:';
 const AUTH_SESSION_KEY = 'e-posyandu:auth-session';
 const API_UNAVAILABLE_UNTIL_KEY = 'e-posyandu:api-unavailable-until';
+const REALTIME_RECONNECT_DELAY_MS = 3_000;
 
 const authState: Auth = { currentUser: null };
 const authListeners = new Set<(user: AuthUser | null) => void>();
 const activeViewRefreshers = new Set<() => Promise<void>>();
+const realtimeListeners = new Set<() => void>();
 const syncStateListeners = new Set<(syncing: boolean) => void>();
 let activeSyncOperations = 0;
+let realtimeSource: EventSource | null = null;
+let realtimeReconnectTimer: number | undefined;
+
+function closeRealtimeSource() {
+  realtimeSource?.close();
+  realtimeSource = null;
+  if (realtimeReconnectTimer !== undefined && typeof window !== 'undefined') {
+    window.clearTimeout(realtimeReconnectTimer);
+    realtimeReconnectTimer = undefined;
+  }
+}
+
+function notifyRealtimeListeners() {
+  realtimeListeners.forEach((listener) => listener());
+}
+
+function openRealtimeSource() {
+  if (
+    typeof window === 'undefined' ||
+    typeof EventSource === 'undefined' ||
+    realtimeListeners.size === 0 ||
+    document.visibilityState !== 'visible' ||
+    !navigator.onLine ||
+    realtimeSource
+  ) return;
+  closeRealtimeSource();
+  const source = new EventSource(getRealtimeDataStreamUrl(), { withCredentials: true });
+  realtimeSource = source;
+  source.addEventListener('data', notifyRealtimeListeners);
+  source.addEventListener('resync', notifyRealtimeListeners);
+  source.onerror = () => {
+    if (realtimeSource !== source) return;
+    // EventSource retries by itself, but closing here lets us stop retries
+    // while the tab is hidden/offline and keeps one source per application.
+    closeRealtimeSource();
+    if (realtimeListeners.size > 0 && document.visibilityState === 'visible' && navigator.onLine) {
+      realtimeReconnectTimer = window.setTimeout(() => {
+        realtimeReconnectTimer = undefined;
+        openRealtimeSource();
+      }, REALTIME_RECONNECT_DELAY_MS);
+    }
+  };
+}
+
+function syncRealtimeLifecycle() {
+  if (
+    typeof document === 'undefined' ||
+    realtimeListeners.size === 0 ||
+    document.visibilityState !== 'visible' ||
+    !navigator.onLine
+  ) {
+    closeRealtimeSource();
+    return;
+  }
+  openRealtimeSource();
+}
+
+if (typeof window !== 'undefined') {
+  document.addEventListener('visibilitychange', syncRealtimeLifecycle);
+  window.addEventListener('online', syncRealtimeLifecycle);
+  window.addEventListener('offline', syncRealtimeLifecycle);
+}
+
+export function subscribeToRealtime(listener: () => void): () => void {
+  realtimeListeners.add(listener);
+  syncRealtimeLifecycle();
+  return () => {
+    realtimeListeners.delete(listener);
+    syncRealtimeLifecycle();
+  };
+}
 
 function toTimestampCompat(input: Date | string): TimestampCompat {
   const date = input instanceof Date ? input : new Date(input);
@@ -831,6 +947,10 @@ export function getAdminMonitoringStreamUrl(): string {
   return apiUrl('/admin/monitoring/stream');
 }
 
+export function getRealtimeDataStreamUrl(): string {
+  return apiUrl('/realtime/stream');
+}
+
 export async function createAdminAccount(input: AdminAccountInput): Promise<AdminAccountMutationResult> {
   return apiRequest<AdminAccountMutationResult>('/admin/accounts', {
     method: 'POST',
@@ -1021,13 +1141,15 @@ export async function getChildrenPage(request: ChildrenPageRequest): Promise<Chi
   const visibleIds = new Set(visibleItems.map((item) => item.id));
   const hiddenCount = response.items.length - visibleItems.length;
 
-  return {
+  const resolvedResponse = {
     ...response,
     items: visibleItems,
     measurements: response.measurements.filter((item) => visibleIds.has(String(item.data.childId || ''))),
     mpasiLogs: response.mpasiLogs?.filter((item) => visibleIds.has(String(item.data.childId || ''))),
     total: Math.max(0, response.total - hiddenCount)
   };
+  childrenPageMemoryCache.set(childrenPageCacheKey(request), resolvedResponse);
+  return resolvedResponse;
 }
 
 export async function getExclusiveBreastfeedingPage(
@@ -1043,9 +1165,11 @@ export async function getExclusiveBreastfeedingPage(
   });
   if (request.village?.trim()) parameters.set('village', request.village.trim());
   if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
-  return apiRequest<ExclusiveBreastfeedingPageResponse>(
+  const response = await apiRequest<ExclusiveBreastfeedingPageResponse>(
     `/exclusive-breastfeeding/page?${parameters.toString()}`
   );
+  exclusiveBreastfeedingMemoryCache.set(exclusiveBreastfeedingCacheKey(request), response);
+  return response;
 }
 
 export async function getChildDetail(id: string): Promise<ApiDocument> {
@@ -1124,17 +1248,31 @@ function compareCachedChildren(left: ApiDocument, right: ApiDocument, sort: stri
 }
 
 export async function getCachedChildrenPage(request: ChildrenPageRequest): Promise<ChildrenPageResponse> {
+  const memoryCached = childrenPageMemoryCache.get(childrenPageCacheKey(request));
+  if (memoryCached) return memoryCached;
+
   const asOf = request.asOf;
   const parsedAsOf = new Date(`${asOf}T00:00:00Z`);
   if (Number.isNaN(parsedAsOf.getTime())) throw new Error('Periode data balita tidak valid.');
   parsedAsOf.setUTCMonth(parsedAsOf.getUTCMonth() - 60);
   const cutoff = parsedAsOf.toISOString().slice(0, 10);
   const search = request.search?.trim().toLocaleLowerCase('id') || '';
+  const cacheDateValue = (value: unknown) => value && typeof (value as { toDate?: unknown }).toDate === 'function'
+    ? (value as { toDate: () => Date }).toDate().toISOString()
+    : String(value || '');
   const children = (await getCachedDocuments('children'))
     .filter((document) => {
       const data = document.data;
       const birthDate = String(data.tglLahir || '');
-      if (document.deleted || data.deletedAt || birthDate <= cutoff || birthDate > asOf) return false;
+      const deleted = document.deleted || Boolean(data.deletedAt);
+      if (request.view === 'recycle' ? !deleted : deleted) return false;
+      if (request.view !== 'recycle' && request.view !== 'recent' && (birthDate <= cutoff || birthDate > asOf)) return false;
+      if (request.view === 'recent') {
+        const createdAt = cacheDateValue(data.createdAt);
+        const nextMonth = new Date(`${asOf}T00:00:00Z`);
+        nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
+        if (!createdAt || createdAt < `${asOf}T00:00:00Z` || createdAt >= nextMonth.toISOString()) return false;
+      }
       if (request.village && data.desa !== request.village) return false;
       if (request.posyandu && data.posyandu !== request.posyandu) return false;
       if (!search) return true;
@@ -1167,7 +1305,9 @@ export async function getCachedChildrenPage(request: ChildrenPageRequest): Promi
     if (childId && !latestMeasurements.has(childId)) latestMeasurements.set(childId, measurement);
   });
 
-  return { items, measurements: Array.from(latestMeasurements.values()), total };
+  const cachedResponse = { items, measurements: Array.from(latestMeasurements.values()), total };
+  childrenPageMemoryCache.set(childrenPageCacheKey(request), cachedResponse);
+  return cachedResponse;
 }
 
 function matchesQuery(data: DocumentData, ref: QueryRef) {
@@ -1458,6 +1598,29 @@ async function mfaRequest<T>(path: string, payload: Record<string, unknown>): Pr
   return response.json() as Promise<T>;
 }
 
+async function passkeyRequest<T>(path: string, payload: Record<string, unknown> = {}): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/auth/passkey/${path}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Request-ID': createRequestId()
+      },
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    if (isNetworkError(error)) throw new ApiUnavailableError();
+    throw error;
+  }
+  if (!response.ok) {
+    throw new Error(await responseErrorDetail(response, 'Passkey tidak dapat diproses.'));
+  }
+  return response.json() as Promise<T>;
+}
+
 export async function completeAdminInvitation(
   accessToken: string,
   refreshToken: string,
@@ -1513,6 +1676,64 @@ export async function verifyMfaFactor(
   }
 ): Promise<AuthenticatedSignInResult & { recoveryCodes: string[] }> {
   const response = await mfaRequest<AuthenticatedResponse>('verify', payload);
+  const nextSession = sessionFromResponse(response);
+  const changesAccount = !auth.currentUser || auth.currentUser.uid !== nextSession.uid;
+  await initializeOfflineStoreSession(nextSession.uid, { forceReset: changesAccount });
+  if (changesAccount) clearSyncState();
+  auth.currentUser = nextSession;
+  saveSession(nextSession);
+  notifyAuthListeners();
+  return {
+    mfaRequired: false,
+    session: nextSession,
+    profile: response.profile || null,
+    recoveryCodes: response.recoveryCodes || []
+  };
+}
+
+export async function startPasskeyRegistration(): Promise<any> {
+  const response = await passkeyRequest<{ challenge: any }>('registration/options');
+  return response.challenge;
+}
+
+export async function verifyPasskeyRegistration(
+  auth: Auth,
+  challengeId: string,
+  credential: unknown
+): Promise<AuthenticatedSignInResult & { recoveryCodes: string[] }> {
+  const response = await passkeyRequest<AuthenticatedResponse>('registration/verify', {
+    challengeId,
+    credential
+  });
+  const nextSession = sessionFromResponse(response);
+  const changesAccount = !auth.currentUser || auth.currentUser.uid !== nextSession.uid;
+  await initializeOfflineStoreSession(nextSession.uid, { forceReset: changesAccount });
+  if (changesAccount) clearSyncState();
+  auth.currentUser = nextSession;
+  saveSession(nextSession);
+  notifyAuthListeners();
+  return {
+    mfaRequired: false,
+    session: nextSession,
+    profile: response.profile || null,
+    recoveryCodes: response.recoveryCodes || []
+  };
+}
+
+export async function startPasskeyAuthentication(): Promise<any> {
+  const response = await passkeyRequest<{ challenge: any }>('authentication/options');
+  return response.challenge;
+}
+
+export async function verifyPasskeyAuthentication(
+  auth: Auth,
+  challengeId: string,
+  credential: unknown
+): Promise<AuthenticatedSignInResult & { recoveryCodes: string[] }> {
+  const response = await passkeyRequest<AuthenticatedResponse>('authentication/verify', {
+    challengeId,
+    credential
+  });
   const nextSession = sessionFromResponse(response);
   const changesAccount = !auth.currentUser || auth.currentUser.uid !== nextSession.uid;
   await initializeOfflineStoreSession(nextSession.uid, { forceReset: changesAccount });
@@ -2220,11 +2441,11 @@ export function onSnapshot(
     }
   };
 
-  const schedulePull = () => {
+  const schedulePull = (fromServer = false) => {
     if (!active || refreshTimer) return;
     refreshTimer = setTimeout(() => {
       refreshTimer = null;
-      void pull();
+      void pull(fromServer);
     }, 150);
   };
 
@@ -2233,12 +2454,14 @@ export function onSnapshot(
     if (active) await pull(true);
   };
   activeViewRefreshers.add(refreshFromServer);
-  const unsubscribeOfflineStore = subscribeToOfflineStore(schedulePull);
+  const unsubscribeOfflineStore = subscribeToOfflineStore(() => schedulePull());
+  const unsubscribeRealtime = subscribeToRealtime(() => schedulePull(true));
 
   return () => {
     active = false;
     if (refreshTimer) clearTimeout(refreshTimer);
     activeViewRefreshers.delete(refreshFromServer);
     unsubscribeOfflineStore();
+    unsubscribeRealtime();
   };
 }

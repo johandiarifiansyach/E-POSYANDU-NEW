@@ -678,6 +678,52 @@ async fn monitor_and_cleanup_r2(env: &Env) {
     );
 }
 
+async fn cleanup_child_retention(env: &Env) {
+    let Some(supabase_url) = optional_secret(env, "SUPABASE_URL") else {
+        worker::console_warn!("Retensi balita dilewati karena SUPABASE_URL belum tersedia.");
+        return;
+    };
+    let Some(secret_key) = optional_secret(env, "SUPABASE_SECRET_KEY") else {
+        worker::console_warn!("Retensi balita dilewati karena SUPABASE_SECRET_KEY belum tersedia.");
+        return;
+    };
+    let Ok(headers) = supabase_headers(&secret_key, None) else {
+        worker::console_warn!("Header pembersihan retensi balita tidak dapat dibuat.");
+        return;
+    };
+    let endpoint = format!(
+        "{}/rest/v1/rpc/eposyandu_cleanup_retention",
+        supabase_url.trim_end_matches('/')
+    );
+    match request_value(
+        endpoint,
+        Method::Post,
+        headers,
+        Some(json!({ "p_now": null })),
+    )
+    .await
+    {
+        Ok((status, payload)) if (200..300).contains(&status) => {
+            // Halaman dinamis yang mungkin masih tersimpan di Redis harus
+            // ditinggalkan segera setelah baris primary dimusnahkan.
+            let _ = redis_commands(env, json!([["INCR", "dynamic:data:version:v1"]])).await;
+            worker::console_log!(
+                "{}",
+                json!({
+                    "level": "info",
+                    "event": "child_retention_cleanup",
+                    "environment": environment_name(env),
+                    "result": payload,
+                })
+            );
+        }
+        Ok((status, _)) => {
+            worker::console_warn!("Pembersihan retensi balita gagal dengan status {}.", status)
+        }
+        Err(_) => worker::console_warn!("Pembersihan retensi balita tidak dapat dijangkau."),
+    }
+}
+
 fn monitoring_alert_configured(env: &Env) -> bool {
     optional_secret(env, "MONITORING_ALERT_WEBHOOK_URL").is_some()
         || (optional_secret(env, "RESEND_API_KEY").is_some()
@@ -2706,6 +2752,7 @@ pub async fn keep_nutrition_worker_awake(
     _context: worker::ScheduleContext,
 ) {
     monitor_and_cleanup_r2(&env).await;
+    cleanup_child_retention(&env).await;
     let checked_at = now_iso();
     let previous = read_nutrition_worker_health(&env).await;
     let Some(health_url) = optional_secret(&env, "RUST_WORKER_HEALTH_URL") else {

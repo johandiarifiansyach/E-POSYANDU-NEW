@@ -20,9 +20,14 @@ tests/                 Pengujian kontrak lintas komponen
 | Edge web | Cloudflare DNS/proxy/WAF/DDoS/Turnstile/Tunnel |
 | Frontend utama | Container Caddy di Oracle Compute melalui Tunnel |
 | API utama | `oracle-api` Rust di Oracle Compute melalui Tunnel |
-| Data utama dan autentikasi | Supabase PostgreSQL + Supabase Auth |
-| Standby laporan | PostgreSQL Oracle read-only; Supabase tetap satu-satunya writable primary |
+| Service identity | `identity-service` gRPC privat untuk login, MFA, passkey, dan akun admin |
+| Service operasional | `operations-service` gRPC privat untuk CRUD, cache, dan sinkronisasi |
+| Service realtime | `realtime-service` gRPC streaming untuk SSE perubahan data |
+| Service monitoring | `monitoring-service` gRPC privat untuk metrik admin |
+| Data utama | Oracle PostgreSQL native; Supabase tetap tersedia sebagai jalur legacy/rollback |
+| Sesi dan autentikasi | Identity service dengan PostgreSQL native + SQLite sesi terenkripsi |
 | Pekerjaan berat | Rust `nutrition-grpc` di Oracle Compute + Cloudflare Queue |
+| Komunikasi internal | gRPC/HTTP2 privat antara gateway, identity, operations, realtime, monitoring, dan nutrition; Queue tetap untuk job asinkron |
 | Rollback darurat | Cloudflare Pages + Worker lama, tetap tersedia tetapi bukan jalur normal |
 | File job privat | Cloudflare R2 |
 | Cache data dinamis (TTL umum 5 menit; dashboard 60 detik) | Redis |
@@ -46,7 +51,12 @@ npm run db:migrate      # Terapkan migration yang belum dijalankan
 npm run db:backup       # Buat backup PostgreSQL dengan izin file privat
 npm run replica:check   # Periksa TypeScript private Neon Read Worker
 npm run replica:verify  # Verifikasi sinkronisasi HTTPS dan role read-only
-npm run grpc:deploy:oracle -- ALIAS_SSH DOMAIN_HEALTH # Deploy worker ke Oracle
+npm run oracle:deploy:api -- ALIAS_SSH DOMAIN_HEALTH # Deploy API Oracle saja
+npm run oracle:deploy:identity -- ALIAS_SSH DOMAIN_HEALTH # Deploy identity service saja
+npm run oracle:deploy:operations -- ALIAS_SSH DOMAIN_HEALTH # Deploy operations service saja
+npm run oracle:deploy:realtime -- ALIAS_SSH DOMAIN_HEALTH # Deploy realtime service saja
+npm run oracle:deploy:monitoring -- ALIAS_SSH DOMAIN_HEALTH # Deploy monitoring service saja
+npm run oracle:deploy:nutrition -- ALIAS_SSH DOMAIN_HEALTH # Deploy worker gizi saja
 npm run worker:deploy   # Deploy API ke Cloudflare Worker
 npm run worker:deploy:staging # Deploy API staging
 npm run pages:deploy    # Build dan deploy frontend ke Cloudflare Pages

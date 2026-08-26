@@ -34,19 +34,33 @@ test.describe('children feature', () => {
     expect(result.message).toContain('kilogram');
   });
 
-  test('creates scoped defaults and unique temporary identity values', () => {
+  test('creates scoped defaults and Posyandu-coded temporary NIK', () => {
     const form = createInitialChildForm({
       role: 'Kader Posyandu',
       desa: 'Desa Gumukmas',
       posyandu: 'SALAK 2'
     });
     const kk = generateTemporaryKk();
-    const nik = generateTemporaryNik({ tglLahir: '2026-01-02' }, [{ nik: '3509040201260000' }]);
+    const nik = generateTemporaryNik({ tglLahir: '2026-01-02', posyandu: 'SALAK 2' });
 
     expect(form.desa).toBe('Desa Gumukmas');
     expect(form.posyandu).toBe('SALAK 2');
     expect(kk).toMatch(/^350904\d{10}$/);
-    expect(nik).toMatch(/^350904020126\d{4}$/);
-    expect(nik).not.toBe('3509040201260000');
+    expect(nik).toBe('3509040201260002');
+  });
+
+  test('uses a random 10-60 suffix for SALAK 61, 98, and 99', () => {
+    for (const posyandu of ['SALAK 61', 'SALAK 98', 'SALAK 99']) {
+      const nik = generateTemporaryNik({ tglLahir: '2026-01-02', posyandu });
+      expect(nik).toMatch(/^35090402012600(?:1[0-9]|[2-5][0-9]|60)$/);
+    }
+  });
+
+  test('changes the suffix to 10-60 when a generated NIK already exists', () => {
+    const existingNiks = [{ nik: '3509040201260002' }];
+    const nik = generateTemporaryNik({ tglLahir: '2026-01-02', posyandu: 'SALAK 2' }, existingNiks);
+
+    expect(nik).toMatch(/^35090402012600(?:1[0-9]|[2-5][0-9]|60)$/);
+    expect(nik).not.toBe(existingNiks[0].nik);
   });
 });

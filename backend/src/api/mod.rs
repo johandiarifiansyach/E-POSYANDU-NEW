@@ -1105,6 +1105,8 @@ fn api_document_summary(row: &Value) -> ApiResult<Value> {
             "jk": string_value(row.get("sex")), "namaOrtu": string_value(row.get("parent_name")),
             "desa": string_value(row.get("village")), "posyandu": string_value(row.get("posyandu")),
             "createdAt": timestamp_value(row.get("created_at")), "updatedAt": timestamp_value(row.get("updated_at")),
+            "deletedAt": timestamp_value(row.get("deleted_at")),
+            "deleteReason": nullable_value(row.get("delete_reason")),
             "version": row.get("version").cloned().unwrap_or_else(|| json!(1)),
         }
     }))
@@ -1199,7 +1201,7 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
         return Ok(value);
     }
     let mut parameters = vec![
-        ("select".into(), "id,name,national_id,has_national_id,birth_date,sex,parent_name,village,posyandu,created_at,updated_at,version".into()),
+        ("select".into(), "id,name,national_id,has_national_id,birth_date,sex,parent_name,village,posyandu,created_at,updated_at,deleted_at,delete_reason,version".into()),
         ("order".into(), order.into()), ("limit".into(), size.to_string()),
         ("offset".into(), ((page - 1) * size).to_string()),
     ];
@@ -2241,6 +2243,49 @@ fn temporary_birth_segment(data: &Map<String, Value>, seed: &str) -> String {
     }
 }
 
+fn temporary_posyandu_segment(data: &Map<String, Value>) -> String {
+    let posyandu = string_value(data.get("posyandu"));
+    let numeric_suffix = posyandu
+        .split_whitespace()
+        .last()
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .map(str::to_owned)
+        .or_else(|| {
+            let suffix = posyandu
+                .chars()
+                .rev()
+                .take_while(|character| character.is_ascii_digit())
+                .collect::<String>();
+            (!suffix.is_empty()).then(|| suffix.chars().rev().collect::<String>())
+        })
+        .unwrap_or_default();
+    let value = numeric_suffix.parse::<u16>().unwrap_or(0) % 100;
+    format!("{value:02}")
+}
+
+fn random_temporary_posyandu_segment() -> String {
+    let value = 10 + (worker::js_sys::Math::random() * 51.0).floor() as u16;
+    format!("{:02}", value.min(60))
+}
+
+fn temporary_nik_prefix(data: &Map<String, Value>, id: &str) -> String {
+    format!("350904{}00", temporary_birth_segment(data, id))
+}
+
+fn temporary_suffix_is_usable(data: &Map<String, Value>, id: &str, nik: &str) -> bool {
+    if !is_sixteen_digits(nik) {
+        return false;
+    }
+    let prefix = temporary_nik_prefix(data, id);
+    if !nik.starts_with(&prefix) {
+        return false;
+    }
+    let suffix = &nik[14..];
+    let value = suffix.parse::<u16>().unwrap_or_default();
+    let posyandu_code = temporary_posyandu_segment(data);
+    value == posyandu_code.parse::<u16>().unwrap_or_default() || (10..=60).contains(&value)
+}
+
 fn normalize_child_identity(data: &mut Map<String, Value>, id: &str) -> ApiResult<()> {
     let has_family_card = bool_value(data.get("hasKK"));
     let family_card_number = string_value(data.get("noKK"));
@@ -2259,17 +2304,23 @@ fn normalize_child_identity(data: &mut Map<String, Value>, id: &str) -> ApiResul
 
     let has_national_id = bool_value(data.get("hasNIK"));
     let national_id = string_value(data.get("nik"));
-    if has_national_id && !is_sixteen_digits(&national_id) {
-        return Err(api_error(422, "NIK balita harus berisi 16 digit."));
-    }
-    if !has_national_id && !is_sixteen_digits(&national_id) {
+    if has_national_id {
+        if !is_sixteen_digits(&national_id) {
+            return Err(api_error(422, "NIK balita harus berisi 16 digit."));
+        }
+    } else {
+        let posyandu_code = temporary_posyandu_segment(data);
+        let is_random_posyandu = matches!(posyandu_code.as_str(), "61" | "98" | "99");
+        let suffix = if temporary_suffix_is_usable(data, id, &national_id) {
+            national_id[14..].to_owned()
+        } else if is_random_posyandu {
+            random_temporary_posyandu_segment()
+        } else {
+            posyandu_code
+        };
         data.insert(
             "nik".into(),
-            Value::String(format!(
-                "350904{}{}",
-                temporary_birth_segment(data, id),
-                deterministic_digits(&format!("national-id:{id}"), 4)
-            )),
+            Value::String(format!("{}{}", temporary_nik_prefix(data, id), suffix)),
         );
     }
     Ok(())
@@ -3852,7 +3903,8 @@ mod tests {
             "hasKK": false,
             "hasNIK": false,
             "noKK": "",
-            "nik": ""
+            "nik": "",
+            "posyandu": "SALAK 1"
         })
         .as_object()
         .cloned()
@@ -3863,8 +3915,26 @@ mod tests {
         let family_card = string_value(data.get("noKK"));
         let national_id = string_value(data.get("nik"));
         assert!(is_sixteen_digits(&family_card));
-        assert!(is_sixteen_digits(&national_id));
-        assert!(national_id.starts_with("350904310726"));
+        assert_eq!(national_id, "3509043107260001");
+    }
+
+    #[test]
+    fn preserves_random_temporary_suffix_for_special_posyandu() {
+        let mut data = json!({
+            "tglLahir": "2026-07-31",
+            "hasKK": false,
+            "hasNIK": false,
+            "noKK": "",
+            "nik": "3509043107260012",
+            "posyandu": "SALAK 98"
+        })
+        .as_object()
+        .cloned()
+        .expect("child payload");
+
+        normalize_child_identity(&mut data, "child-test-special").expect("temporary identity");
+
+        assert_eq!(string_value(data.get("nik")), "3509043107260012");
     }
 
     #[test]

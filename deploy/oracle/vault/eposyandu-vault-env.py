@@ -146,6 +146,12 @@ def main() -> None:
     oracle_api_values["CLOUDFLARE_QUEUES_API_TOKEN"] = nutrition_values[
         "CLOUDFLARE_QUEUES_API_TOKEN"
     ]
+    # API native dan worker gizi memakai token yang sama untuk autentikasi
+    # komunikasi gRPC privat. Nilai tetap berasal dari Vault dan hanya ditulis
+    # ke tmpfs mode 0600.
+    oracle_api_values["RUST_WORKER_SHARED_SECRET"] = nutrition_values[
+        "RUST_WORKER_SHARED_SECRET"
+    ]
     database_password_secret_id = config.get(
         "OCI_SECRET_ORACLE_DATABASE_PASSWORD_ID"
     )

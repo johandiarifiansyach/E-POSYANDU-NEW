@@ -1,6 +1,7 @@
 // @ts-nocheck
 import * as Context from '../../shared/dashboardContext';
 import { errorMessage, type PageState } from '../../shared/pageState';
+import { TableLoadingSkeleton } from '../../ui/skeleton';
 
 const {
     Native, useState, useEffect, useMemo, useRef, collection, addDoc,
@@ -221,7 +222,21 @@ export const MeasurementModal = ({ child, onClose }) => {
                 saveError && Native.createElement("div", { className: "rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700", role: "alert" }, saveError),
                 activeMenu === 'history' ? (Native.createElement("div", { className: "bg-slate-50 rounded-2xl border border-slate-200 p-4" },
                     Native.createElement("h3", { className: "text-sm font-bold text-slate-700 mb-3" }, "Riwayat Penimbangan Bulan ke Bulan"),
-                    historyLoading ? (Native.createElement("p", { className: "text-xs text-slate-500" }, "Memuat riwayat penimbangan...")) : historyError ? (Native.createElement("p", { className: "text-sm text-rose-600" }, historyError)) : monthlyHistory.length === 0 ? (Native.createElement("p", { className: "text-xs text-slate-500" }, "Belum ada riwayat pengukuran.")) : (Native.createElement("div", { className: "ios-table-scroll overflow-x-auto" },
+                    historyLoading ? (Native.createElement("div", { className: "ios-table-scroll overflow-x-auto", role: "status", "aria-label": "Memuat riwayat penimbangan" },
+                        Native.createElement("table", { className: "ios-data-table ios-measurement-table min-w-full text-xs", "aria-busy": "true" },
+                            Native.createElement("thead", null,
+                                Native.createElement("tr", { className: "text-slate-500 border-b border-slate-200" },
+                                    Native.createElement("th", { className: "text-left py-2 pr-4" }, "Bulan"),
+                                    Native.createElement("th", { className: "text-left py-2 pr-4" }, "Tanggal Ukur"),
+                                    Native.createElement("th", { className: "text-center py-2 px-2" }, "BB"),
+                                    Native.createElement("th", { className: "text-center py-2 px-2" }, "TB"),
+                                    Native.createElement("th", { className: "text-center py-2 px-2" }, "LILA"),
+                                    Native.createElement("th", { className: "text-center py-2 px-2" }, "LK"),
+                                    Native.createElement("th", { className: "text-center py-2 px-2" }, "Status BB/U"),
+                                    Native.createElement("th", { className: "text-center py-2 px-2" }, "Status TB/U"),
+                                    Native.createElement("th", { className: "text-center py-2 px-2" }, "Status BB/TB"),
+                                    Native.createElement("th", { className: "text-center py-2 pl-2" }, "Naik BB"))),
+                            Native.createElement("tbody", null, Native.createElement(TableLoadingSkeleton, { columnCount: 10, rowCount: 5 }))))) : historyError ? (Native.createElement("p", { className: "text-sm text-rose-600" }, historyError)) : monthlyHistory.length === 0 ? (Native.createElement("p", { className: "text-xs text-slate-500" }, "Belum ada riwayat pengukuran.")) : (Native.createElement("div", { className: "ios-table-scroll overflow-x-auto" },
                         Native.createElement("table", { className: "ios-data-table ios-measurement-table min-w-full text-xs" },
                             Native.createElement("thead", null,
                                 Native.createElement("tr", { className: "text-slate-500 border-b border-slate-200" },

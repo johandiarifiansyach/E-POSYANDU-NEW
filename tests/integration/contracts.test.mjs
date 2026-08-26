@@ -66,12 +66,34 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '030_account_access_management.sql');
+  assert.equal(files.at(-1), '031_child_data_retention.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
     assert.match(sql, /commit;/, `${file} harus ditutup dengan commit`);
   }
+});
+
+test('retensi anak diproses di server dan tidak menghapus data sebelum waktunya', async () => {
+  const [migration, worker, oracleDb, oracleMain] = await Promise.all([
+    readFile(resolve(root, 'database/migrations/031_child_data_retention.sql'), 'utf8'),
+    readFile(resolve(root, 'backend/src/lib.rs'), 'utf8'),
+    readFile(resolve(root, 'services/oracle-api/src/native_db.rs'), 'utf8'),
+    readFile(resolve(root, 'services/oracle-api/src/main.rs'), 'utf8')
+  ]);
+
+  assert.match(migration, /v_recycle_cutoff\s+timestamptz\s+:=[\s\S]+interval '30 days'/i);
+  assert.match(migration, /v_post_graduation_cutoff\s+date\s+:=[\s\S]+interval '5 years'/i);
+  assert.match(migration, /c\.deleted_at\s+is not null[\s\S]+c\.deleted_at\s+<\s+v_recycle_cutoff/i);
+  assert.match(migration, /c\.birth_date\s+is not null[\s\S]+c\.birth_date\s+\+\s+interval '60 months'/i);
+  assert.match(migration, /c\.birth_date\s+\+\s+interval '60 months'\s+<=\s+v_post_graduation_cutoff/);
+  assert.match(migration, /create or replace function public\.eposyandu_cleanup_retention/);
+  assert.match(migration, /grant execute on function public\.eposyandu_cleanup_retention/);
+  assert.match(migration, /sync_tombstones/);
+  assert.match(worker, /rpc\/eposyandu_cleanup_retention/);
+  assert.match(worker, /child_retention_cleanup/);
+  assert.match(oracleDb, /eposyandu_cleanup_retention/);
+  assert.match(oracleMain, /RETENTION_CLEANUP_INTERVAL/);
 });
 
 test('mode akses akun menjaga akun lama tetap tulis dan memblokir fallback mutasi hanya-baca', async () => {
@@ -308,12 +330,17 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
     '/api/v1/auth/mfa/enroll',
     '/api/v1/auth/mfa/challenge',
     '/api/v1/auth/mfa/verify',
+    '/api/v1/auth/passkey/registration/options',
+    '/api/v1/auth/passkey/registration/verify',
+    '/api/v1/auth/passkey/authentication/options',
+    '/api/v1/auth/passkey/authentication/verify',
     '/api/v1/auth/logout',
     '/api/v1/auth/session',
     '/api/v1/auth/presence',
     '/api/v1/admin/accounts',
     '/api/v1/admin/accounts/{userId}',
     '/api/v1/admin/monitoring/stream',
+    '/api/v1/realtime/stream',
     '/api/v1/graphql',
     '/api/v1/sync',
     '/api/v1/features',
@@ -336,6 +363,7 @@ test('kontrak OpenAPI memuat endpoint operasional utama', async () => {
   assert.ok(document.paths['/api/v1/admin/accounts/{userId}'].patch);
   assert.ok(document.paths['/api/v1/admin/accounts/{userId}'].delete);
   assert.ok(document.paths['/api/v1/admin/monitoring/stream'].get.responses['200'].content['text/event-stream']);
+  assert.ok(document.paths['/api/v1/realtime/stream'].get.responses['200'].content['text/event-stream']);
   assert.ok(document.components.securitySchemes.sessionCookie);
   const authenticatedLogin = document.components.schemas.AuthenticatedLoginResponse;
   assert.ok(!('access_token' in authenticatedLogin.properties));
@@ -361,7 +389,14 @@ test('administrasi akun dan monitoring realtime hanya tersedia untuk administrat
   assert.match(oracleMain, /\/api\/v1\/admin\/accounts/);
   assert.match(oracleMain, /\/api\/v1\/auth\/presence/);
   assert.match(oracleMain, /\/api\/v1\/admin\/monitoring\/stream/);
+  assert.match(oracleMain, /\/api\/v1\/realtime\/stream/);
+  assert.match(oracleAuth, /auth\/v1\/passkeys\/registration\/options/);
+  assert.match(oracleAuth, /auth\/v1\/passkeys\/authentication\/verify/);
+  assert.doesNotMatch(oracleAuth, /auth\/v1\/factors.*webauthn/);
+  assert.match(client, /startPasskeyRegistration/);
+  assert.match(client, /startPasskeyAuthentication/);
   assert.match(oracleMain, /Sse::new\(events\)/);
+  assert.match(oracleMain, /realtime_data_stream/);
   assert.match(oracleMain, /ADMIN_MONITORING_CONNECTION_LIMIT/);
   assert.match(oracleAuth, /!is_super_admin\(&session\.profile\.role\) \|\| !session\.mfa_verified/);
   assert.match(oracleAuth, /presence-user:\{user_id\}/);
@@ -384,6 +419,7 @@ test('administrasi akun dan monitoring realtime hanya tersedia untuk administrat
   assert.doesNotMatch(metrics, /environ|cmdline|app_users|health_records/);
   assert.match(client, /reportAccountPresence/);
   assert.match(client, /getAdminMonitoringStreamUrl/);
+  assert.match(client, /subscribeToRealtime/);
 });
 
 test('ringkasan AI pertumbuhan tidak diekspos sebelum layanan siap', async () => {
@@ -511,6 +547,28 @@ test('GraphQL hanya untuk baca dan gRPC memakai kontrak internal terpisah', asyn
   }
 });
 
+test('komunikasi antar layanan memakai gRPC pada jaringan privat', async () => {
+  const [client, compose, oracleDockerfile, nutritionDockerfile] = await Promise.all([
+    readFile(resolve(root, 'services/oracle-api/src/nutrition_client.rs'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/compose.yaml'), 'utf8'),
+    readFile(resolve(root, 'services/oracle-api/Dockerfile'), 'utf8'),
+    readFile(resolve(root, 'services/nutrition-grpc/Dockerfile'), 'utf8')
+  ]);
+
+  assert.match(client, /NutritionWorkerClient/);
+  assert.match(client, /HealthClient/);
+  assert.match(client, /x-eposyandu-service-token/);
+  assert.match(client, /ORACLE_API_NUTRITION_GRPC_URL/);
+  assert.match(compose, /GRPC_ADDR: \$\{GRPC_ADDR:-unix:\/\/\/run\/e-posyandu\/nutrition\.sock\}/);
+  assert.match(compose, /- "50051"/);
+  assert.doesNotMatch(compose, /- "(?:0\.0\.0\.0|127\.0\.0\.1):50051/);
+  assert.match(oracleDockerfile, /services\/eposyandu-proto/);
+  assert.match(nutritionDockerfile, /services\/eposyandu-proto/);
+  const nutritionLib = await readFile(resolve(root, 'services/nutrition-grpc/src/lib.rs'), 'utf8');
+  assert.match(nutritionLib, /service_auth_interceptor/);
+  assert.match(nutritionLib, /x-eposyandu-service-token/);
+});
+
 test('pekerjaan berat memakai migration privat, Queue, dan kontrak frontend', async () => {
   const migration = await readFile(
     resolve(root, 'database/migrations/015_background_grpc_jobs.sql'),
@@ -540,6 +598,8 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
     caddy,
     bootstrap,
     deploy,
+    apiDeploy,
+    nutritionDeploy,
     connector,
     envExample,
     dockerfile,
@@ -548,12 +608,15 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
     nativeDatabase,
     databaseMigration,
     databaseBackup,
-    databaseBackupUnit
+    databaseBackupUnit,
+    backupEnv
   ] = await Promise.all([
     readFile(resolve(root, 'deploy/oracle/compose.yaml'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/Caddyfile'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/bootstrap.sh'), 'utf8'),
     readFile(resolve(root, 'scripts/services/deploy-oracle-nutrition-worker.sh'), 'utf8'),
+    readFile(resolve(root, 'scripts/services/deploy-oracle-api.sh'), 'utf8'),
+    readFile(resolve(root, 'scripts/services/deploy-oracle-nutrition.sh'), 'utf8'),
     readFile(resolve(root, 'scripts/services/connect-oracle-nutrition-worker.sh'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/nutrition-grpc.env.example'), 'utf8'),
     readFile(resolve(root, 'services/nutrition-grpc/Dockerfile'), 'utf8'),
@@ -562,10 +625,16 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
     readFile(resolve(root, 'services/oracle-api/src/native_db.rs'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/postgresql/eposyandu-postgresql-migrate.py'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/postgresql/eposyandu-postgresql-backup.py'), 'utf8'),
-    readFile(resolve(root, 'deploy/oracle/postgresql/eposyandu-postgresql-backup.service'), 'utf8')
+    readFile(resolve(root, 'deploy/oracle/postgresql/eposyandu-postgresql-backup.service'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/backup/eposyandu-backup.env.example'), 'utf8')
   ]);
 
-  assert.match(compose, /GRPC_ADDR: 127\.0\.0\.1:50051/);
+  assert.match(compose, /GRPC_ADDR: \$\{GRPC_ADDR:-unix:\/\/\/run\/e-posyandu\/nutrition\.sock\}/);
+  assert.match(compose, /ORACLE_API_NUTRITION_GRPC_URL: \$\{ORACLE_API_NUTRITION_GRPC_URL:-unix:\/\/\/run\/e-posyandu\/nutrition\.sock\}/);
+  assert.match(compose, /\/var\/lib\/e-posyandu\/grpc:\/run\/e-posyandu:rw,z/);
+  assert.match(compose, /ORACLE_API_MICROSERVICES_ENABLED: \$\{ORACLE_API_MICROSERVICES_ENABLED:-true\}/);
+  assert.match(compose, /ORACLE_API_MIGRATION_PROXY_ENABLED: "false"/);
+  assert.match(compose, /expose:[\s\S]*"50051"/);
   assert.match(compose, /image: docker\.io\/library\/caddy:2\.10\.2-alpine/);
   assert.match(compose, /read_only: true/g);
   assert.match(compose, /cap_drop:\s+- ALL/g);
@@ -600,7 +669,10 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(bootstrap, /firewall-cmd --query-service=http/);
   assert.match(bootstrap, /firewall-cmd --permanent --query-service=https/);
   assert.doesNotMatch(bootstrap, /firewall-cmd --reload/);
-  assert.match(bootstrap, /"\$\{compose_command\[@\]\}"[\s\S]+up --detach --build --remove-orphans/);
+  assert.match(bootstrap, /for build_service in[\s\S]+build "\$build_service"/);
+  assert.match(bootstrap, /up --detach --no-build --remove-orphans/);
+  assert.match(bootstrap, /up --detach --no-deps --build "\$deployment_service"/);
+  assert.match(bootstrap, /deployment_service="\$\{4:-all\}"/);
   assert.match(bootstrap, /Rilis baru gagal; memulihkan konfigurasi Oracle sebelumnya/);
   assert.match(bootstrap, /up --detach --remove-orphans/);
   assert.match(bootstrap, /-H "Host: \$health_host" http:\/\/127\.0\.0\.1\/health/);
@@ -610,6 +682,11 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(deploy, /ssh -o BatchMode=yes -o ConnectTimeout=10/);
   assert.match(deploy, /mktemp -d/);
   assert.match(deploy, /COPYFILE_DISABLE=1 tar/);
+  assert.match(deploy, /deploy_service="\$\{3:-all\}"/);
+  assert.match(deploy, /services\/eposyandu-proto/);
+  assert.match(apiDeploy, /oracle-api/);
+  assert.match(nutritionDeploy, /nutrition-worker/);
+  assert.match(vaultMaterializer, /oracle_api_values\["RUST_WORKER_SHARED_SECRET"\]/);
   assert.match(deploy, /--no-xattrs/);
   assert.match(deploy, /--no-mac-metadata/);
   assert.match(deploy, /--no-fflags/);
@@ -632,6 +709,9 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(databaseBackup, /--compress=zstd:9/);
   assert.match(databaseBackup, /pg_restore/);
   assert.match(databaseBackup, /--cipher-algo/);
+  assert.match(databaseBackup, /cleanup_old_backups/);
+  assert.match(databaseBackup, /OCI_BACKUP_RETENTION_DAYS/);
+  assert.match(backupEnv, /OCI_BACKUP_RETENTION_DAYS=30/);
   assert.match(databaseBackupUnit, /ReadWritePaths=\/var\/lib\/pgsql\/backup/);
   assert.doesNotMatch(`${compose}\n${dockerfile}`, /CLOUDFLARE_QUEUES_API_TOKEN=/);
   assert.doesNotMatch(compose, /TUNNEL_TOKEN:/);
@@ -685,6 +765,9 @@ test('header keamanan frontend mencakup kebijakan utama', async () => {
   assert.match(headers, /Reporting-Endpoints: csp-endpoint="\/api\/v1\/security\/csp-report"/);
   assert.match(headers, /report-uri \/api\/v1\/security\/csp-report/);
   assert.match(headers, /report-to csp-endpoint/);
+  assert.match(headers, /publickey-credentials-create=\(self\)/);
+  assert.match(headers, /publickey-credentials-get=\(self\)/);
+  assert.doesNotMatch(headers, /publickey-credentials-(?:create|get)=\(\)/);
   assert.doesNotMatch(headers, /cdnjs\.cloudflare\.com|xlsx\.full\.min\.js/);
   assert.equal(
     frontendPackage.dependencies.xlsx,
@@ -709,6 +792,41 @@ test('kode aplikasi tidak memakai eval atau penyisipan HTML mentah', async () =>
     source,
     /\beval\s*\(|new\s+Function\s*\(|\.innerHTML\s*=|\.outerHTML\s*=|insertAdjacentHTML\s*\(/
   );
+});
+
+test('oracle api hanya menjadi gateway dan domain service berjalan terpisah', async () => {
+  const compose = await readFile(resolve(root, 'deploy/oracle/compose.yaml'), 'utf8');
+  const proto = await readFile(resolve(root, 'services/eposyandu-proto/proto/microservices.proto'), 'utf8');
+  const gateway = await readFile(resolve(root, 'services/oracle-api/src/platform_client.rs'), 'utf8');
+  const domain = await readFile(resolve(root, 'services/oracle-domain/src/lib.rs'), 'utf8');
+  const dockerfile = await readFile(resolve(root, 'services/oracle-domain/Dockerfile'), 'utf8');
+  for (const service of ['identity-service', 'operations-service', 'realtime-service', 'monitoring-service']) {
+    assert.match(compose, new RegExp(`^  ${service}:`, 'm'));
+  }
+  assert.match(compose, /identity\.sock/);
+  assert.match(compose, /operations\.sock/);
+  assert.match(compose, /realtime\.sock/);
+  assert.match(compose, /monitoring\.sock/);
+  assert.match(proto, /service IdentityService/);
+  assert.match(proto, /service OperationsService/);
+  assert.match(proto, /service RealtimeService/);
+  assert.match(proto, /service MonitoringService/);
+  assert.match(gateway, /ORACLE_API_MICROSERVICES_ENABLED/);
+  assert.match(gateway, /IdentityServiceClient/);
+  assert.match(gateway, /OperationsServiceClient/);
+  assert.match(gateway, /RealtimeServiceClient/);
+  assert.match(gateway, /MonitoringServiceClient/);
+  assert.match(gateway, /unix:\/\/\/run\/e-posyandu/);
+  assert.match(gateway, /service_health/);
+  assert.match(domain, /pub struct IdentityDomain/);
+  assert.match(domain, /pub struct OperationsDomain/);
+  assert.match(domain, /pub struct RealtimeDomain/);
+  assert.match(domain, /pub struct MonitoringDomain/);
+  assert.match(dockerfile, /ARG SERVICE_DIR/);
+  assert.match(dockerfile, /ARG SERVICE_BIN/);
+  assert.match(compose, /\/var\/lib\/e-posyandu\/grpc:\/run\/e-posyandu:rw,z/);
+  assert.match(compose, /GRPC_ADDR:-unix:\/\/\/run\/e-posyandu\/nutrition\.sock/);
+  assert.match(await readFile(resolve(root, 'services/eposyandu-proto/src/lib.rs'), 'utf8'), /parse_listen_address/);
 });
 
 test('deployment diperiksa berkala dan backup hanya disimpan dalam bentuk terenkripsi', async () => {
@@ -834,6 +952,15 @@ test('skeleton awal mengikuti struktur aplikasi tanpa teks persiapan', async () 
   assert.match(skeleton, /app-loading-sidebar/);
   assert.match(skeleton, /app-loading-topbar/);
   assert.match(skeleton, /app-loading-mobile-dock/);
+  assert.match(skeleton, /login-loading-shell/);
+  assert.match(skeleton, /login-loading-card/);
+  assert.match(skeleton, /app-table-loading-row/);
+  assert.match(skeleton, /AdminAccountTableSkeleton/);
+  const initializeBlock = app.slice(app.indexOf('const initialize = async'));
+  assert.match(initializeBlock, /const activation = consumeAdminActivationTokens\(\);/);
+  assert.match(initializeBlock, /showLoading\(container\);/);
+  assert.ok(initializeBlock.indexOf('const activation = consumeAdminActivationTokens();') < initializeBlock.indexOf('showLoading(container);'));
+  assert.doesNotMatch(initializeBlock, /else showLoginLoading\(container\)/);
   assert.doesNotMatch(`${skeleton}\n${app}`, /Menyiapkan aplikasi/);
 });
 

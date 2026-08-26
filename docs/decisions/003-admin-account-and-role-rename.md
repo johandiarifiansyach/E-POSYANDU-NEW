@@ -101,10 +101,10 @@ sebaiknya diganti menjadi password unik yang kuat dan disimpan di password manag
    Oracle mencatat hasil `mfa_verified`. Sepuluh recovery code sudah dibuat dan
    hanya ditampilkan sekali; penyimpanannya secara offline menjadi tanggung
    jawab pemilik.
-6. Dukungan passkey sudah tersedia pada frontend dan API, tetapi fitur Passkeys
-   pada project Supabase Auth masih `disabled`. Aktifkan pengaturan tersebut di
-   Dashboard sebelum mendaftarkan passkey; TOTP adalah metode aktivasi yang dapat
-   digunakan saat ini.
+6. Dukungan passkey memakai endpoint Supabase Passkeys (`/auth/v1/passkeys/*`),
+   bukan endpoint MFA `/auth/v1/factors`. Fitur Passkeys pada project Supabase
+   Auth production masih `disabled`, sehingga harus diaktifkan pada Dashboard
+   sebelum passkey dapat didaftarkan. TOTP tetap menjadi faktor MFA cadangan.
 7. ~~Setelah login berhasil, pastikan pojok kanan atas menampilkan
    `Administrator`.~~ Selesai dan diverifikasi dari dashboard production.
 

@@ -43,7 +43,6 @@ const validSample = (value: unknown): value is AdminMonitoringSample => {
     if (!value || typeof value !== 'object') return false;
     const sample = value as Partial<AdminMonitoringSample>;
     return typeof sample.timestamp === 'string'
-        && finite(sample.sequence)
         && Boolean(sample.system)
         && finite(sample.system?.cpuPercent)
         && finite(sample.system?.memoryPercent)
@@ -152,12 +151,19 @@ export default function AdminMonitoringPanel() {
                 if (disposed) return;
                 try {
                     const parsed: unknown = JSON.parse(event.data);
+                    if (parsed && typeof parsed === 'object' && typeof (parsed as { error?: unknown }).error === 'string') {
+                        throw new Error((parsed as { error: string }).error);
+                    }
                     if (!validSample(parsed)) throw new Error('Format metrik tidak valid.');
-                    setSamples((current) => [...current, parsed].slice(-MAX_POINTS));
+                    const sample = parsed as AdminMonitoringSample;
+                    const sequence = finite(sample.sequence)
+                        ? sample.sequence
+                        : (samples[samples.length - 1]?.sequence || 0) + 1;
+                    setSamples((current) => [...current, { ...sample, sequence }].slice(-MAX_POINTS));
                     setStreamStatus('live');
                     setStreamError(null);
-                } catch {
-                    setStreamError('Data monitoring yang diterima tidak valid.');
+                } catch (error) {
+                    setStreamError(error instanceof Error ? error.message : 'Data monitoring yang diterima tidak valid.');
                 }
             });
             nextSource.onerror = () => {

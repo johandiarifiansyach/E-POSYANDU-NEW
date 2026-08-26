@@ -32,11 +32,11 @@ import {
 const {
     Native, useState, useEffect, useLayoutEffect, useMemo, useRef,
     getFirestore, collection, addDoc, query, where, onSnapshot, serverTimestamp,
-    updateDoc, doc, deleteDoc, getDocs, getDocsForExport, getCachedChildrenPage,
+    updateDoc, doc, deleteDoc, getDocs, getDocsForExport, getCachedChildrenPage, peekCachedChildrenPage,
     getChangeHistory, getChildDetail, getChildrenPage, getDashboardStats,
     getMonitoringStatus, getSigiziMeasurementExport, initializeApp, reportAccountPresence,
     listSyncConflicts, resolveSyncConflict, subscribeToSyncConflicts,
-    subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations,
+    subscribeToRealtime, subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations,
     orderBy, DATA_WILAYAH, ROLES, isFullAccessRole, DASHBOARD_TABS, COMPACT_SIDEBAR_MEDIA_QUERY,
     MONTHS, YEARS, formatChildName, getKBM, formatDate, formatIndoDate,
     formatIndoDateTime, getAgeInMonths, calculateZScore, calculateGiziStatus,
@@ -108,6 +108,7 @@ export const Dashboard = ({ user, onLogout }) => {
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const sidebarCollapsedRef = useRef(shouldDefaultToCompactSidebar());
     const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
+    const pmtLoadedRef = useRef(false);
     const [colorScheme, setColorScheme] = useState(() => getPreferredColorScheme());
     const [filterMonth, setFilterMonth] = useState(new Date().getMonth() + 1);
     const [filterYear, setFilterYear] = useState(new Date().getFullYear());
@@ -230,6 +231,30 @@ export const Dashboard = ({ user, onLogout }) => {
                 window.clearTimeout(refreshTimer);
         };
     }, [activeTab, isServerPagedChildTab]);
+    // Server-paged views and the dashboard do not have a local collection
+    // subscription, so they listen for a lightweight SSE change event and
+    // refetch only while the current tab is visible.
+    useEffect(() => {
+        if (activeTab === 'admin_backend')
+            return;
+        let refreshTimer;
+        const unsubscribe = subscribeToRealtime(() => {
+            if (refreshTimer !== undefined)
+                window.clearTimeout(refreshTimer);
+            refreshTimer = window.setTimeout(() => {
+                if (activeTab === 'change_history')
+                    setChangeHistoryRevision((revision) => revision + 1);
+                else if (isServerPagedChildTab || activeTab === 'dashboard' || activeTab === 'asi_eksklusif')
+                    setDataRevision((revision) => revision + 1);
+                refreshTimer = undefined;
+            }, 200);
+        });
+        return () => {
+            unsubscribe();
+            if (refreshTimer !== undefined)
+                window.clearTimeout(refreshTimer);
+        };
+    }, [activeTab, isServerPagedChildTab]);
     useEffect(() => {
         let current = true;
         const refreshConflicts = () => {
@@ -270,10 +295,6 @@ export const Dashboard = ({ user, onLogout }) => {
                 data = data.filter(c => c.posyandu === user.posyandu && c.desa === user.desa);
             else if (user.role === ROLES.BIDAN)
                 data = data.filter(c => c.desa === user.desa);
-            const now = new Date().getTime();
-            const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-            data.forEach(async (child) => { if (child.deletedAt && child.id && (now - child.deletedAt.toDate().getTime() > THIRTY_DAYS_MS))
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', child.id)); });
             data.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
             setChildren(data);
             setChildrenPageState({ status: 'success', data });
@@ -295,7 +316,8 @@ export const Dashboard = ({ user, onLogout }) => {
             return;
         let current = true;
         setChangeHistoryError(null);
-        setChangeHistoryPageState({ status: 'loading' });
+        if (changeHistoryPageState.status !== 'success')
+            setChangeHistoryPageState({ status: 'loading' });
         void getChangeHistory(changeHistoryPage, 10)
             .then(({ items, total }) => {
                 if (!current)
@@ -400,10 +422,28 @@ export const Dashboard = ({ user, onLogout }) => {
             setPagedChildrenPageState({ status: 'success', data: { items: mappedChildren, total: result.total } });
             setErrorMsg(null);
         };
-        setPagedChildrenPageState({ status: 'loading' });
-        void getChildrenPage(request)
-            .then(applyPage)
-            .catch(async (error) => {
+        const memoryCachedPage = peekCachedChildrenPage(request);
+        if (memoryCachedPage) {
+            // Keep the previous result visible while the current tab is
+            // revalidated; returning to a tab should never flash a skeleton.
+            applyPage(memoryCachedPage);
+        } else {
+            setPagedChildrenPageState({ status: 'loading' });
+        }
+        const canPrimePersistentCache = ['data_balita', 'recent', 'recycle_bin'].includes(activeTab);
+        void (async () => {
+            if (!memoryCachedPage && canPrimePersistentCache) {
+                try {
+                    const cachedPage = await getCachedChildrenPage(request);
+                    if (current && (cachedPage.items.length > 0 || cachedPage.total > 0))
+                        applyPage(cachedPage);
+                } catch (cacheError) {
+                    console.warn('Cache halaman balita belum tersedia:', cacheError);
+                }
+            }
+            try {
+                applyPage(await getChildrenPage(request));
+            } catch (error) {
             if (!current)
                 return;
             const message = error instanceof Error ? error.message : 'Permintaan tidak dapat diproses.';
@@ -425,7 +465,8 @@ export const Dashboard = ({ user, onLogout }) => {
             const pageError = `Gagal memuat data balita: ${message}`;
             setPagedChildrenPageState({ status: 'error', message: pageError });
             setErrorMsg(pageError);
-        });
+            }
+        })();
         return () => {
             current = false;
         };
@@ -455,7 +496,22 @@ export const Dashboard = ({ user, onLogout }) => {
         // Keep the browser cache separate from summaries produced by the old query.
         const requestKey = JSON.stringify(request);
         const cacheKey = `e-posyandu:dashboard-stats:v4:${requestKey}`;
-        setDashboardPageState({ status: 'loading' });
+        let cachedStats;
+        try {
+            const cached = window.localStorage.getItem(cacheKey);
+            if (cached)
+                cachedStats = JSON.parse(cached);
+        }
+        catch {
+            cachedStats = null;
+        }
+        if (cachedStats) {
+            setDashboardStats(cachedStats);
+            setDashboardPageState({ status: 'success', data: cachedStats });
+        }
+        else {
+            setDashboardPageState({ status: 'loading' });
+        }
         void getDashboardStats(request)
             .then((stats) => {
             if (!current)
@@ -529,13 +585,14 @@ export const Dashboard = ({ user, onLogout }) => {
     // Fetch PMT Programs (only active ones)
     useEffect(() => {
         if (activeTab !== 'pmt_program') {
-            setPmtPageState({ status: 'idle' });
             return;
         }
-        setPmtPageState({ status: 'loading' });
+        if (!pmtLoadedRef.current)
+            setPmtPageState({ status: 'loading' });
         const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'pmt_programs'));
         const unsubscribe = onSnapshot(q, (snapshot) => {
             const programs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            pmtLoadedRef.current = true;
             setPmtPrograms(programs);
             setPmtPageState({ status: 'success', data: programs });
         }, (error) => {

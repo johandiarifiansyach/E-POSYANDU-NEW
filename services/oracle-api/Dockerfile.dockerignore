@@ -2,5 +2,11 @@
 !services/oracle-api/Cargo.toml
 !services/oracle-api/Cargo.lock
 !services/oracle-api/src/**
+!services/eposyandu-proto/Cargo.toml
+!services/eposyandu-proto/Cargo.lock
+!services/eposyandu-proto/build.rs
+!services/eposyandu-proto/src/**
+!services/eposyandu-proto/proto/**
+!services/nutrition-grpc/proto/**
 !backend/openapi.json
 !backend/graphql-schema.graphql

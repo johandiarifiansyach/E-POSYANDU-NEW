@@ -49,14 +49,14 @@ const ORACLE_ORIGIN_HEADER: &str = "x-e-posyandu-origin";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AccessScope {
-    pub(crate) user_id: String,
-    pub(crate) email: Option<String>,
-    pub(crate) role: String,
-    pub(crate) desa: Option<String>,
-    pub(crate) posyandu: Option<String>,
+pub struct AccessScope {
+    pub user_id: String,
+    pub email: Option<String>,
+    pub role: String,
+    pub desa: Option<String>,
+    pub posyandu: Option<String>,
     #[serde(default = "default_access_mode")]
-    pub(crate) access_mode: String,
+    pub access_mode: String,
 }
 
 #[derive(Clone, Debug)]
@@ -184,8 +184,13 @@ struct MfaVerifyBody {
     challenge_id: Option<String>,
     factor_type: String,
     code: Option<String>,
-    operation: Option<String>,
-    credential_response: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PasskeyVerifyBody {
+    challenge_id: String,
+    credential: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -653,8 +658,13 @@ impl SessionStore {
             .map_err(|error| format!("Timeout database sesi tidak dapat diatur: {error}"))?;
         connection
             .execute_batch(
-                "PRAGMA journal_mode=WAL;
-                 PRAGMA synchronous=FULL;
+                // Semua domain service membuka store sesi yang sama. Jangan
+                // mengubah journal mode dari setiap proses saat startup:
+                // SQLite dapat mengembalikan SQLITE_PROTOCOL ketika beberapa
+                // container mengaktifkan WAL secara bersamaan. Mode journal
+                // yang sudah ada dipertahankan; busy_timeout di atas tetap
+                // memberi kesempatan pada transaksi pendek untuk selesai.
+                "PRAGMA synchronous=FULL;
                  PRAGMA foreign_keys=ON;
                  CREATE TABLE IF NOT EXISTS browser_sessions (
                     identifier_hash TEXT PRIMARY KEY,
@@ -1623,6 +1633,147 @@ impl SupabaseClient {
         .await
     }
 
+    async fn passkey_request<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        access_token: Option<&str>,
+        payload: Option<&Value>,
+    ) -> Result<T, NativeError> {
+        let url = self.url(path)?;
+        let mut request = self
+            .http
+            .request(method, url)
+            .header("apikey", &self.publishable_key)
+            .header(header::ACCEPT, "application/json");
+        request = match access_token {
+            Some(token) => request.bearer_auth(token),
+            None => request.bearer_auth(&self.publishable_key),
+        };
+        if let Some(payload) = payload {
+            request = request.json(payload);
+        }
+        let response = request.send().await.map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "passkey_unavailable",
+                "Layanan passkey belum tersedia.",
+            )
+        })?;
+        let upstream_code = response
+            .headers()
+            .get("x-sb-error-code")
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
+        let status = response.status();
+        let bytes = response.bytes().await.map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "passkey_unavailable",
+                "Respons layanan passkey tidak dapat dibaca.",
+            )
+        })?;
+        if !status.is_success() {
+            let body_code = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|body| {
+                    body.get("error_code")
+                        .or_else(|| body.get("code"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                });
+            let code = upstream_code.or(body_code).unwrap_or_default();
+            return Err(match code.as_str() {
+                "passkey_disabled" => NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "passkey_disabled",
+                    "Passkey belum diaktifkan pada project autentikasi.",
+                ),
+                "insufficient_aal" => NativeError::new(
+                    StatusCode::FORBIDDEN,
+                    "passkey_requires_mfa",
+                    "Verifikasi authenticator terlebih dahulu sebelum mendaftarkan passkey.",
+                ),
+                "webauthn_challenge_expired" => NativeError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "passkey_challenge_expired",
+                    "Permintaan passkey sudah kedaluwarsa. Silakan coba lagi.",
+                ),
+                _ if status == reqwest::StatusCode::TOO_MANY_REQUESTS => NativeError::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate_limited",
+                    "Terlalu banyak percobaan passkey. Silakan tunggu sebentar.",
+                ),
+                _ => NativeError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "passkey_failed",
+                    "Passkey tidak dapat diverifikasi. Periksa perangkat dan domain aplikasi lalu coba lagi.",
+                ),
+            });
+        }
+        serde_json::from_slice(&bytes).map_err(|_| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "invalid_upstream_response",
+                "Respons layanan passkey tidak dapat dibaca.",
+            )
+        })
+    }
+
+    async fn passkey_registration_options(&self, access_token: &str) -> Result<Value, NativeError> {
+        self.passkey_request(
+            Method::POST,
+            "auth/v1/passkeys/registration/options",
+            Some(access_token),
+            Some(&json!({})),
+        )
+        .await
+    }
+
+    async fn passkey_registration_verify(
+        &self,
+        access_token: &str,
+        challenge_id: &str,
+        credential: &Value,
+    ) -> Result<Value, NativeError> {
+        self.passkey_request(
+            Method::POST,
+            "auth/v1/passkeys/registration/verify",
+            Some(access_token),
+            Some(&json!({ "challenge_id": challenge_id, "credential": credential })),
+        )
+        .await
+    }
+
+    async fn passkey_authentication_options(&self) -> Result<Value, NativeError> {
+        self.passkey_request(
+            Method::POST,
+            "auth/v1/passkeys/authentication/options",
+            None,
+            Some(&json!({})),
+        )
+        .await
+    }
+
+    async fn passkey_authentication_verify(
+        &self,
+        challenge_id: &str,
+        credential: &Value,
+    ) -> Result<SupabaseSession, NativeError> {
+        self.passkey_request(
+            Method::POST,
+            "auth/v1/passkeys/authentication/verify",
+            None,
+            Some(&json!({ "challenge_id": challenge_id, "credential": credential })),
+        )
+        .await
+    }
+
+    async fn passkey_list(&self, access_token: &str) -> Result<Vec<Value>, NativeError> {
+        self.passkey_request(Method::GET, "auth/v1/passkeys", Some(access_token), None)
+            .await
+    }
+
     async fn logout(&self, access_token: &str) {
         let Ok(url) = self.url("auth/v1/logout") else {
             return;
@@ -2513,6 +2664,11 @@ impl NativeAuth {
             account.access_mode.clone(),
         )?;
         let requires_mfa = is_super_admin(&profile.role);
+        let factors = if requires_mfa {
+            Some(self.admin_mfa_factors(&session).await)
+        } else {
+            None
+        };
         let identifier = random_identifier(32);
         let browser_session = BrowserSession {
             access_token: session.access_token,
@@ -2543,20 +2699,7 @@ impl NativeAuth {
             .await;
 
         let payload = if requires_mfa {
-            let factors = session
-                .user
-                .factors
-                .iter()
-                .filter(|factor| factor.status == "verified")
-                .filter(|factor| matches!(factor.factor_type.as_str(), "totp" | "webauthn"))
-                .map(|factor| {
-                    json!({
-                        "id": factor.id,
-                        "type": factor.factor_type,
-                        "name": factor.friendly_name
-                    })
-                })
-                .collect::<Vec<_>>();
+            let factors = factors.unwrap_or_default();
             json!({
                 "mfaRequired": true,
                 "setupRequired": factors.is_empty(),
@@ -2583,24 +2726,40 @@ impl NativeAuth {
         Ok(response)
     }
 
-    fn webauthn_scope(&self) -> (String, Vec<String>) {
-        let rp_id = if self.development {
-            "localhost".to_owned()
-        } else {
-            "eposyandu.app".to_owned()
-        };
-        let origins = self
-            .allowed_origins
+    async fn admin_mfa_factors(&self, session: &SupabaseSession) -> Vec<Value> {
+        let mut factors = session
+            .user
+            .factors
             .iter()
-            .filter(|origin| {
-                Url::parse(origin)
-                    .ok()
-                    .and_then(|url| url.host_str().map(ToOwned::to_owned))
-                    .is_some_and(|host| host == rp_id || host.ends_with(&format!(".{rp_id}")))
+            .filter(|factor| factor.status == "verified")
+            .filter(|factor| factor.factor_type == "totp")
+            .map(|factor| {
+                json!({
+                    "id": factor.id,
+                    "type": "totp",
+                    "name": factor.friendly_name
+                })
             })
-            .cloned()
             .collect::<Vec<_>>();
-        (rp_id, origins)
+
+        // Supabase passkeys are credentials, not MFA factors. Include them in
+        // the pending administrator response so the UI can choose the correct
+        // passkey ceremony without pretending they are `/factors` records.
+        match self.supabase.passkey_list(&session.access_token).await {
+            Ok(passkeys) => factors.extend(passkeys.into_iter().filter_map(|passkey| {
+                let id = passkey.get("id").and_then(Value::as_str)?.to_owned();
+                Some(json!({
+                    "id": id,
+                    "type": "webauthn",
+                    "name": passkey.get("friendly_name").cloned().unwrap_or(Value::Null)
+                }))
+            })),
+            Err(error_value) if error_value.code == "passkey_disabled" => {}
+            Err(error_value) => {
+                warn!(code = error_value.code, "daftar passkey tidak dapat dimuat");
+            }
+        }
+        factors
     }
 
     async fn mfa_body<T: DeserializeOwned>(&self, request: Request) -> Result<T, NativeError> {
@@ -2686,6 +2845,11 @@ impl NativeAuth {
             ));
         }
 
+        let factors = if requires_mfa {
+            Some(self.admin_mfa_factors(&session).await)
+        } else {
+            None
+        };
         let identifier = random_identifier(32);
         self.sessions.put(
             &identifier,
@@ -2723,21 +2887,8 @@ impl NativeAuth {
                 },
             )
             .await;
-        let factors = session
-            .user
-            .factors
-            .iter()
-            .filter(|factor| factor.status == "verified")
-            .filter(|factor| matches!(factor.factor_type.as_str(), "totp" | "webauthn"))
-            .map(|factor| {
-                json!({
-                    "id": factor.id,
-                    "type": factor.factor_type,
-                    "name": factor.friendly_name
-                })
-            })
-            .collect::<Vec<_>>();
         let payload = if requires_mfa {
+            let factors = factors.unwrap_or_default();
             json!({
                 "mfaRequired": true,
                 "setupRequired": factors.is_empty(),
@@ -2777,9 +2928,7 @@ impl NativeAuth {
         let headers = request.headers().clone();
         let body: MfaEnrollBody = self.mfa_body(request).await?;
         let (_, session) = self.browser_session(headers, false).await?;
-        if !is_super_admin(&session.profile.role)
-            || !matches!(body.factor_type.as_str(), "totp" | "webauthn")
-        {
+        if !is_super_admin(&session.profile.role) || body.factor_type != "totp" {
             return Err(NativeError::new(
                 StatusCode::FORBIDDEN,
                 "forbidden",
@@ -2807,7 +2956,7 @@ impl NativeAuth {
         let (_, session) = self.browser_session(headers, false).await?;
         if !is_super_admin(&session.profile.role)
             || !valid_uuid(&body.factor_id)
-            || !matches!(body.factor_type.as_str(), "totp" | "webauthn")
+            || body.factor_type != "totp"
         {
             return Err(NativeError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -2815,22 +2964,7 @@ impl NativeAuth {
                 "Faktor verifikasi tidak valid.",
             ));
         }
-        let payload = if body.factor_type == "webauthn" {
-            let (rp_id, rp_origins) = self.webauthn_scope();
-            if rp_origins.is_empty() {
-                return Err(NativeError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "webauthn_unavailable",
-                    "Passkey belum dikonfigurasi untuk alamat aplikasi ini.",
-                ));
-            }
-            json!({
-                "factorId": body.factor_id,
-                "webauthn": { "rpId": rp_id, "rpOrigins": rp_origins }
-            })
-        } else {
-            json!({ "factorId": body.factor_id })
-        };
+        let payload = json!({ "factorId": body.factor_id });
         let challenge = self
             .supabase
             .mfa_challenge(&session.access_token, &body.factor_id, &payload)
@@ -2858,6 +2992,13 @@ impl NativeAuth {
                 StatusCode::FORBIDDEN,
                 "forbidden",
                 "Verifikasi administrator tidak diizinkan.",
+            ));
+        }
+        if !matches!(body.factor_type.as_str(), "totp" | "recovery") {
+            return Err(NativeError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "validation_error",
+                "Metode verifikasi tidak valid.",
             ));
         }
 
@@ -2904,62 +3045,19 @@ impl NativeAuth {
                         "Challenge verifikasi tidak valid.",
                     )
                 })?;
-            let payload = match body.factor_type.as_str() {
-                "totp" => {
-                    let code = body
-                        .code
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|value| {
-                            value.len() == 6 && value.bytes().all(|byte| byte.is_ascii_digit())
-                        })
-                        .ok_or_else(|| {
-                            NativeError::new(
-                                StatusCode::UNPROCESSABLE_ENTITY,
-                                "validation_error",
-                                "Kode authenticator harus berisi 6 angka.",
-                            )
-                        })?;
-                    json!({ "challenge_id": challenge_id, "code": code })
-                }
-                "webauthn" => {
-                    let operation = body
-                        .operation
-                        .as_deref()
-                        .filter(|value| matches!(*value, "create" | "request"))
-                        .ok_or_else(|| {
-                            NativeError::new(
-                                StatusCode::UNPROCESSABLE_ENTITY,
-                                "validation_error",
-                                "Operasi passkey tidak valid.",
-                            )
-                        })?;
-                    let credential = body.credential_response.as_ref().ok_or_else(|| {
-                        NativeError::new(
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            "validation_error",
-                            "Respons passkey tidak tersedia.",
-                        )
-                    })?;
-                    let (rp_id, rp_origins) = self.webauthn_scope();
-                    json!({
-                        "challenge_id": challenge_id,
-                        "webauthn": {
-                            "type": operation,
-                            "rpId": rp_id,
-                            "rpOrigins": rp_origins,
-                            "credential_response": credential
-                        }
-                    })
-                }
-                _ => {
-                    return Err(NativeError::new(
+            let code = body
+                .code
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| value.len() == 6 && value.bytes().all(|byte| byte.is_ascii_digit()))
+                .ok_or_else(|| {
+                    NativeError::new(
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "validation_error",
-                        "Metode verifikasi tidak valid.",
-                    ));
-                }
-            };
+                        "Kode authenticator harus berisi 6 angka.",
+                    )
+                })?;
+            let payload = json!({ "challenge_id": challenge_id, "code": code });
             let verified = self
                 .supabase
                 .mfa_verify(&session.access_token, factor_id, &payload)
@@ -2991,6 +3089,233 @@ impl NativeAuth {
             .audit_mfa(&session.profile, &body.factor_type)
             .await;
 
+        Ok(response_json(
+            StatusCode::OK,
+            json!({
+                "user": { "id": session.user.id, "email": session.user.email },
+                "profile": profile_payload(&session.profile),
+                "recoveryCodes": recovery_codes
+            }),
+        ))
+    }
+
+    pub(crate) async fn passkey_registration_options(&self, request: Request) -> Response {
+        match self.passkey_registration_options_result(request).await {
+            Ok(response) => response,
+            Err(error_value) => error_value.into_response(),
+        }
+    }
+
+    async fn passkey_registration_options_result(
+        &self,
+        request: Request,
+    ) -> Result<Response, NativeError> {
+        self.validate_origin(&request)?;
+        let headers = request.headers().clone();
+        let (_, session) = self.browser_session(headers, false).await?;
+        if !is_super_admin(&session.profile.role) {
+            return Err(NativeError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Pendaftaran passkey hanya tersedia untuk administrator.",
+            ));
+        }
+        let challenge = self
+            .supabase
+            .passkey_registration_options(&session.access_token)
+            .await?;
+        let challenge_id = challenge
+            .get("challenge_id")
+            .and_then(Value::as_str)
+            .filter(|value| valid_uuid(value))
+            .ok_or_else(|| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "invalid_upstream_response",
+                    "Challenge pendaftaran passkey tidak valid.",
+                )
+            })?;
+        let options = challenge.get("options").cloned().ok_or_else(|| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "invalid_upstream_response",
+                "Opsi pendaftaran passkey tidak tersedia.",
+            )
+        })?;
+        Ok(response_json(
+            StatusCode::OK,
+            json!({
+                "challenge": {
+                    "id": challenge_id,
+                    "options": options,
+                    "expiresAt": challenge.get("expires_at").cloned().unwrap_or(Value::Null)
+                }
+            }),
+        ))
+    }
+
+    pub(crate) async fn passkey_registration_verify(&self, request: Request) -> Response {
+        match self.passkey_registration_verify_result(request).await {
+            Ok(response) => response,
+            Err(error_value) => error_value.into_response(),
+        }
+    }
+
+    async fn passkey_registration_verify_result(
+        &self,
+        request: Request,
+    ) -> Result<Response, NativeError> {
+        self.validate_origin(&request)?;
+        let headers = request.headers().clone();
+        let body: PasskeyVerifyBody = self.mfa_body(request).await?;
+        if !valid_uuid(&body.challenge_id) || !body.credential.is_object() {
+            return Err(NativeError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "validation_error",
+                "Data verifikasi passkey tidak valid.",
+            ));
+        }
+        let (identifier, mut session) = self.browser_session(headers, false).await?;
+        if !is_super_admin(&session.profile.role) {
+            return Err(NativeError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Pendaftaran passkey hanya tersedia untuk administrator.",
+            ));
+        }
+        self.supabase
+            .passkey_registration_verify(
+                &session.access_token,
+                &body.challenge_id,
+                &body.credential,
+            )
+            .await?;
+        let recovery_codes = self
+            .sessions
+            .ensure_recovery_codes(&session.profile.user_id)?;
+        session.mfa_verified = true;
+        session.mfa_pending_expires_at = None;
+        session.updated_at = now_iso();
+        self.sessions.put(&identifier, &session)?;
+        self.sessions
+            .touch_presence(&session.profile.user_id, &identifier)?;
+        self.supabase.audit_mfa(&session.profile, "webauthn").await;
+        Ok(response_json(
+            StatusCode::OK,
+            json!({
+                "user": { "id": session.user.id, "email": session.user.email },
+                "profile": profile_payload(&session.profile),
+                "recoveryCodes": recovery_codes
+            }),
+        ))
+    }
+
+    pub(crate) async fn passkey_authentication_options(&self, request: Request) -> Response {
+        match self.passkey_authentication_options_result(request).await {
+            Ok(response) => response,
+            Err(error_value) => error_value.into_response(),
+        }
+    }
+
+    async fn passkey_authentication_options_result(
+        &self,
+        request: Request,
+    ) -> Result<Response, NativeError> {
+        self.validate_origin(&request)?;
+        let headers = request.headers().clone();
+        let (_, session) = self.browser_session(headers, false).await?;
+        if !is_super_admin(&session.profile.role) {
+            return Err(NativeError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Verifikasi passkey hanya tersedia untuk administrator.",
+            ));
+        }
+        let challenge = self.supabase.passkey_authentication_options().await?;
+        let challenge_id = challenge
+            .get("challenge_id")
+            .and_then(Value::as_str)
+            .filter(|value| valid_uuid(value))
+            .ok_or_else(|| {
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "invalid_upstream_response",
+                    "Challenge autentikasi passkey tidak valid.",
+                )
+            })?;
+        let options = challenge.get("options").cloned().ok_or_else(|| {
+            NativeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "invalid_upstream_response",
+                "Opsi autentikasi passkey tidak tersedia.",
+            )
+        })?;
+        Ok(response_json(
+            StatusCode::OK,
+            json!({
+                "challenge": {
+                    "id": challenge_id,
+                    "options": options,
+                    "expiresAt": challenge.get("expires_at").cloned().unwrap_or(Value::Null)
+                }
+            }),
+        ))
+    }
+
+    pub(crate) async fn passkey_authentication_verify(&self, request: Request) -> Response {
+        match self.passkey_authentication_verify_result(request).await {
+            Ok(response) => response,
+            Err(error_value) => error_value.into_response(),
+        }
+    }
+
+    async fn passkey_authentication_verify_result(
+        &self,
+        request: Request,
+    ) -> Result<Response, NativeError> {
+        self.validate_origin(&request)?;
+        let headers = request.headers().clone();
+        let body: PasskeyVerifyBody = self.mfa_body(request).await?;
+        if !valid_uuid(&body.challenge_id) || !body.credential.is_object() {
+            return Err(NativeError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "validation_error",
+                "Data verifikasi passkey tidak valid.",
+            ));
+        }
+        let (identifier, mut session) = self.browser_session(headers, false).await?;
+        if !is_super_admin(&session.profile.role) {
+            return Err(NativeError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Verifikasi passkey hanya tersedia untuk administrator.",
+            ));
+        }
+        let verified = self
+            .supabase
+            .passkey_authentication_verify(&body.challenge_id, &body.credential)
+            .await?;
+        if verified.user.id != session.profile.user_id {
+            self.supabase.logout(&verified.access_token).await;
+            return Err(NativeError::new(
+                StatusCode::UNAUTHORIZED,
+                "passkey_account_mismatch",
+                "Passkey tersebut bukan milik akun administrator yang sedang masuk.",
+            ));
+        }
+        session.access_token = verified.access_token;
+        session.refresh_token = verified.refresh_token;
+        session.user = verified.user;
+        let recovery_codes = self
+            .sessions
+            .ensure_recovery_codes(&session.profile.user_id)?;
+        session.mfa_verified = true;
+        session.mfa_pending_expires_at = None;
+        session.updated_at = now_iso();
+        self.sessions.put(&identifier, &session)?;
+        self.sessions
+            .touch_presence(&session.profile.user_id, &identifier)?;
+        self.supabase.audit_mfa(&session.profile, "webauthn").await;
         Ok(response_json(
             StatusCode::OK,
             json!({
@@ -3050,6 +3375,16 @@ impl NativeAuth {
             ));
         }
         Ok(session)
+    }
+
+    /// Returns only the authorization scope for domain services that expose a
+    /// stream over gRPC. The access token and refresh token never cross the
+    /// service boundary.
+    pub(crate) async fn authorize_scope(
+        &self,
+        headers: HeaderMap,
+    ) -> Result<AccessScope, Response> {
+        self.authorize(headers).await.map(|session| session.scope)
     }
 
     pub(crate) async fn require_verified_admin(&self, headers: HeaderMap) -> Result<(), Response> {

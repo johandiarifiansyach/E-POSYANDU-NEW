@@ -15,6 +15,7 @@ export {
   query,
   resolveSyncConflict,
   serverTimestamp,
+  subscribeToRealtime,
   subscribeToSyncConflicts,
   subscribeToSyncState,
   subscribeToSyncedMutations,
