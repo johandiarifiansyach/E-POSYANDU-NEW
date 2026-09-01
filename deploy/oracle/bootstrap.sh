@@ -337,11 +337,27 @@ elif [[ "$deployment_service" == "all" ]]; then
     --env-file /etc/e-posyandu/nutrition-grpc.env \
     up --detach --no-build --remove-orphans
 else
+  # podman-compose refuses to replace a running container while health-proxy
+  # keeps a dependency reference to it.  Remove that dependency tree first;
+  # the proxy is recreated immediately after the target worker below.
+  if [[ "$container_engine" == "podman" && "$deployment_service" == "data-processing-worker" ]]; then
+    worker_container="e-posyandu-oracle_data-processing-worker_1"
+    if podman container exists "$worker_container"; then
+      podman rm --force --depend "$worker_container" >&2
+    fi
+  fi
   "${compose_command[@]}" \
     --project-name e-posyandu-oracle \
     --file "$compose_file" \
     --env-file /etc/e-posyandu/nutrition-grpc.env \
     up --detach --no-deps --build "$deployment_service"
+  if [[ "$container_engine" == "podman" && "$deployment_service" == "data-processing-worker" ]]; then
+    "${compose_command[@]}" \
+      --project-name e-posyandu-oracle \
+      --file "$compose_file" \
+      --env-file /etc/e-posyandu/nutrition-grpc.env \
+      up --detach --no-build health-proxy
+  fi
 fi
 
 health_site="$(sed -n 's/^ORACLE_HEALTH_SITE=//p' /etc/e-posyandu/nutrition-grpc.env | tail -n 1)"
