@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import math
+import re
 from typing import Any
 
 from . import who
@@ -100,13 +101,60 @@ def _positive_value(point: dict[str, Any], key: str) -> float | None:
     return value if value is not None and value > 0 else None
 
 
-def _chart_spec(chart_type: str, sex: str, points: list[dict[str, Any]]) -> tuple[str, str, str, str, list[tuple[float, list[float]]], list[tuple[float, float, str]]]:
+def _measurement_date(point: dict[str, Any]) -> str:
+    return str(point.get("measurement_date", point.get("measurementDate", "")) or "")
+
+
+def _weight_gain_status(point: dict[str, Any]) -> str:
+    value = point.get("weight_gain_status")
+    if value is None:
+        value = point.get("weightGainStatus", point.get("statusNaik", point.get("status_naik", "")))
+    return str(value or "").strip().upper()
+
+
+def _month_index(value: Any) -> int | None:
+    match = re.match(r"^(\d{4})-(\d{2})", str(value or ""))
+    if not match:
+        return None
+    year, month = int(match.group(1)), int(match.group(2))
+    if not 1 <= month <= 12:
+        return None
+    return year * 12 + month
+
+
+def _child_segments(ordered: list[tuple[float, float, str, str]]) -> list[list[tuple[float, float, str, str]]]:
+    """Split the child trajectory at missing months and non-measured (O) points."""
+
+    segments: list[list[tuple[float, float, str, str]]] = []
+    segment: list[tuple[float, float, str, str]] = []
+    previous: tuple[float, float, str, str] | None = None
+    for point in ordered:
+        if segment and previous is not None:
+            previous_month = _month_index(previous[2])
+            current_month = _month_index(point[2])
+            month_gap = (
+                previous_month is not None
+                and current_month is not None
+                and current_month - previous_month > 1
+            )
+            status_break = previous[3] == "O" or point[3] == "O"
+            if month_gap or status_break:
+                segments.append(segment)
+                segment = []
+        segment.append(point)
+        previous = point
+    if segment:
+        segments.append(segment)
+    return segments
+
+
+def _chart_spec(chart_type: str, sex: str, points: list[dict[str, Any]]) -> tuple[str, str, str, str, list[tuple[float, list[float]]], list[tuple[float, float, str, str]]]:
     reference = who.standards()
     normalized_sex = "P" if str(sex).upper() == "P" else "L"
     if chart_type == "bbu":
-        return "Berat Badan menurut Umur (BB/U)", "Umur (bulan)", "Berat badan (kg)", "kg", [(float(i), row) for i, row in enumerate(reference["weightForAge"][normalized_sex])], [(float(_age_months(p)), _positive_value(p, "weight"), p.get("measurement_date", "")) for p in points if _age_months(p) is not None and _positive_value(p, "weight") is not None]
+        return "Berat Badan menurut Umur (BB/U)", "Umur (bulan)", "Berat badan (kg)", "kg", [(float(i), row) for i, row in enumerate(reference["weightForAge"][normalized_sex])], [(float(_age_months(p)), _positive_value(p, "weight"), _measurement_date(p), _weight_gain_status(p)) for p in points if _age_months(p) is not None and _positive_value(p, "weight") is not None]
     if chart_type == "tbu":
-        return "Panjang/Tinggi Badan menurut Umur (PB atau TB/U)", "Umur (bulan)", "Panjang/tinggi badan (cm)", "cm", [(float(i), row) for i, row in enumerate(reference["lengthHeightForAge"][normalized_sex])], [(float(_age_months(p)), _positive_value(p, "height"), p.get("measurement_date", "")) for p in points if _age_months(p) is not None and _positive_value(p, "height") is not None]
+        return "Panjang/Tinggi Badan menurut Umur (PB atau TB/U)", "Umur (bulan)", "Panjang/tinggi badan (cm)", "cm", [(float(i), row) for i, row in enumerate(reference["lengthHeightForAge"][normalized_sex])], [(float(_age_months(p)), _positive_value(p, "height"), _measurement_date(p), _weight_gain_status(p)) for p in points if _age_months(p) is not None and _positive_value(p, "height") is not None]
     if chart_type == "imtu":
         rows = [(float(i), row) for i, row in enumerate(reference["bmiForAge"][normalized_sex])]
         chart_points = []
@@ -115,7 +163,7 @@ def _chart_spec(chart_type: str, sex: str, points: list[dict[str, Any]]) -> tupl
             if age is not None and weight is not None and weight > 0 and height is not None and height > 0:
                 adjusted = who.adjusted_length_height(height, int(round(age)), str(point.get("measurement_method", point.get("measurementMethod", "")) or ""))
                 if adjusted > 0:
-                    chart_points.append((age, weight / (adjusted / 100) ** 2, point.get("measurement_date", "")))
+                    chart_points.append((age, weight / (adjusted / 100) ** 2, _measurement_date(point), _weight_gain_status(point)))
         return "Indeks Massa Tubuh menurut Umur (IMT/U)", "Umur (bulan)", "IMT (kg/m²)", "kg/m²", rows, chart_points
     if chart_type in ("lilau", "lku"):
         indicator = "lila" if chart_type == "lilau" else "lk"
@@ -123,7 +171,7 @@ def _chart_spec(chart_type: str, sex: str, points: list[dict[str, Any]]) -> tupl
         label = "Lingkar Lengan Atas menurut Umur (LILA/U)" if chart_type == "lilau" else "Lingkar Kepala menurut Umur (LK/U)"
         y_label = "Lingkar lengan atas (cm)" if chart_type == "lilau" else "Lingkar kepala (cm)"
         rows = [(float(row[0]), row[1:]) for row in who.circumference_standards().get(indicator, {}).get(normalized_sex, [])]
-        chart_points = [(float(_age_months(p)), _positive_value(p, value_key), p.get("measurement_date", "")) for p in points if _age_months(p) is not None and _positive_value(p, value_key) is not None]
+        chart_points = [(float(_age_months(p)), _positive_value(p, value_key), _measurement_date(p), _weight_gain_status(p)) for p in points if _age_months(p) is not None and _positive_value(p, value_key) is not None]
         return label, "Umur (bulan)", y_label, "cm", rows, chart_points
     if chart_type == "bbtb":
         ages = [_age_months(p) for p in points if _age_months(p) is not None]
@@ -143,7 +191,7 @@ def _chart_spec(chart_type: str, sex: str, points: list[dict[str, Any]]) -> tupl
                 continue
             adjusted = who.adjusted_length_height(height, int(round(age)), str(point.get("measurement_method", point.get("measurementMethod", "")) or ""))
             if adjusted >= minimum and adjusted <= rows[-1][0]:
-                chart_points.append((adjusted, weight, point.get("measurement_date", "")))
+                chart_points.append((adjusted, weight, _measurement_date(point), _weight_gain_status(point)))
         return ("Berat Badan menurut Panjang Badan (BB/PB)" if use_length else "Berat Badan menurut Tinggi Badan (BB/TB)"), ("Panjang badan (cm)" if use_length else "Tinggi badan (cm)"), "Berat badan (kg)", "kg", rows, chart_points
     raise ValueError("Jenis grafik pertumbuhan tidak didukung.")
 
@@ -157,7 +205,7 @@ def render_growth_chart(chart_type: str, sex: str, points: list[dict[str, Any]],
         raise ValueError("Bahasa grafik yang tersedia saat ini adalah Indonesia.")
     title, x_label, y_label, unit, reference, child_points = _chart_spec(chart_type, sex, points)
     curve_values = [_inverse_lms(z, lms) for _, lms in reference for z in CURVE_Z]
-    point_values = [value for _, value, _ in child_points]
+    point_values = [value for _, value, _, _ in child_points]
     y_min, y_max, y_step = _bounds(curve_values + point_values)
     x_min, x_max = reference[0][0], reference[-1][0]
     plot_left, plot_top = MARGIN_LEFT, MARGIN_TOP
@@ -202,8 +250,9 @@ def render_growth_chart(chart_type: str, sex: str, points: list[dict[str, Any]],
     # Child observations are joined chronologically for the growth trajectory.
     ordered = sorted(child_points, key=lambda item: (item[0], str(item[2])))
     if ordered:
-        parts.append(f'<path d="{_path([(sx(x_value), sy(value)) for x_value, value, _ in ordered])}" fill="none" stroke="#2563eb" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>')
-        for x_value, value, date in ordered:
+        for segment in _child_segments(ordered):
+            parts.append(f'<path d="{_path([(sx(x_value), sy(value)) for x_value, value, _, _ in segment])}" fill="none" stroke="#2563eb" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>')
+        for x_value, value, date, _ in ordered:
             parts.append(f'<circle cx="{sx(x_value):.2f}" cy="{sy(value):.2f}" r="5" fill="#2563eb" stroke="#ffffff" stroke-width="2"><title>{_escape(date)}: {value:.2f} {unit}</title></circle>')
     else:
         parts.append(f'<text x="{plot_left + plot_width / 2:.2f}" y="{plot_top + plot_height / 2:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#64748b">Belum ada titik pengukuran yang dapat diplot</text>')

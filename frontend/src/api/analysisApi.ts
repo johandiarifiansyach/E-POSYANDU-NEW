@@ -165,6 +165,7 @@ export async function requestPythonGrowthChart(child, history, chartType) {
         headCircumferenceCm: numberOrNull(item.lk),
         measurementMethod: item.caraUkur || null,
         measurementDate: date,
+        weightGainStatus: weightGainStatusValue(item),
       };
     });
   return apiRequest('/analysis/growth-chart', {

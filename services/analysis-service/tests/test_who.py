@@ -38,6 +38,22 @@ class WhoCalculatorTests(unittest.TestCase):
         )
         self.assertNotIn("2026-08-01: 0.00 kg", missing_weight)
 
+    def test_python_renderer_breaks_child_line_at_missing_month_and_status_o(self):
+        svg = charts.render_growth_chart(
+            "bbu",
+            "P",
+            [
+                {"age_months": 48, "weight_kg": 12.0, "measurement_date": "2026-01-01", "weight_gain_status": "N"},
+                # February has no measurement, so January and March must not connect.
+                {"age_months": 50, "weight_kg": 12.4, "measurement_date": "2026-03-01", "weight_gain_status": "N"},
+                # An O point is a non-measured month and must stand alone as a marker.
+                {"age_months": 51, "weight_kg": 12.5, "measurement_date": "2026-04-01", "weight_gain_status": "O"},
+                {"age_months": 52, "weight_kg": 12.7, "measurement_date": "2026-05-01", "weight_gain_status": "N"},
+            ],
+        )
+        # Four isolated trajectory segments: Jan, Mar, Apr (O), and May.
+        self.assertEqual(svg.count('stroke="#2563eb"'), 4)
+
     def test_renderer_rejects_unknown_chart_or_language(self):
         with self.assertRaises(ValueError):
             charts.render_growth_chart("unknown", "L", [])

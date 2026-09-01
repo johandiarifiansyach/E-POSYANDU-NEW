@@ -200,6 +200,7 @@ struct AnalysisItemInput {
     #[serde(alias = "head_circumference_cm")]
     head_circumference_cm: Option<f64>,
     measurement_date: Option<String>,
+    weight_gain_status: Option<String>,
     exclusive_breastfeeding: Option<String>,
     #[serde(default)]
     history: Vec<Value>,
@@ -313,6 +314,7 @@ fn chart_request(input: GrowthChartInput) -> Result<RenderGrowthChartRequest, St
                 head_circumference_cm: item.head_circumference_cm,
                 measurement_method: item.measurement_method,
                 measurement_date: item.measurement_date,
+                weight_gain_status: item.weight_gain_status,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

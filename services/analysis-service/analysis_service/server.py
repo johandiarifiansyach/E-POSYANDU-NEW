@@ -131,6 +131,7 @@ class AnalysisServicer(analysis_pb2_grpc.AnalysisServiceServicer):
                     "head_circumference_cm": _optional(point, "head_circumference_cm"),
                     "measurement_method": _optional(point, "measurement_method"),
                     "measurement_date": _optional(point, "measurement_date"),
+                    "weight_gain_status": _optional(point, "weight_gain_status"),
                 }
             )
         try:

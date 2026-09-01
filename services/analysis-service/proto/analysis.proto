@@ -74,6 +74,9 @@ message GrowthChartPoint {
   optional double head_circumference_cm = 5;
   optional string measurement_method = 6;
   optional string measurement_date = 7;
+  // Status penimbangan bulan tersebut (N/T/O).  O menandai tidak ditimbang
+  // dan dipakai renderer untuk memutus garis tren anak.
+  optional string weight_gain_status = 8;
 }
 
 message RenderGrowthChartRequest {

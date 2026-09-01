@@ -281,7 +281,7 @@ export default function GrowthChartsDialog({ child, history, onClose }) {
               Native.createElement('div', { className: 'growth-chart-python-warning', role: 'status' }, 'Grafik Python belum tersedia: ', chartState.error || 'kesalahan tidak diketahui.'),
               Native.createElement(GrowthCanvas, { model: activeModel })),
         Native.createElement('p', { className: 'growth-chart-footnote' },
-          `Garis menunjukkan -3, -2, median, +2, dan +3 SD standar WHO. ${activeModel.childPoints.length} titik hasil anak dihubungkan berdasarkan urutan pengukuran.`
+          `Garis menunjukkan -3, -2, median, +2, dan +3 SD standar WHO. ${activeModel.childPoints.length} titik hasil anak dihubungkan per segmen; garis biru terputus jika ada bulan tanpa pengukuran atau status O.`
         ),
         activeAnomalyCount > 0 && Native.createElement('div', { className: 'growth-chart-anomaly-note', role: 'alert' },
           `Ditemukan ${activeAnomalyCount} titik anomali: tinggi/panjang badan lebih rendah dari pengukuran sebelumnya. Periksa ulang alat dan cara ukur.`
