@@ -21,29 +21,24 @@
 	}
 }
 
-{$ORACLE_HEALTH_SITE} {
+{$ORACLE_API_SITE:http://api.invalid} {
 	@health path /health
 
 	handle @health {
 		reverse_proxy data-processing-worker:8080
 		header Cache-Control "no-store"
+		import health_security_headers
 	}
 
 	handle {
-		respond "Rute tidak ditemukan" 404
+		reverse_proxy oracle-api:8081 {
+			# Port publik masih dapat menerima trafik langsung selama transisi.
+			# Jangan percaya header alamat Cloudflare dari koneksi yang belum
+			# melalui Tunnel.
+			header_up -CF-Connecting-IP
+		}
+		import api_security_headers
 	}
-
-	import health_security_headers
-}
-
-{$ORACLE_API_SITE:http://api.invalid} {
-	reverse_proxy oracle-api:8081 {
-		# Port publik masih dapat menerima trafik langsung selama transisi. Jangan
-		# percaya header alamat Cloudflare dari koneksi yang belum melalui Tunnel.
-		header_up -CF-Connecting-IP
-	}
-
-	import api_security_headers
 }
 
 # Listener ini hanya berada di jaringan Compose dan menjadi satu-satunya origin
