@@ -1,6 +1,7 @@
 /** Python growth-risk, anomaly, and screening analysis via the private Queue. */
 // @ts-nocheck
-import { createBackgroundJob, waitForBackgroundJob } from './legacyClient';
+import { apiRequest, createBackgroundJob, waitForBackgroundJob } from './legacyClient';
+import { getAgeInMonths } from '../shared/dashboardUtils';
 
 function numberOrNull(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -60,6 +61,25 @@ function analysisItem(child, measurement, history) {
     nik: String(child?.nik || ''),
     history: historyPayload,
   };
+}
+
+/**
+ * Calculate WHO statuses synchronously through the authenticated operations
+ * gateway. The endpoint is batched so a table page performs one Python call,
+ * rather than one background job per child.
+ */
+export async function requestPythonAnthropometry(entries) {
+  const items = (entries || [])
+    .filter((entry) => entry?.measurement && entry?.child)
+    .map((entry, index) => ({
+      ...analysisItem(entry.child, entry.measurement, entry.history || []),
+      rowNumber: index + 1,
+    }));
+  if (!items.length) return { items: [], total: 0, calculator: 'python-deterministic-lms' };
+  return apiRequest('/analysis/anthropometry', {
+    method: 'POST',
+    body: JSON.stringify({ items }),
+  });
 }
 
 export async function requestMeasurementAnalysis(child, measurement, history) {
@@ -122,4 +142,39 @@ export async function requestGrowthAnalysis(child, history) {
     };
   }
   return requestMeasurementAnalysis(child, latest, measurements);
+}
+
+/**
+ * Render the selected WHO chart in the private Python service. This direct
+ * request is intentionally separate from the background ML job: chart data is
+ * small, deterministic, and should not wait behind the queue.
+ */
+export async function requestPythonGrowthChart(child, history, chartType) {
+  const points = (history || [])
+    .filter((item) => item?.tglUkur)
+    .slice()
+    .sort((left, right) => new Date(left.tglUkur).getTime() - new Date(right.tglUkur).getTime())
+    .map((item) => {
+      const date = String(item.tglUkur).slice(0, 10);
+      const parsedAge = Number(item.ageInMonths);
+      return {
+        ageMonths: Number.isFinite(parsedAge) ? parsedAge : getAgeInMonths(child?.tglLahir, new Date(`${date}T00:00:00`)),
+        weightKg: numberOrNull(item.bb),
+        heightCm: numberOrNull(item.tb),
+        lilaCm: numberOrNull(item.lila),
+        headCircumferenceCm: numberOrNull(item.lk),
+        measurementMethod: item.caraUkur || null,
+        measurementDate: date,
+      };
+    });
+  return apiRequest('/analysis/growth-chart', {
+    method: 'POST',
+    body: JSON.stringify({
+      chartType,
+      sex: String(child?.jk || '').toUpperCase() === 'P' ? 'P' : 'L',
+      childName: child?.nama || '',
+      language: 'id',
+      points,
+    }),
+  });
 }

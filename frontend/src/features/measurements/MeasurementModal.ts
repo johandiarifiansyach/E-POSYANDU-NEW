@@ -2,12 +2,13 @@
 import * as Context from '../../shared/dashboardContext';
 import { errorMessage, type PageState } from '../../shared/pageState';
 import { TableLoadingSkeleton } from '../../ui/skeleton';
+import { requestPythonAnthropometry } from '../../api/analysisApi';
 
 const {
     Native, useState, useEffect, useMemo, useRef, collection, addDoc,
     query, where, onSnapshot, serverTimestamp, updateDoc, doc, deleteDoc,
     getDocs, db, appId, formatDate, parseLocaleNumber, parseLocaleNumberForRange,
-    calculateZScore, calculateGiziStatus, showSuccess, Button, InputGroup,
+    getKBM, getAgeInMonths, calculateZScore, calculateGiziStatus, showSuccess, Button, InputGroup,
     Select, Badge, KenaikanBadge, StatusBadge, X, XCircle, ChevronLeft
 } = Context;
 
@@ -98,6 +99,36 @@ export const MeasurementModal = ({ child, onClose }) => {
         });
         return Array.from(monthlyMap.values()).sort((a, b) => new Date(b.tglUkur).getTime() - new Date(a.tglUkur).getTime());
     }, [history]);
+    const [pythonHistoryStatuses, setPythonHistoryStatuses] = useState({});
+    const pythonHistoryKey = useMemo(() => monthlyHistory
+        .map((item) => `${item?.id || ''}:${item?.tglUkur || ''}:${item?.bb || ''}:${item?.tb || ''}:${item?.lila || ''}:${item?.lk || ''}`)
+        .join('|'), [monthlyHistory]);
+    useEffect(() => {
+        let active = true;
+        const entries = monthlyHistory
+            .filter((item) => item?.bb !== null && item?.bb !== undefined && item?.bb !== '')
+            .map((measurement) => ({ child, measurement, history }));
+        if (!entries.length) {
+            setPythonHistoryStatuses({});
+            return () => { active = false; };
+        }
+        void requestPythonAnthropometry(entries)
+            .then((response) => {
+                if (!active) return;
+                const next = {};
+                (response.items || []).forEach((item) => {
+                    const entry = entries[Math.max(0, Number(item.rowNumber || 1) - 1)];
+                    const key = String(entry?.measurement?.id || entry?.measurement?.tglUkur || item.recordId || '');
+                    if (key) next[key] = item;
+                });
+                setPythonHistoryStatuses(next);
+            })
+            .catch(() => {
+                // Older gateways/offline mode retain the local display as a safe fallback.
+                if (active) setPythonHistoryStatuses({});
+            });
+        return () => { active = false; };
+    }, [child?.id, pythonHistoryKey, history]);
     useEffect(() => {
         if (activeMenu !== 'add')
             return;
@@ -256,9 +287,18 @@ export const MeasurementModal = ({ child, onClose }) => {
                                     year: 'numeric'
                                 });
                                 const ageAtHistory = getAgeInMonths(child.tglLahir, new Date(h.tglUkur));
-                                const stBbu = calculateGiziStatus(h.bb, 'BBU', ageAtHistory, child.jk);
-                                const stTbu = calculateGiziStatus(h.tb, 'TBU', ageAtHistory, child.jk, null, h.caraUkur);
-                                const stBbtb = calculateGiziStatus(h.bb, 'BBTB', ageAtHistory, child.jk, h.tb, h.caraUkur);
+                                const localStatuses = {
+                                    statusBbu: calculateGiziStatus(h.bb, 'BBU', ageAtHistory, child.jk),
+                                    statusTbu: calculateGiziStatus(h.tb, 'TBU', ageAtHistory, child.jk, null, h.caraUkur),
+                                    statusBbtb: calculateGiziStatus(h.bb, 'BBTB', ageAtHistory, child.jk, h.tb, h.caraUkur),
+                                };
+                                const pythonStatus = pythonHistoryStatuses[String(h.id || h.tglUkur || '')];
+                                const statuses = pythonStatus ? {
+                                    ...localStatuses,
+                                    statusBbu: pythonStatus.bbuStatus,
+                                    statusTbu: pythonStatus.tbuStatus,
+                                    statusBbtb: pythonStatus.bbtbStatus,
+                                } : localStatuses;
                                 return (Native.createElement("tr", { key: h.id || h.tglUkur, className: "ios-data-row text-slate-700" },
                                     Native.createElement("td", { className: "py-2 pr-4 font-semibold uppercase whitespace-nowrap" }, monthLabel),
                                     Native.createElement("td", { className: "py-2 pr-4 whitespace-nowrap" }, formatIndoDate(h.tglUkur)),
@@ -267,11 +307,11 @@ export const MeasurementModal = ({ child, onClose }) => {
                                     Native.createElement("td", { className: "py-2 px-2 text-center" }, h.lila || '-'),
                                     Native.createElement("td", { className: "py-2 px-2 text-center" }, h.lk || '-'),
                                     Native.createElement("td", { className: "py-2 px-2 text-center" },
-                                        Native.createElement(StatusBadge, { status: stBbu })),
+                                        Native.createElement(StatusBadge, { status: statuses.statusBbu })),
                                     Native.createElement("td", { className: "py-2 px-2 text-center" },
-                                        Native.createElement(StatusBadge, { status: stTbu })),
+                                        Native.createElement(StatusBadge, { status: statuses.statusTbu })),
                                     Native.createElement("td", { className: "py-2 px-2 text-center" },
-                                        Native.createElement(StatusBadge, { status: stBbtb })),
+                                        Native.createElement(StatusBadge, { status: statuses.statusBbtb })),
                                     Native.createElement("td", { className: "py-2 pl-2 text-center" },
                                         Native.createElement(KenaikanBadge, { status: h.statusNaik }))));
                             }))))))) : (Native.createElement("form", { onSubmit: handleSubmit, className: "space-y-6" },

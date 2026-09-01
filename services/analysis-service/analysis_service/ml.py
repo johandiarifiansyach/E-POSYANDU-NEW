@@ -815,9 +815,10 @@ def analyze_growth_graph(
 ) -> dict[str, Any]:
     """Summarize the growth graph in Python using an explainable ML baseline.
 
-    The browser remains responsible for rendering the WHO curves.  This
-    function reads the same chronological points and returns the interpretation
-    shown next to that graph.  It intentionally avoids a heavyweight training
+    The chart renderer in :mod:`charts` is responsible for rendering the WHO
+    curves from the same LMS tables.  This function reads the same chronological
+    points and returns the interpretation shown next to that graph.  It
+    intentionally avoids a heavyweight training
     dependency: the logistic-style coefficients are versioned and transparent,
     while the official WHO classification remains the deterministic LMS result.
     """

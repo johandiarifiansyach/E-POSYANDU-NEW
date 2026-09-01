@@ -6,6 +6,10 @@ package eposyandu.analysis.v1;
 // screening/anomaly analysis. Risk output is advisory and never a diagnosis.
 service AnalysisService {
   rpc CalculateBatch(CalculateBatchRequest) returns (CalculateBatchResponse);
+  // Render a WHO growth chart from the same LMS tables used by CalculateBatch.
+  // The response is SVG so the browser can display/download it without
+  // reimplementing the reference curves in JavaScript.
+  rpc RenderGrowthChart(RenderGrowthChartRequest) returns (RenderGrowthChartResponse);
 }
 
 message NutritionItem {
@@ -60,4 +64,32 @@ message CalculateBatchResponse {
   repeated NutritionAssessment items = 5;
   string standards_version = 6;
   string calculator = 7;
+}
+
+message GrowthChartPoint {
+  int32 age_months = 1;
+  double weight_kg = 2;
+  optional double height_cm = 3;
+  optional double lila_cm = 4;
+  optional double head_circumference_cm = 5;
+  optional string measurement_method = 6;
+  optional string measurement_date = 7;
+}
+
+message RenderGrowthChartRequest {
+  // One of: bbu, tbu, bbtb, imtu, lilau, lku.
+  string chart_type = 1;
+  string sex = 2;
+  repeated GrowthChartPoint points = 3;
+  optional string child_name = 4;
+  // Indonesian is the default. Other locales are reserved for a later
+  // translation pack and are rejected instead of silently mixing labels.
+  string language = 5;
+}
+
+message RenderGrowthChartResponse {
+  string chart_type = 1;
+  string svg = 2;
+  string standards_version = 3;
+  string renderer = 4;
 }

@@ -5,10 +5,45 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from analysis_service import ml, who
+from analysis_service import charts, ml, who
 
 
 class WhoCalculatorTests(unittest.TestCase):
+    def test_python_renderer_uses_same_who_tables_and_indonesian_labels(self):
+        svg = charts.render_growth_chart(
+            "bbu",
+            "P",
+            [{"age_months": 6, "weight_kg": 6.8, "measurement_date": "2026-08-01"}],
+            child_name="Balita Uji",
+        )
+        self.assertTrue(svg.startswith("<svg "))
+        self.assertIn("Berat Badan menurut Umur", svg)
+        self.assertIn("Perempuan", svg)
+        self.assertIn("Balita Uji", svg)
+        self.assertIn("median", svg)
+        self.assertIn("2026-08-01", svg)
+
+    def test_python_renderer_supports_weight_for_length_and_missing_points(self):
+        svg = charts.render_growth_chart(
+            "bbtb",
+            "L",
+            [{"age_months": 12, "weight_kg": 8.0, "height_cm": 74.5, "measurement_method": "Terlentang"}],
+        )
+        self.assertIn("BB/PB", svg)
+        self.assertIn("Panjang badan", svg)
+        empty = charts.render_growth_chart("lilau", "L", [])
+        self.assertIn("Belum ada titik pengukuran", empty)
+        missing_weight = charts.render_growth_chart(
+            "bbu", "L", [{"age_months": 12, "weight_kg": 0, "measurement_date": "2026-08-01"}]
+        )
+        self.assertNotIn("2026-08-01: 0.00 kg", missing_weight)
+
+    def test_renderer_rejects_unknown_chart_or_language(self):
+        with self.assertRaises(ValueError):
+            charts.render_growth_chart("unknown", "L", [])
+        with self.assertRaises(ValueError):
+            charts.render_growth_chart("bbu", "L", [], language="en")
+
     def test_lms_medians_are_zero_z_score(self):
         self.assertLess(abs(who.lms_z_score(3.3464, [0.3487, 3.3464, 0.14602])), 1e-10)
         self.assertLess(abs(who.lms_z_score(49.1477, [1.0, 49.1477, 0.0379])), 1e-10)

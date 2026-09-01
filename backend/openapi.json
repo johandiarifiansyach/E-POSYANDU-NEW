@@ -533,6 +533,68 @@
         }
       }
     },
+    "/api/v1/analysis/anthropometry": {
+      "post": {
+        "summary": "Menghitung status antropometri WHO melalui Python secara batch",
+        "operationId": "calculateAnthropometry",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["items"],
+                "properties": {
+                  "items": {
+                    "type": "array",
+                    "maxItems": 10000,
+                    "items": { "$ref": "#/components/schemas/AnthropometryInput" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Status dan skor-z WHO deterministik dari Python" },
+          "401": { "$ref": "#/components/responses/ApiError" },
+          "422": { "$ref": "#/components/responses/ApiError" },
+          "502": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
+    "/api/v1/analysis/growth-chart": {
+      "post": {
+        "summary": "Menggambar grafik pertumbuhan WHO sebagai SVG melalui Python",
+        "operationId": "renderGrowthChart",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["chartType", "sex", "points"],
+                "properties": {
+                  "chartType": { "type": "string", "enum": ["bbu", "tbu", "bbtb", "imtu", "lilau", "lku"] },
+                  "sex": { "type": "string", "enum": ["L", "P"] },
+                  "childName": { "type": "string" },
+                  "language": { "type": "string", "enum": ["id"] },
+                  "points": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/components/schemas/AnthropometryInput" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "SVG grafik WHO dan versi standar" },
+          "401": { "$ref": "#/components/responses/ApiError" },
+          "422": { "$ref": "#/components/responses/ApiError" },
+          "502": { "$ref": "#/components/responses/ApiError" }
+        }
+      }
+    },
     "/api/v1/jobs": {
       "post": {
         "summary": "Membuat pekerjaan berat untuk Queue dan gRPC worker",
@@ -812,6 +874,26 @@
       }
     },
     "schemas": {
+      "AnthropometryInput": {
+        "type": "object",
+        "description": "Data mentah pengukuran yang dihitung dengan tabel LMS WHO di service Python. Validasi rentang dilakukan oleh endpoint.",
+        "properties": {
+          "weightKg": { "type": ["number", "null"], "minimum": 0.1, "maximum": 60 },
+          "heightCm": { "type": ["number", "null"], "minimum": 10, "maximum": 220 },
+          "ageMonths": { "type": ["integer", "null"], "minimum": 0, "maximum": 60 },
+          "sex": { "type": "string", "enum": ["L", "P"] },
+          "measurementMethod": { "type": ["string", "null"] },
+          "rowNumber": { "type": ["integer", "null"], "minimum": 1 },
+          "recordId": { "type": ["string", "null"] },
+          "nik": { "type": ["string", "null"] },
+          "lilaCm": { "type": ["number", "null"], "minimum": 0.1, "maximum": 50 },
+          "headCircumferenceCm": { "type": ["number", "null"], "minimum": 0.1, "maximum": 80 },
+          "measurementDate": { "type": ["string", "null"], "format": "date" },
+          "exclusiveBreastfeeding": { "type": ["string", "null"] },
+          "history": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        },
+        "additionalProperties": false
+      },
       "Health": {
         "type": "object",
         "required": [

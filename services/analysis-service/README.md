@@ -15,6 +15,14 @@ anomali, serta prediksi risiko stunting, wasting, dan underweight. Setiap panggi
 mengirim metadata `x-eposyandu-service-token` yang sama dengan
 `RUST_WORKER_SHARED_SECRET`.
 
+RPC `RenderGrowthChart` menerima titik riwayat dan mengembalikan SVG grafik
+WHO berbahasa Indonesia. Gateway operasi menyediakan endpoint HTTP
+terautentikasi `/api/v1/analysis/anthropometry` (batch status) dan
+`/api/v1/analysis/growth-chart` (SVG). Dengan begitu tabel, ekspor tabel, dan
+grafik memakai hasil Python tanpa menghitung ulang LMS di browser. Fallback
+lokal hanya dipakai selama mode offline atau rollout gateway lama; setelah
+service Python aktif, hasil Python menjadi sumber utama.
+
 ## Menjalankan dengan Docker
 
 ```bash

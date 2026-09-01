@@ -1,10 +1,11 @@
 // @ts-nocheck
-import Native from '../runtime/dom';
+import Native, { useEffect, useMemo, useState } from '../runtime/dom';
 import { Badge, Button, DataTable, KenaikanBadge, Pagination, StatusBadge } from '../components';
 import { ChevronDown, FileDown, FileText, FileUp, Filter, Gift, Pencil, Plus, RotateCcw, Ruler, Search, Trash2, Utensils, X } from '../ui/icons';
 import { TableLoadingSkeleton } from '../ui/skeleton';
 import { Card, formatIndoDate, isFullAccessRole, MONTHS, ROLES } from './DashboardApp';
 import { getMeasurementStatuses } from '../features/measurements/measurementRules';
+import { requestPythonAnthropometry } from '../api/analysisApi';
 import { getPmtCategoryForTab } from '../features/children/childRules';
 import type { PageState } from '../shared/pageState';
 function getPageTitle(activeTab, filterMonth, filterYear) {
@@ -32,6 +33,38 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
     const pageLoading = resolvedState.status === 'loading';
     const pageError = resolvedState.status === 'error' ? resolvedState.message : null;
     const pageItems = resolvedState.status === 'success' ? resolvedState.data.items : paginatedData;
+    const [pythonStatuses, setPythonStatuses] = useState({});
+    const pythonBatchKey = useMemo(() => pageItems.map((child) => {
+        const measurement = monthlyMeasurements[child?.id];
+        return `${child?.id || ''}:${measurement?.id || ''}:${measurement?.tglUkur || ''}:${measurement?.bb || ''}:${measurement?.tb || ''}`;
+    }).join('|'), [pageItems, monthlyMeasurements]);
+    useEffect(() => {
+        let active = true;
+        const entries = pageItems
+            .map((child) => ({ child, measurement: monthlyMeasurements[child?.id] }))
+            .filter((entry) => entry.child?.id && entry.measurement && entry.measurement.bb !== null && entry.measurement.bb !== undefined && entry.measurement.bb !== '');
+        if (!entries.length) {
+            setPythonStatuses({});
+            return () => { active = false; };
+        }
+        void requestPythonAnthropometry(entries)
+            .then((response) => {
+                if (!active) return;
+                const next = {};
+                (response.items || []).forEach((item) => {
+                    const entry = entries[Math.max(0, Number(item.rowNumber || 1) - 1)];
+                    const key = String(entry?.child?.id || item.recordId || '');
+                    if (key) next[key] = item;
+                });
+                setPythonStatuses(next);
+            })
+            .catch(() => {
+                // Keep the deterministic local presentation while an older
+                // gateway or an offline browser is unavailable.
+                if (active) setPythonStatuses({});
+            });
+        return () => { active = false; };
+    }, [pythonBatchKey]);
     const totalItems = resolvedState.status === 'success' ? resolvedState.data.total : fallbackTotal;
     const totalPages = Math.ceil(totalItems / itemsPerPage);
     const identityColumnCount = 3 + (activeTab === 'recycle_bin' ? 1 : 0) + (isFullAccessRole(user.role) ? 1 : 0) + (user.role === ROLES.BIDAN || isFullAccessRole(user.role) ? 1 : 0);
@@ -170,7 +203,23 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                         const mpasiLog = mpasiLogs[child.id];
                         const hasMpasi = !!mpasiLog;
                         const measurement = monthlyMeasurements[child.id];
-                        const statuses = getMeasurementStatuses(measurement || {}, child, measurement?.tglUkur ? new Date(measurement.tglUkur) : currentFilterDate);
+                        const localStatuses = getMeasurementStatuses(measurement || {}, child, measurement?.tglUkur ? new Date(measurement.tglUkur) : currentFilterDate);
+                        const pythonStatus = pythonStatuses[String(child.id)];
+                        const statuses = pythonStatus ? {
+                            ...localStatuses,
+                            statusBbu: pythonStatus.bbuStatus,
+                            statusTbu: pythonStatus.tbuStatus,
+                            statusBbtb: pythonStatus.bbtbStatus,
+                            statusImtu: pythonStatus.imtuStatus,
+                            statusLilau: pythonStatus.lilaStatus,
+                            statusLku: pythonStatus.lkStatus,
+                            zScoreBbu: pythonStatus.bbuZScore,
+                            zScoreTbu: pythonStatus.tbuZScore,
+                            zScoreBbtb: pythonStatus.bbtbZScore,
+                            zScoreImtu: pythonStatus.imtuZScore,
+                            zScoreLilau: pythonStatus.lilaZScore,
+                            zScoreLku: pythonStatus.lkZScore,
+                        } : localStatuses;
                         const age = statuses.age;
                         const statusBbu = statuses.statusBbu;
                         const statusTbu = statuses.statusTbu;

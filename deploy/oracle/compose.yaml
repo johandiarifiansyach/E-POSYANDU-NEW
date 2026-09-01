@@ -69,10 +69,17 @@ services:
       ORACLE_REDIS_URL: redis://redis-cache:6379
       ORACLE_API_NATIVE_READS_ENABLED: "true"
       ORACLE_API_NATIVE_WRITES_ENABLED: "true"
+      # Operations service exposes the authenticated direct Python analysis
+      # endpoints. It shares the analysis UDS with the worker.
+      ANALYSIS_GRPC_ENABLED: ${ANALYSIS_GRPC_ENABLED:-true}
+      ANALYSIS_GRPC_URL: ${ANALYSIS_GRPC_URL:-unix:///run/e-posyandu/analysis.sock}
     expose:
       - "50053"
     depends_on:
-      - redis-cache
+      redis-cache:
+        condition: service_healthy
+      analysis-service:
+        condition: service_healthy
     volumes:
       - /var/lib/e-posyandu/oracle-api:/var/lib/e-posyandu-api:rw,z
       - /var/lib/e-posyandu/grpc:/run/e-posyandu:rw,z

@@ -7,6 +7,7 @@ import { MpasiModal } from '../features/breastfeeding/MpasiModal';
 import { PmtModal, PmtMonitoringModal } from '../features/pmt/modals';
 import { DeleteChildModal, AddChildModal } from '../features/children/modals';
 import { MeasurementModal } from '../features/measurements/MeasurementModal';
+import { requestPythonAnthropometry } from '../api/analysisApi';
 import { filterByLocation } from '../services/locationService';
 import { createSafeWorksheet, sanitizeImportedCellText, validateSpreadsheetFile } from '../services/xlsx';
 import {
@@ -987,12 +988,29 @@ export const Dashboard = ({ user, onLogout }) => {
                 }),
             ]);
             const measurementsByChild = latestMeasurementsByChild(measurements);
+            let pythonStatuses = {};
+            const analysisEntries = exportedChildren
+                .map((child) => ({ child, measurement: measurementsByChild[child?.id], history: [] }))
+                .filter((entry) => entry.child?.id && entry.measurement?.bb !== null && entry.measurement?.bb !== undefined && entry.measurement?.bb !== '');
+            try {
+                const response = await requestPythonAnthropometry(analysisEntries);
+                pythonStatuses = (response.items || []).reduce((result, item) => {
+                    const entry = analysisEntries[Math.max(0, Number(item.rowNumber || 1) - 1)];
+                    const key = String(entry?.child?.id || '');
+                    if (key) result[key] = item;
+                    return result;
+                }, {});
+            } catch (error) {
+                // Keep exports available while an older gateway is being rolled out.
+                console.warn('Status Python belum tersedia untuk ekspor; memakai fallback lokal.', error);
+            }
             const rows = getTableExportRows({
                 activeTab,
                 children: exportedChildren,
                 measurementsByChild,
                 referenceDate: currentFilterDate,
                 sortData: getSortedData,
+                pythonStatuses,
             });
             const worksheet = createSafeWorksheet(xlsx, [TABLE_EXPORT_HEADERS, ...rows]);
             const workbook = xlsx.utils.book_new();

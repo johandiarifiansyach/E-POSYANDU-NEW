@@ -103,9 +103,18 @@ export async function fetchExportChildren({ currentFilterDate, options = {}, ...
   return filterChildrenByAgeRange(children, 0, 59, currentFilterDate);
 }
 
-export function getMeasurementStatusesForExport(child, measurement, referenceDate) {
+export function getMeasurementStatusesForExport(child, measurement, referenceDate, pythonStatus = null) {
   const date = measurement?.tglUkur ? new Date(measurement.tglUkur) : referenceDate;
   const age = getAgeInMonths(child?.tglLahir, date);
+  if (pythonStatus) {
+    return {
+      age,
+      statusBbu: pythonStatus.bbuStatus,
+      statusTbu: pythonStatus.tbuStatus,
+      statusBbtb: pythonStatus.bbtbStatus,
+      statusImtu: pythonStatus.imtuStatus,
+    };
+  }
   return {
     age,
     statusBbu: calculateGiziStatus(measurement?.bb, 'BBU', age, child?.jk),
@@ -115,7 +124,7 @@ export function getMeasurementStatusesForExport(child, measurement, referenceDat
   };
 }
 
-export function filterChildrenForExportTab(activeTab, children, measurementsByChild, referenceDate) {
+export function filterChildrenForExportTab(activeTab, children, measurementsByChild, referenceDate, pythonStatuses = {}) {
   if (activeTab === 'problem_tidak_naik') return (children || []).filter((child) => measurementsByChild[child.id]?.statusNaik === 'T');
   const criteria = {
     problem_underweight: ['BBU', ['Berat Sangat Kurang', 'Berat Kurang']],
@@ -129,9 +138,8 @@ export function filterChildrenForExportTab(activeTab, children, measurementsByCh
     if (type === 'BBU' && !measurement?.bb) return false;
     if (type === 'TBU' && !measurement?.tb) return false;
     if (type === 'BBTB' && (!measurement?.bb || !measurement?.tb)) return false;
-    const { age } = getMeasurementStatusesForExport(child, measurement, referenceDate);
-    const statusValue = type === 'TBU' ? measurement.tb : measurement.bb;
-    const status = calculateGiziStatus(statusValue, type, age, child.jk, type === 'BBTB' ? measurement.tb : null, measurement.caraUkur);
+    const statuses = getMeasurementStatusesForExport(child, measurement, referenceDate, pythonStatuses[String(child.id)]);
+    const status = type === 'TBU' ? statuses.statusTbu : type === 'BBTB' ? statuses.statusBbtb : statuses.statusBbu;
     return labels.includes(status);
   });
 }
@@ -280,12 +288,12 @@ export const TABLE_EXPORT_HEADERS = [
   'Status PB/TB-U', 'Status BB/PB atau BB/TB', 'Status IMT/U',
 ];
 
-export function getTableExportRows({ activeTab, children, measurementsByChild, referenceDate, sortData = (items) => items }) {
-  const exportChildren = filterChildrenForExportTab(activeTab, children, measurementsByChild, referenceDate);
+export function getTableExportRows({ activeTab, children, measurementsByChild, referenceDate, sortData = (items) => items, pythonStatuses = {} }) {
+  const exportChildren = filterChildrenForExportTab(activeTab, children, measurementsByChild, referenceDate, pythonStatuses);
   return sortData(exportChildren).map((child, index) => {
     if (!child?.id) return [];
     const measurement = measurementsByChild[child.id];
-    const statuses = getMeasurementStatusesForExport(child, measurement, referenceDate);
+    const statuses = getMeasurementStatusesForExport(child, measurement, referenceDate, pythonStatuses[String(child.id)]);
     return [
       index + 1,
       child.nama,

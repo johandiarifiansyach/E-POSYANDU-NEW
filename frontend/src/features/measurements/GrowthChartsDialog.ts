@@ -3,7 +3,7 @@ import Native, { useEffect, useMemo, useRef, useState } from '../../runtime/dom'
 import { Button } from '../../components';
 import { FileDown, Loader2, X } from '../../ui/icons';
 import { showError, showSuccess } from '../../ui/notifications';
-import { requestGrowthAnalysis } from '../../api/analysisApi';
+import { requestGrowthAnalysis, requestPythonGrowthChart } from '../../api/analysisApi';
 import {
   drawGrowthChart,
   getGrowthChartModels,
@@ -39,6 +39,39 @@ function GrowthCanvas({ model }) {
       'aria-label': `${model.title}, grafik standar WHO dan hasil pengukuran anak`,
     })
   );
+}
+
+function mountSafeSvg(container, markup) {
+  if (!container || typeof markup !== 'string') return;
+  const documentView = container.ownerDocument;
+  const parsed = new DOMParser().parseFromString(markup, 'image/svg+xml');
+  const svg = parsed.documentElement;
+  if (!svg || svg.nodeName.toLowerCase() !== 'svg' || parsed.querySelector('parsererror')) return;
+  // The Python service emits a fixed SVG vocabulary. Remove executable SVG
+  // features defensively before placing it in the DOM.
+  svg.querySelectorAll('script,foreignObject,iframe,object,embed').forEach((node) => node.remove());
+  svg.querySelectorAll('*').forEach((node) => {
+    Array.from(node.attributes).forEach((attribute) => {
+      if (attribute.name.toLowerCase().startsWith('on') || attribute.name.toLowerCase().includes('href')) {
+        node.removeAttribute(attribute.name);
+      }
+    });
+  });
+  const imported = documentView.importNode(svg, true);
+  container.replaceChildren(imported);
+}
+
+function GrowthSvg({ svg, title }) {
+  const containerRef = useRef(null);
+  useEffect(() => {
+    mountSafeSvg(containerRef.current, svg);
+  }, [svg]);
+  return Native.createElement('div', {
+    ref: containerRef,
+    className: 'growth-chart-python-svg',
+    role: 'img',
+    'aria-label': `${title}, grafik standar WHO dan hasil pengukuran anak`,
+  });
 }
 
 function formatAnalysisValue(value, unit) {
@@ -117,6 +150,7 @@ export default function GrowthChartsDialog({ child, history, onClose }) {
   const [activeType, setActiveType] = useState('bbu');
   const [exporting, setExporting] = useState('');
   const [pythonState, setPythonState] = useState({ status: 'loading', result: null, error: null });
+  const [chartState, setChartState] = useState({ status: 'loading', svg: '', error: null });
   const models = useMemo(() => getGrowthChartModels(history, child), [history, child]);
   const activeModel = models[activeType];
   const activeAnomalyCount = activeModel.childPoints.filter((point) => point.anomaly).length;
@@ -135,6 +169,20 @@ export default function GrowthChartsDialog({ child, history, onClose }) {
       });
     return () => { active = false; };
   }, [child?.id, historyKey]);
+
+  useEffect(() => {
+    let active = true;
+    setChartState({ status: 'loading', svg: '', error: null });
+    void requestPythonGrowthChart(child, history, activeType)
+      .then((response) => {
+        if (!response?.svg) throw new Error('Renderer Python tidak mengembalikan SVG grafik.');
+        if (active) setChartState({ status: 'success', svg: response.svg, error: null });
+      })
+      .catch((error) => {
+        if (active) setChartState({ status: 'error', svg: '', error: error instanceof Error ? error.message : 'Grafik Python belum tersedia.' });
+      });
+    return () => { active = false; };
+  }, [child?.id, historyKey, activeType]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -225,7 +273,13 @@ export default function GrowthChartsDialog({ child, history, onClose }) {
             onClick: () => setActiveType(type),
           }, GROWTH_CHART_LABELS[type]))
         ),
-        Native.createElement(GrowthCanvas, { model: activeModel }),
+        chartState.status === 'success'
+          ? Native.createElement(GrowthSvg, { svg: chartState.svg, title: activeModel.title })
+          : chartState.status === 'loading'
+            ? Native.createElement('div', { className: 'growth-chart-python-loading', role: 'status' }, Native.createElement(Loader2, { className: 'h-5 w-5 animate-spin' }), ' Memuat grafik dari Python…')
+            : Native.createElement(Native.Fragment, null,
+              Native.createElement('div', { className: 'growth-chart-python-warning', role: 'status' }, 'Grafik Python belum tersedia: ', chartState.error || 'kesalahan tidak diketahui.'),
+              Native.createElement(GrowthCanvas, { model: activeModel })),
         Native.createElement('p', { className: 'growth-chart-footnote' },
           `Garis menunjukkan -3, -2, median, +2, dan +3 SD standar WHO. ${activeModel.childPoints.length} titik hasil anak dihubungkan berdasarkan urutan pengukuran.`
         ),

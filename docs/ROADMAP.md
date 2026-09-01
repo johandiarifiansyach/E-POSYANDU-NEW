@@ -72,12 +72,14 @@ oracle-api --> data-processing-worker -- gRPC/UDS --> analysis-service Python
   waktu proses, serta catatan bahwa hasil bukan diagnosis medis. Saat Queue
   belum tersedia, deteksi cepat tinggi turun tetap ditampilkan dan status
   layanan diberi peringatan.
-- Grafik pertumbuhan pada popup tetap memakai standar WHO deterministik dan
-  menandai titik tinggi/panjang yang lebih rendah dari pengukuran sebelumnya
-  dengan warna merah. Riwayat titik yang sama dikirim ke `analysis-service`
-  Python untuk ringkasan tren, perubahan rata-rata per bulan, kesimpulan, dan
-  saran yang tampil di bawah grafik. Browser hanya menggambar chart agar tetap
-  ringan; pemeriksaan tidak menggunakan AI/LLM atau layanan analitik pihak ketiga.
+- Grafik pertumbuhan pada popup dirender oleh `analysis-service` Python sebagai
+  SVG menggunakan tabel LMS WHO yang sama dengan kalkulasi status. Label
+  berbahasa Indonesia, kurva -3/-2/median/+2/+3 SD, dan titik riwayat dikirim
+  melalui endpoint terautentikasi. Browser memasang SVG secara aman; Canvas
+  lokal hanya menjadi fallback ketika service Python belum tersedia. Riwayat
+  titik yang sama juga dikirim ke Python untuk ringkasan tren, perubahan rata-rata
+  per bulan, kesimpulan, dan saran yang tampil di bawah grafik. Pemeriksaan tidak
+  menggunakan AI/LLM atau layanan analitik pihak ketiga.
 - Modul `ml.py` menjalankan screening logistic yang explainable untuk risiko
   stunting, wasting, dan underweight. Ia bukan pengganti kalkulasi WHO dan
   bukan AI generatif/LLM. Aturan kualitas juga mendeteksi tinggi turun,

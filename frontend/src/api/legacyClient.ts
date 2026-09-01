@@ -895,7 +895,7 @@ async function fetchWithTimeout(
   }
 }
 
-async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   ensureApiRequestAllowed();
   let response: Response;
   try {

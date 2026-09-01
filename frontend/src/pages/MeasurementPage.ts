@@ -9,7 +9,7 @@ import GrowthChartsDialog from '../features/measurements/GrowthChartsDialog';
 import MeasurementAnalysisDialog from '../features/measurements/MeasurementAnalysisDialog';
 import { quickMeasurementAnomaly } from '../features/measurements/measurementAnalysis';
 import { fetchChildMeasurementHistory } from '../services/measurementService';
-import { requestMeasurementAnalysis } from '../api/analysisApi';
+import { requestMeasurementAnalysis, requestPythonAnthropometry } from '../api/analysisApi';
 import { TableLoadingSkeleton } from '../ui/skeleton';
 import {
     calculateWeightGainStatus as calculateMeasurementWeightGainStatus,
@@ -22,6 +22,7 @@ import {
 import { appId, db, formatDate, formatIndoDate, getAgeInMonths } from './DashboardApp';
 import type { PageState } from '../shared/pageState';
 const inputClass = 'w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm rounded-xl focus:ring-emerald-500 focus:border-emerald-500 block p-2.5 transition-colors';
+const EMPTY_MEASUREMENT_HISTORY: any[] = [];
 export default function MeasurementPage({ child, onBack }) {
     const [activeMenu, setActiveMenu] = useState('history');
     const [formData, setFormData] = useState({
@@ -40,7 +41,10 @@ export default function MeasurementPage({ child, onBack }) {
     });
     const [historyState, setHistoryState] = useState<PageState<any[]>>({ status: 'idle' });
     const [saveState, setSaveState] = useState<PageState<void>>({ status: 'idle' });
-    const history = historyState.status === 'success' ? historyState.data : [];
+    // Keep the empty fallback referentially stable.  A fresh [] on every render
+    // invalidates the history-analysis effect and can schedule an endless
+    // render loop while the first history request is still loading.
+    const history = historyState.status === 'success' ? historyState.data : EMPTY_MEASUREMENT_HISTORY;
     const loading = saveState.status === 'loading';
     const loadingHistory = historyState.status === 'loading';
     const historyError = historyState.status === 'error' ? historyState.message : null;
@@ -48,6 +52,7 @@ export default function MeasurementPage({ child, onBack }) {
     const [editingMeasurementId, setEditingMeasurementId] = useState(null);
     const [showGrowthCharts, setShowGrowthCharts] = useState(false);
     const [analysisState, setAnalysisState] = useState({ status: 'idle', result: null, error: null, measurement: null });
+    const [pythonHistoryStatuses, setPythonHistoryStatuses] = useState({});
     useEffect(() => {
         if (!child.id) {
             setHistoryState({ status: 'success', data: [] });
@@ -107,6 +112,32 @@ export default function MeasurementPage({ child, onBack }) {
         });
         return Array.from(monthlyMap.values()).sort((a, b) => new Date(b.tglUkur).getTime() - new Date(a.tglUkur).getTime());
     }, [history]);
+    const pythonHistoryKey = useMemo(() => monthlyHistory.map((item) => `${item?.id || ''}:${item?.tglUkur || ''}:${item?.bb || ''}:${item?.tb || ''}`).join('|'), [monthlyHistory]);
+    useEffect(() => {
+        let active = true;
+        const entries = monthlyHistory
+            .filter((item) => item?.bb !== null && item?.bb !== undefined && item?.bb !== '')
+            .map((measurement) => ({ child, measurement, history }));
+        if (!entries.length) {
+            setPythonHistoryStatuses((previous) => Object.keys(previous).length ? {} : previous);
+            return () => { active = false; };
+        }
+        void requestPythonAnthropometry(entries)
+            .then((response) => {
+                if (!active) return;
+                const next = {};
+                (response.items || []).forEach((item) => {
+                    const entry = entries[Math.max(0, Number(item.rowNumber || 1) - 1)];
+                    const key = String(entry?.measurement?.id || item.recordId || '');
+                    if (key) next[key] = item;
+                });
+                setPythonHistoryStatuses(next);
+            })
+            .catch(() => {
+                if (active) setPythonHistoryStatuses({});
+            });
+        return () => { active = false; };
+    }, [child?.id, pythonHistoryKey, history]);
     useEffect(() => {
         if (activeMenu !== 'add')
             return;
@@ -432,7 +463,17 @@ export default function MeasurementPage({ child, onBack }) {
                             month: 'short',
                             year: 'numeric'
                         });
-                        const statuses = getMeasurementStatuses(item, child);
+                        const localStatuses = getMeasurementStatuses(item, child);
+                        const pythonStatus = pythonHistoryStatuses[String(item.id || '')];
+                        const statuses = pythonStatus ? {
+                            ...localStatuses,
+                            statusBbu: pythonStatus.bbuStatus,
+                            statusTbu: pythonStatus.tbuStatus,
+                            statusBbtb: pythonStatus.bbtbStatus,
+                            statusImtu: pythonStatus.imtuStatus,
+                            statusLilau: pythonStatus.lilaStatus,
+                            statusLku: pythonStatus.lkStatus,
+                        } : localStatuses;
                         const statusBbu = statuses.statusBbu;
                         const statusTbu = statuses.statusTbu;
                         const statusBbtb = statuses.statusBbtb;

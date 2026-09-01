@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import grpc
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
-from . import who
+from . import charts, who
 from .generated import analysis_pb2, analysis_pb2_grpc
 
 
@@ -115,6 +115,43 @@ class AnalysisServicer(analysis_pb2_grpc.AnalysisServiceServicer):
                 ensure_ascii=False,
             )
         return response
+
+    def RenderGrowthChart(self, request, context):  # noqa: N802 (protobuf API name)
+        """Render one chart using the same private WHO LMS tables as status calculation."""
+
+        self._authorize(context)
+        points = []
+        for point in request.points:
+            points.append(
+                {
+                    "age_months": point.age_months,
+                    "weight_kg": point.weight_kg,
+                    "height_cm": _optional(point, "height_cm"),
+                    "lila_cm": _optional(point, "lila_cm"),
+                    "head_circumference_cm": _optional(point, "head_circumference_cm"),
+                    "measurement_method": _optional(point, "measurement_method"),
+                    "measurement_date": _optional(point, "measurement_date"),
+                }
+            )
+        try:
+            svg = charts.render_growth_chart(
+                request.chart_type,
+                request.sex,
+                points,
+                child_name=_optional(request, "child_name") or "",
+                language=request.language or "id",
+            )
+        except ValueError as error:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(error))
+        except (OSError, json.JSONDecodeError, KeyError, IndexError) as error:
+            LOGGER.exception("Standar WHO grafik tidak dapat dimuat")
+            context.abort(grpc.StatusCode.INTERNAL, str(error))
+        return analysis_pb2.RenderGrowthChartResponse(
+            chart_type=request.chart_type,
+            svg=svg,
+            standards_version=who.STANDARDS_VERSION,
+            renderer="python-svg-who-lms-v1",
+        )
 
 
 class HealthHandler(BaseHTTPRequestHandler):
