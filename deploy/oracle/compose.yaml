@@ -323,6 +323,10 @@ services:
       # Service satu host memakai UDS. Set DATA_PROCESSING_GRPC_ADDR=host:port bila worker
       # dipindahkan ke server/platform lain.
       DATA_PROCESSING_GRPC_ADDR: ${DATA_PROCESSING_GRPC_ADDR:-unix:///run/e-posyandu/data-processing.sock}
+      # Queue consumer harus memanggil listener internal yang sama.  Tetapkan
+      # variabel baru secara eksplisit agar alias GRPC_URL lama (yang biasanya
+      # menunjuk ke 127.0.0.1:50051) tidak mengambil alih konfigurasi socket.
+      DATA_PROCESSING_GRPC_URL: ${DATA_PROCESSING_GRPC_URL:-unix:///run/e-posyandu/data-processing.sock}
       # WHO, screening risiko, dan deteksi anomali diproses oleh Python.
       # Set false hanya saat melakukan rollout worker sebelum analysis-service.
       ANALYSIS_GRPC_ENABLED: ${ANALYSIS_GRPC_ENABLED:-true}
