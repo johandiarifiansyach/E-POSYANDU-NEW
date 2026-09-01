@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package eposyandu.analysis.v1;
+
+// Private service for deterministic WHO calculations plus explainable
+// screening/anomaly analysis. Risk output is advisory and never a diagnosis.
+service AnalysisService {
+  rpc CalculateBatch(CalculateBatchRequest) returns (CalculateBatchResponse);
+}
+
+message NutritionItem {
+  double weight_kg = 1;
+  optional double height_cm = 2;
+  int32 age_months = 3;
+  string sex = 4;
+  optional string measurement_method = 5;
+  uint64 row_number = 6;
+  string record_id = 7;
+  string nik = 8;
+  optional double lila_cm = 9;
+  optional double head_circumference_cm = 10;
+  // JSON array of earlier measurements for anomaly/trend analysis. Keeping
+  // this as an opaque field preserves a small, backwards-compatible contract.
+  string history_json = 11;
+  optional string measurement_date = 12;
+  // Recorded exclusive-breastfeeding answer for the 0–6 month period.
+  // It is an educational context signal, not a replacement for WHO results.
+  optional string exclusive_breastfeeding = 13;
+}
+
+message CalculateBatchRequest {
+  repeated NutritionItem items = 1;
+}
+
+message NutritionAssessment {
+  uint64 row_number = 1;
+  string record_id = 2;
+  string nik = 3;
+  string bbu_status = 4;
+  string tbu_status = 5;
+  string bbtb_status = 6;
+  string imtu_status = 7;
+  string lila_status = 8;
+  string lk_status = 9;
+  optional double bbu_z_score = 10;
+  optional double tbu_z_score = 11;
+  optional double bbtb_z_score = 12;
+  optional double imtu_z_score = 13;
+  optional double lila_z_score = 14;
+  optional double lk_z_score = 15;
+  // JSON object containing anomaly findings and ML risk screening output.
+  string analysis_json = 16;
+}
+
+message CalculateBatchResponse {
+  uint64 underweight = 1;
+  uint64 stunting = 2;
+  uint64 wasting = 3;
+  uint64 total = 4;
+  repeated NutritionAssessment items = 5;
+  string standards_version = 6;
+  string calculator = 7;
+}

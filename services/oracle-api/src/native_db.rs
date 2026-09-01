@@ -10,12 +10,17 @@ use tokio_postgres::{
     types::{Json, ToSql},
 };
 use tracing::{error, warn};
+use uuid::Uuid;
 
 use crate::realtime::{NOTIFY_CHANNEL, RealtimeEvent, RealtimeHub};
 
 const DEFAULT_POOL_SIZE: usize = 5;
 
 type SqlParameter = Box<dyn ToSql + Sync + Send>;
+
+fn parse_user_uuid(user_id: &str) -> Result<Uuid, DatabaseError> {
+    Uuid::parse_str(user_id).map_err(|_| DatabaseError::Invalid)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DatabaseError {
@@ -298,6 +303,194 @@ impl NativeDatabase {
         } else {
             Ok(Value::Null)
         }
+    }
+
+    pub(crate) async fn store_native_password_hash(
+        &self,
+        user_id: &str,
+        password_hash: &str,
+    ) -> Result<(), DatabaseError> {
+        let user_uuid = parse_user_uuid(user_id)?;
+        let mut client = self.pool.get().await.map_err(|error_value| {
+            error!(error = %error_value, "pool PostgreSQL native tidak tersedia");
+            DatabaseError::Unavailable
+        })?;
+        let transaction = client.transaction().await.map_err(map_postgres_error)?;
+        transaction
+            .execute(
+                "INSERT INTO public.auth_credentials (
+                     user_id, password_hash, password_scheme,
+                     password_changed_at, last_password_login_at,
+                     created_at, updated_at
+                 ) VALUES (
+                     $1::uuid, $2, 'argon2id', timezone('utc', now()),
+                     timezone('utc', now()), timezone('utc', now()), timezone('utc', now())
+                 )
+                 ON CONFLICT (user_id) DO UPDATE SET
+                     password_hash = excluded.password_hash,
+                     password_scheme = excluded.password_scheme,
+                     password_changed_at = excluded.password_changed_at,
+                     last_password_login_at = excluded.last_password_login_at,
+                     updated_at = excluded.updated_at",
+                &[&user_uuid, &password_hash],
+            )
+            .await
+            .map_err(|error| {
+                map_postgres_query_error(error, "native credential upsert", "auth_credentials", 2)
+            })?;
+        transaction
+            .execute(
+                "INSERT INTO public.auth_credential_migration_state (
+                     user_id, status, supabase_verified_at, native_hashed_at,
+                     last_error, created_at, updated_at
+                 ) VALUES (
+                     $1::uuid, 'migrated', timezone('utc', now()), timezone('utc', now()),
+                     NULL, timezone('utc', now()), timezone('utc', now())
+                 )
+                 ON CONFLICT (user_id) DO UPDATE SET
+                     status = 'migrated',
+                     supabase_verified_at = timezone('utc', now()),
+                     native_hashed_at = timezone('utc', now()),
+                     last_error = NULL,
+                     updated_at = timezone('utc', now())",
+                &[&user_uuid],
+            )
+            .await
+            .map_err(|error| {
+                map_postgres_query_error(
+                    error,
+                    "native credential migration state upsert",
+                    "auth_credential_migration_state",
+                    1,
+                )
+            })?;
+        transaction.commit().await.map_err(map_postgres_error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn native_password_hash(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<String>, DatabaseError> {
+        let user_uuid = parse_user_uuid(user_id)?;
+        let client = self.pool.get().await.map_err(|error_value| {
+            error!(error = %error_value, "pool PostgreSQL native tidak tersedia");
+            DatabaseError::Unavailable
+        })?;
+        let row = client
+            .query_opt(
+                "SELECT password_hash
+                 FROM public.auth_credentials
+                 WHERE user_id = $1::uuid
+                 LIMIT 1",
+                &[&user_uuid],
+            )
+            .await
+            .map_err(|error| {
+                map_postgres_query_error(error, "native credential lookup", "auth_credentials", 1)
+            })?;
+        Ok(row.map(|value| value.get::<_, String>("password_hash")))
+    }
+
+    pub(crate) async fn mark_native_password_login(
+        &self,
+        user_id: &str,
+    ) -> Result<(), DatabaseError> {
+        let user_uuid = parse_user_uuid(user_id)?;
+        let mut client = self.pool.get().await.map_err(|error_value| {
+            error!(error = %error_value, "pool PostgreSQL native tidak tersedia");
+            DatabaseError::Unavailable
+        })?;
+        let transaction = client.transaction().await.map_err(map_postgres_error)?;
+        transaction
+            .execute(
+                "UPDATE public.auth_credentials
+                 SET last_password_login_at = timezone('utc', now()),
+                     updated_at = timezone('utc', now())
+                 WHERE user_id = $1::uuid",
+                &[&user_uuid],
+            )
+            .await
+            .map_err(|error| {
+                map_postgres_query_error(
+                    error,
+                    "native credential login mark",
+                    "auth_credentials",
+                    1,
+                )
+            })?;
+        transaction
+            .execute(
+                "UPDATE public.auth_credential_migration_state
+                 SET updated_at = timezone('utc', now()), last_error = NULL
+                 WHERE user_id = $1::uuid",
+                &[&user_uuid],
+            )
+            .await
+            .map_err(|error| {
+                map_postgres_query_error(
+                    error,
+                    "native credential migration mark",
+                    "auth_credential_migration_state",
+                    1,
+                )
+            })?;
+        transaction.commit().await.map_err(map_postgres_error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_admin_security_shadow(
+        &self,
+        user_id: &str,
+        totp_count: i32,
+        passkey_count: i32,
+    ) -> Result<(), DatabaseError> {
+        let user_uuid = parse_user_uuid(user_id)?;
+        let client = self.pool.get().await.map_err(|error_value| {
+            error!(error = %error_value, "pool PostgreSQL native tidak tersedia");
+            DatabaseError::Unavailable
+        })?;
+        client
+            .execute(
+                "INSERT INTO public.auth_security_migration_state (
+                     user_id, mfa_status, passkey_status,
+                     supabase_totp_count, supabase_passkey_count,
+                     last_synced_at, last_error, created_at, updated_at
+                 ) VALUES (
+                     $1::uuid,
+                     CASE WHEN $2::integer > 0 THEN 'shadowed' ELSE 'pending' END,
+                     CASE WHEN $3::integer > 0 THEN 'shadowed' ELSE 'pending' END,
+                     $2, $3, timezone('utc', now()), NULL,
+                     timezone('utc', now()), timezone('utc', now())
+                 )
+                 ON CONFLICT (user_id) DO UPDATE SET
+                     mfa_status = CASE
+                         WHEN auth_security_migration_state.mfa_status = 'migrated' THEN 'migrated'
+                         WHEN excluded.supabase_totp_count > 0 THEN 'shadowed'
+                         ELSE 'pending'
+                     END,
+                     passkey_status = CASE
+                         WHEN auth_security_migration_state.passkey_status = 'migrated' THEN 'migrated'
+                         WHEN excluded.supabase_passkey_count > 0 THEN 'shadowed'
+                         ELSE 'pending'
+                     END,
+                     supabase_totp_count = excluded.supabase_totp_count,
+                     supabase_passkey_count = excluded.supabase_passkey_count,
+                     last_synced_at = excluded.last_synced_at,
+                     last_error = NULL,
+                     updated_at = excluded.updated_at",
+                &[&user_uuid, &totp_count, &passkey_count],
+            )
+            .await
+            .map_err(|error| {
+                map_postgres_query_error(
+                    error,
+                    "admin security shadow state upsert",
+                    "auth_security_migration_state",
+                    3,
+                )
+            })?;
+        Ok(())
     }
 
     pub(crate) async fn rpc(&self, name: &str, payload: Value) -> Result<Value, DatabaseError> {
@@ -718,6 +911,12 @@ mod tests {
         assert!(ensure_table("auth.users").is_err());
         assert!(quote_identifier("updated_at").is_ok());
         assert!(quote_identifier("updated_at desc").is_err());
+    }
+
+    #[test]
+    fn validates_native_auth_user_ids_as_uuid_parameters() {
+        assert!(parse_user_uuid("00000000-0000-0000-0000-000000000001").is_ok());
+        assert!(parse_user_uuid("not-a-uuid").is_err());
     }
 
     #[test]

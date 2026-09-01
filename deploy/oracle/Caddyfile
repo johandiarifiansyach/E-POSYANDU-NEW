@@ -25,7 +25,7 @@
 	@health path /health
 
 	handle @health {
-		reverse_proxy nutrition-worker:8080
+		reverse_proxy data-processing-worker:8080
 		header Cache-Control "no-store"
 	}
 
@@ -55,7 +55,7 @@
 		path /health
 	}
 	handle @nutrition_health {
-		reverse_proxy nutrition-worker:8080
+		reverse_proxy data-processing-worker:8080
 		header Cache-Control "no-store"
 		import health_security_headers
 	}

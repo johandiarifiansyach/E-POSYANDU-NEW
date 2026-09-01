@@ -17,8 +17,8 @@ Konfigurasi:
 
 - `ORACLE_API_LEGACY_ORIGIN`: origin HTTPS API Cloudflare saat ini.
 - `ORACLE_API_PUBLIC_ORIGIN`: origin publik Oracle yang ditulis ke OpenAPI.
-- `ORACLE_API_NUTRITION_GRPC_URL`: default internal
-  `unix:///run/e-posyandu/nutrition.sock`. Service satu host memakai gRPC di
+- `ORACLE_API_DATA_PROCESSING_GRPC_URL`: default internal
+  `unix:///run/e-posyandu/data-processing.sock`. Service satu host memakai gRPC di
   atas UDS; isi `http://HOST:50051` bila worker berada di server/platform lain.
   Port internal tidak dipublish ke host. Metadata
   `x-eposyandu-service-token` memakai secret Vault `RUST_WORKER_SHARED_SECRET`.

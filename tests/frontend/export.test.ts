@@ -4,6 +4,7 @@ import {
   getMpasiExportRows,
   getPmtExportRows,
   getSelectedMonthRange,
+  getSigiziIdentityRows,
   getSigiziMeasurementRows,
   latestMeasurementsByChild,
   toExportBinary
@@ -63,6 +64,37 @@ test.describe('export feature', () => {
       1, 0, 1, 1, 0, 1, 1, 0, 1
     ]);
     expect(asiRows[0].slice(11, 18)).toEqual(['ya', 'tidak', '', '', '', '', '']);
+  });
+
+  test('exports the complete SigiZI identity field set', () => {
+    const rows = getSigiziIdentityRows([{
+      anakKe: 1,
+      tglLahir: '2026-07-29',
+      jk: 'P',
+      noKK: '3509040101010001',
+      nik: '3509042907260001',
+      nama: 'Bayi Satu',
+      usiaKehamilan: 39,
+      bbLahir: 3.2,
+      pbLahir: 49.5,
+      lkLahir: 33.2,
+      bukuKIA: 'Ya',
+      bukuKIAKecil: 'Tidak',
+      imd: 'Ya',
+      namaOrtu: 'Orang Tua',
+      nikOrtu: '3509040101010002',
+      noHpOrtu: '081234567890',
+      alamat: 'Jalan Sehat',
+      rt: '001',
+      rw: '002',
+      createdAt: '2026-08-01T00:00:00.000Z'
+    }], 8, 2026);
+
+    expect(rows[0]).toEqual([
+      1, 1, '2026-07-29', 'Perempuan', '3509040101010001', '3509042907260001',
+      'Bayi Satu', 39, 3.2, 49.5, 33.2, 'Ya', 'Tidak', 'Ya', 'Orang Tua',
+      '3509040101010002', '081234567890', 'Jalan Sehat', '001', '002', '', ''
+    ]);
   });
 
   test('builds a SigiZI measurement export from cached history when the API is unavailable', () => {

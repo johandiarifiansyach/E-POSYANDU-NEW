@@ -57,8 +57,8 @@ const checks = await Promise.all([
       detail: payload?.status || 'respons readiness tidak valid'
     };
   }),
-  check('nutrition-worker', workerHealthUrl, async (_response, body) => ({
-    ok: /nutrition worker aktif/i.test(body),
+  check('data-processing-worker', workerHealthUrl, async (_response, body) => ({
+    ok: /data-processing worker aktif/i.test(body),
     detail: 'health worker gRPC'
   }))
 ]);

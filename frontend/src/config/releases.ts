@@ -11,6 +11,19 @@ export type AppRelease = {
 export const RELEASE_HISTORY: AppRelease[] = [
   {
     version: APP_VERSION,
+    releaseDate: '30 Agustus 2026',
+    releaseDateIso: '2026-08-30',
+    title: 'Analisis Grafik Pertumbuhan',
+    changes: [
+      'Analisis pertumbuhan kini membaca riwayat pengukuran yang sama dengan grafik dan mengembalikan ringkasan tren per bulan.',
+      'Popup grafik menampilkan arah berat, panjang/tinggi badan, LILA, dan lingkar kepala beserta perubahan awal hingga terbaru.',
+      'Baseline machine learning logistic yang ringan dan explainable menambahkan confidence, kesimpulan, saran tindak lanjut, serta deteksi anomali.',
+      'Kalkulasi status gizi WHO tetap menggunakan rumus LMS deterministik dan tidak digantikan oleh machine learning.',
+      'Grafik tetap digambar di browser agar ringan; jika antrean atau layanan analisis tidak tersedia, grafik dasar tetap dapat dibuka dengan peringatan.'
+    ]
+  },
+  {
+    version: '3.7.0',
     releaseDate: '25 Agustus 2026',
     releaseDateIso: '2026-08-25',
     title: 'Cache Redis dan Platform Native Lebih Stabil',

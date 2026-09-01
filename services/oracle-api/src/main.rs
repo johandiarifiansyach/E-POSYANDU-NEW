@@ -11,7 +11,7 @@ use std::{
 
 use axum::{
     Router,
-    body::Body,
+    body::{Body, to_bytes},
     extract::{DefaultBodyLimit, Path, Request, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header},
     response::{
@@ -21,6 +21,7 @@ use axum::{
     routing::{any, get, patch},
 };
 use futures_util::stream;
+use hmac::{Hmac, Mac};
 use reqwest::{Client, Url, redirect::Policy};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -32,11 +33,13 @@ use tower_http::{
 };
 use tracing::{error, info, warn};
 
+type HmacSha256 = Hmac<sha2::Sha256>;
+
 mod native_api;
 mod native_auth;
 mod native_cache;
 mod native_db;
-mod nutrition_client;
+mod data_processing_client;
 mod platform_client;
 mod realtime;
 mod system_metrics;
@@ -45,7 +48,7 @@ use native_api::NativeApi;
 use native_auth::NativeAuth;
 use native_cache::{DASHBOARD_CACHE_TTL_SECONDS, DYNAMIC_CACHE_TTL_SECONDS};
 use native_db::NativeDatabase;
-use nutrition_client::NutritionGrpcClient;
+use data_processing_client::DataProcessingGrpcClient;
 use platform_client::PlatformGrpcClients;
 use realtime::{RealtimeEvent, RealtimeHub};
 use system_metrics::SystemMetricsSampler;
@@ -58,6 +61,8 @@ const OPERATIONAL_CHECK_TIMEOUT: Duration = Duration::from_secs(8);
 const ADMIN_MONITORING_INTERVAL: Duration = Duration::from_secs(5);
 const ADMIN_MONITORING_CONNECTION_LIMIT: usize = 4;
 const REALTIME_CONNECTION_LIMIT: usize = 100;
+const INTERNAL_REQUEST_MAX_AGE_SECONDS: i64 = 300;
+const INTERNAL_JOB_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const RETENTION_CLEANUP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const GRAPHQL_SCHEMA: &str = include_str!("../../../backend/graphql-schema.graphql");
 const OPENAPI_DOCUMENT: &str = include_str!("../../../backend/openapi.json");
@@ -67,7 +72,7 @@ struct AppState {
     client: Client,
     legacy_origin: Url,
     legacy_readiness_url: Url,
-    nutrition_grpc: NutritionGrpcClient,
+    data_processing: DataProcessingGrpcClient,
     microservices: Option<Arc<PlatformGrpcClients>>,
     public_origin: Url,
     migration_proxy_enabled: bool,
@@ -208,6 +213,10 @@ fn public_origin() -> Result<Url, String> {
 
 fn allowed_proxy_path(path: &str) -> bool {
     path == "/api/health" || path.starts_with("/api/v1/") || path.starts_with("/internal/v1/")
+}
+
+fn is_legacy_background_job_path(path: &str) -> bool {
+    path == "/api/v1/jobs" || path.starts_with("/api/v1/jobs/")
 }
 
 fn hop_by_hop_header(name: &HeaderName) -> bool {
@@ -382,11 +391,11 @@ async fn check_legacy_readiness(state: &AppState) -> OperationalCheck {
     }
 }
 
-async fn check_nutrition_worker(state: &AppState) -> OperationalCheck {
+async fn check_data_processing_worker(state: &AppState) -> OperationalCheck {
     let started_at = Instant::now();
     match tokio::time::timeout(
         OPERATIONAL_CHECK_TIMEOUT,
-        state.nutrition_grpc.health_check(),
+        state.data_processing.health_check(),
     )
     .await
     {
@@ -552,9 +561,9 @@ async fn readiness(State(state): State<Arc<AppState>>, request: Request) -> Resp
             _ => false,
         }
     };
-    let (legacy, nutrition, microservices, oracle_database, redis_cache, native_cache_ready) = tokio::join!(
+    let (legacy, data_processing, microservices, oracle_database, redis_cache, native_cache_ready) = tokio::join!(
         check_legacy_readiness(state.as_ref()),
-        check_nutrition_worker(state.as_ref()),
+        check_data_processing_worker(state.as_ref()),
         check_platform_services(state.as_ref()),
         check_oracle_database(state.as_ref()),
         check_redis_cache(state.as_ref()),
@@ -603,7 +612,7 @@ async fn readiness(State(state): State<Arc<AppState>>, request: Request) -> Resp
     } else {
         legacy.ok
     };
-    let optional_ok = nutrition.ok
+    let optional_ok = data_processing.ok
         && (!state.migration_proxy_enabled || legacy.ok)
         && (!native_cache_configured || native_cache_ready);
     let status = readiness_state(core_ok, optional_ok);
@@ -624,11 +633,11 @@ async fn readiness(State(state): State<Arc<AppState>>, request: Request) -> Resp
         }
     }
     oracle_services.insert(
-        "nutrition-worker".into(),
+        "data-processing-worker".into(),
         json!({
-            "reachable": nutrition.reachable,
-            "status": nutrition.status,
-            "latencyMs": nutrition.latency_ms,
+            "reachable": data_processing.reachable,
+            "status": data_processing.status,
+            "latencyMs": data_processing.latency_ms,
             "provider": "oracle",
             "protocol": "grpc"
         }),
@@ -762,10 +771,10 @@ async fn readiness(State(state): State<Arc<AppState>>, request: Request) -> Resp
                     "reads": native_reads_enabled,
                     "writes": native_writes_enabled
                 },
-                "nutritionWorker": {
-                    "reachable": nutrition.reachable,
-                    "status": nutrition.status,
-                    "latencyMs": nutrition.latency_ms
+                "dataProcessingWorker": {
+                    "reachable": data_processing.reachable,
+                    "status": data_processing.status,
+                    "latencyMs": data_processing.latency_ms
                 }
             }
         }),
@@ -978,8 +987,8 @@ async fn monitoring_stream_payload(
             _ => false,
         }
     };
-    let (database_online, cache_online, nutrition) =
-        tokio::join!(database_check, cache_check, check_nutrition_worker(state));
+    let (database_online, cache_online, data_processing) =
+        tokio::join!(database_check, cache_check, check_data_processing_worker(state));
     json!({
         "sequence": sequence,
         "timestamp": system.timestamp.clone(),
@@ -989,7 +998,7 @@ async fn monitoring_stream_payload(
             "api": "online",
             "database": if database_online { "online" } else { "offline" },
             "redis": if cache_online { "online" } else { "offline" },
-            "nutritionWorker": if nutrition.ok { "online" } else { "offline" }
+            "dataProcessingWorker": if data_processing.ok { "online" } else { "offline" }
         }
     })
 }
@@ -1001,7 +1010,7 @@ async fn monitoring_stream_payload(
 fn complete_monitoring_payload(
     mut payload: Value,
     sequence: u64,
-    nutrition_online: bool,
+    data_processing_online: bool,
 ) -> Value {
     let Some(object) = payload.as_object_mut() else {
         return payload;
@@ -1024,11 +1033,11 @@ fn complete_monitoring_payload(
         .or_insert_with(|| json!({}));
     if let Some(services) = services.as_object_mut() {
         // Reaching this gateway endpoint proves the API path is online. The
-        // nutrition worker is checked through its existing gRPC health probe.
+        // Data processing worker is checked through its gRPC health probe.
         services.insert("api".to_owned(), json!("online"));
         services.insert(
-            "nutritionWorker".to_owned(),
-            json!(if nutrition_online { "online" } else { "offline" }),
+            "dataProcessingWorker".to_owned(),
+            json!(if data_processing_online { "online" } else { "offline" }),
         );
     }
     payload
@@ -1070,12 +1079,12 @@ async fn admin_monitoring_stream(State(state): State<Arc<AppState>>, request: Re
                 })
                 .await;
                 sequence = sequence.saturating_add(1);
-                let (payload_result, nutrition) = tokio::join!(
+                let (payload_result, data_processing) = tokio::join!(
                     platform.monitoring_snapshot(headers.clone()),
-                    check_nutrition_worker(state.as_ref())
+                    check_data_processing_worker(state.as_ref())
                 );
                 let payload = payload_result
-                    .map(|payload| complete_monitoring_payload(payload, sequence, nutrition.ok))
+                    .map(|payload| complete_monitoring_payload(payload, sequence, data_processing.ok))
                     .unwrap_or_else(|error| {
                         json!({
                             "sequence": sequence,
@@ -1327,15 +1336,18 @@ fn failure(status: StatusCode, code: &'static str, message: &'static str) -> Res
 }
 
 async fn migration_proxy(State(state): State<Arc<AppState>>, request: Request) -> Response {
-    if !state.migration_proxy_enabled {
+    let path = request.uri().path();
+    // Background jobs remain on the Cloudflare Queue during the staged Oracle
+    // migration. Keep this narrow legacy bridge available even though the
+    // general migration proxy is disabled in the production microservice
+    // rollout.
+    if !state.migration_proxy_enabled && !is_legacy_background_job_path(path) {
         return failure(
             StatusCode::SERVICE_UNAVAILABLE,
             "migration_proxy_disabled",
             "Rute ini belum tersedia pada API native Oracle.",
         );
     }
-
-    let path = request.uri().path();
     if !allowed_proxy_path(path) {
         return failure(StatusCode::NOT_FOUND, "not_found", "Rute tidak ditemukan.");
     }
@@ -1420,6 +1432,18 @@ async fn migration_proxy(State(state): State<Arc<AppState>>, request: Request) -
 }
 
 async fn api_dispatch(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    // Background jobs use the native Oracle job table and queue whenever the
+    // native API is enabled. This keeps job creation/status checks on the
+    // same encrypted browser-session authorization as the rest of the app;
+    // file downloads still fall back to the legacy R2 bridge below.
+    if is_legacy_background_job_path(request.uri().path()) {
+        if let Some(api) = state.native_api.as_ref()
+            && api.handles(&request)
+        {
+            return api.handle(request).await;
+        }
+        return migration_proxy(State(state), request).await;
+    }
     if let Some(platform) = state.microservices.as_ref() {
         return platform.operations(request).await;
     }
@@ -1429,6 +1453,89 @@ async fn api_dispatch(State(state): State<Arc<AppState>>, request: Request) -> R
         return api.handle(request).await;
     }
     migration_proxy(State(state), request).await
+}
+
+fn verify_internal_signature(
+    method: &axum::http::Method,
+    headers: &HeaderMap,
+    body: &str,
+) -> Result<(), Response> {
+    let timestamp = headers
+        .get("X-EPosyandu-Timestamp")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<i64>().ok())
+        .ok_or_else(|| failure(StatusCode::UNAUTHORIZED, "invalid_worker_request", "Permintaan Worker tidak valid."))?;
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    if (now - timestamp).abs() > INTERNAL_REQUEST_MAX_AGE_SECONDS {
+        return Err(failure(
+            StatusCode::UNAUTHORIZED,
+            "expired_worker_request",
+            "Permintaan Worker sudah kedaluwarsa.",
+        ));
+    }
+    let encoded = headers
+        .get("X-EPosyandu-Signature")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| hex::decode(value).ok())
+        .ok_or_else(|| failure(StatusCode::UNAUTHORIZED, "invalid_worker_request", "Permintaan Worker tidak valid."))?;
+    let secret = env::var("RUST_WORKER_SHARED_SECRET").map_err(|_| {
+        failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "worker_unavailable",
+            "Konfigurasi Worker belum tersedia.",
+        )
+    })?;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| {
+        failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "worker_unavailable",
+            "Konfigurasi Worker belum tersedia.",
+        )
+    })?;
+    mac.update(format!("{}\n{}\n{}", method, timestamp, body).as_bytes());
+    mac.verify_slice(&encoded).map_err(|_| {
+        failure(
+            StatusCode::UNAUTHORIZED,
+            "invalid_worker_request",
+            "Permintaan Worker tidak valid.",
+        )
+    })
+}
+
+async fn internal_dispatch(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let path = request.uri().path().to_owned();
+    if !path.starts_with("/internal/v1/jobs/") {
+        return migration_proxy(State(state), request).await;
+    }
+    let method = request.method().clone();
+    let headers = request.headers().clone();
+    let body = match to_bytes(request.into_body(), INTERNAL_JOB_MAX_BODY_BYTES).await {
+        Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
+            Ok(body) => body,
+            Err(_) => return failure(StatusCode::UNPROCESSABLE_ENTITY, "invalid_worker_request", "Data job Worker tidak valid."),
+        },
+        Err(_) => return failure(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", "Data job Worker terlalu besar."),
+    };
+    if let Err(response) = verify_internal_signature(&method, &headers, &body) {
+        return response;
+    }
+    match state.native_api.as_ref() {
+        Some(api) => match api.internal_background_job(method, &path, &body).await {
+            Ok((status, payload)) => native_json_with_status(status, payload),
+            Err(error) => error.into_response(),
+        },
+        None => failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "jobs_unavailable",
+            "Job native Oracle belum tersedia.",
+        ),
+    }
+}
+
+fn native_json_with_status(status: StatusCode, payload: Value) -> Response {
+    let mut response = native_json(payload, "no-store");
+    *response.status_mut() = status;
+    response
 }
 
 async fn fallback(uri: Uri) -> Response {
@@ -1552,8 +1659,8 @@ async fn main() {
         client,
         legacy_origin,
         legacy_readiness_url,
-        nutrition_grpc: NutritionGrpcClient::from_env()
-            .expect("konfigurasi URL gRPC worker nutrisi tidak valid"),
+        data_processing: DataProcessingGrpcClient::from_env()
+            .expect("konfigurasi URL gRPC data processing worker tidak valid"),
         microservices: PlatformGrpcClients::from_env()
             .expect("konfigurasi microservices Oracle tidak valid")
             .map(Arc::new),
@@ -1653,7 +1760,7 @@ async fn main() {
         .route("/api/v1/realtime/stream", get(realtime_data_stream))
         .route("/api/v1/me", get(current_profile))
         .route("/api/{*path}", any(api_dispatch))
-        .route("/internal/{*path}", any(migration_proxy))
+        .route("/internal/{*path}", any(internal_dispatch))
         .fallback(fallback)
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(DEFAULT_MAX_BODY_BYTES))
@@ -1684,6 +1791,14 @@ mod tests {
         assert!(!allowed_proxy_path("/"));
         assert!(!allowed_proxy_path("/admin"));
         assert!(!allowed_proxy_path("/api/private"));
+    }
+
+    #[test]
+    fn background_jobs_stay_on_the_legacy_queue_route_during_migration() {
+        assert!(is_legacy_background_job_path("/api/v1/jobs"));
+        assert!(is_legacy_background_job_path("/api/v1/jobs/01234567-89ab-cdef-0123-456789abcdef"));
+        assert!(is_legacy_background_job_path("/api/v1/jobs/01234567-89ab-cdef-0123-456789abcdef/file"));
+        assert!(!is_legacy_background_job_path("/api/v1/collections/children"));
     }
 
     #[test]
@@ -1735,7 +1850,7 @@ mod tests {
         assert_eq!(payload["sequence"], 7);
         assert_eq!(payload["intervalSeconds"], 5.0);
         assert_eq!(payload["services"]["api"], "online");
-        assert_eq!(payload["services"]["nutritionWorker"], "online");
+        assert_eq!(payload["services"]["dataProcessingWorker"], "online");
     }
 
     #[test]

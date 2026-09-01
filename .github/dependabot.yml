@@ -38,7 +38,7 @@ updates:
     open-pull-requests-limit: 5
 
   - package-ecosystem: cargo
-    directory: /services/nutrition-grpc
+    directory: /services/data-processing-service
     schedule:
       interval: weekly
       day: monday

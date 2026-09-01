@@ -3,6 +3,7 @@ import Native, { useEffect, useMemo, useRef, useState } from '../../runtime/dom'
 import { Button } from '../../components';
 import { FileDown, Loader2, X } from '../../ui/icons';
 import { showError, showSuccess } from '../../ui/notifications';
+import { requestGrowthAnalysis } from '../../api/analysisApi';
 import {
   drawGrowthChart,
   getGrowthChartModels,
@@ -40,11 +41,100 @@ function GrowthCanvas({ model }) {
   );
 }
 
+function formatAnalysisValue(value, unit) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number.toFixed(2).replace('.', ',')} ${unit}` : '—';
+}
+
+function GrowthAnalysisPanel({ state }) {
+  if (state.status === 'loading') {
+    return Native.createElement('div', { className: 'growth-chart-analysis growth-chart-analysis-loading', role: 'status' },
+      Native.createElement(Loader2, { className: 'h-4 w-4 animate-spin' }),
+      Native.createElement('span', null, 'Analisis tren pertumbuhan sedang diproses…')
+    );
+  }
+  if (state.status === 'error') {
+    return Native.createElement('div', { className: 'growth-chart-analysis growth-chart-analysis-warning', role: 'status' },
+      Native.createElement('strong', null, 'Analisis pertumbuhan belum tersedia.'),
+      Native.createElement('span', null, state.error || 'Grafik tetap dapat dibaca, tetapi penjelasan tren belum diterima.')
+    );
+  }
+  const analysis = state.result || {};
+  const indicators = Array.isArray(analysis.indicators) ? analysis.indicators : [];
+  const conclusions = Array.isArray(analysis.conclusions) ? analysis.conclusions : [];
+  const recommendations = Array.isArray(analysis.recommendations) ? analysis.recommendations : [];
+  const concern = analysis.nutritionConcern || null;
+  return Native.createElement('section', { className: 'growth-chart-analysis', 'aria-label': 'Analisis Pertumbuhan' },
+    Native.createElement('div', { className: 'growth-chart-analysis-header' },
+      Native.createElement('div', null,
+        Native.createElement('h3', null, 'Analisis Pertumbuhan'),
+        Native.createElement('p', null, analysis.model ? `Model skrining: ${analysis.model}` : 'Model skrining tren grafik')
+      ),
+      Number.isFinite(Number(analysis.confidence)) && Native.createElement('span', { className: 'growth-chart-analysis-confidence' }, `Keyakinan ${(Number(analysis.confidence) * 100).toFixed(0)}%`)
+    ),
+    Native.createElement('p', { className: 'growth-chart-analysis-summary' }, analysis.summary || 'Belum ada kesimpulan tren.'),
+    concern && Native.createElement('section', { className: 'measurement-analysis-guidance' },
+      Native.createElement('div', { className: 'growth-chart-analysis-list' },
+        Native.createElement('strong', null, concern.title || 'Edukasi singkat dan tindak lanjut'),
+        Native.createElement('p', null, concern.summary || 'Status gizi memerlukan tindak lanjut tenaga kesehatan.')
+      ),
+      concern.findings?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-findings' },
+        concern.findings.map((finding, index) => Native.createElement('span', { key: `growth-finding-${index}` }, `${finding.indicator}: ${finding.status}`))
+      ),
+      concern.education?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
+        Native.createElement('strong', null, 'Edukasi singkat'),
+        Native.createElement('ul', null, concern.education.map((value, index) => Native.createElement('li', { key: `growth-education-${index}` }, value)))
+      ),
+      concern.followUp?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
+        Native.createElement('strong', null, concern.urgency === 'segera' ? 'Tindak lanjut segera' : 'Tindak lanjut'),
+        Native.createElement('ul', null, concern.followUp.map((value, index) => Native.createElement('li', { key: `growth-follow-up-${index}` }, value)))
+      ),
+      concern.disclaimer && Native.createElement('small', { className: 'measurement-analysis-guidance-disclaimer' }, concern.disclaimer)
+    ),
+    indicators.length > 0 && Native.createElement('div', { className: 'growth-chart-analysis-grid' }, indicators.map((indicator) =>
+      Native.createElement('article', { key: indicator.key || indicator.label, className: `growth-chart-analysis-indicator growth-chart-analysis-${indicator.trend || 'neutral'}` },
+        Native.createElement('strong', null, indicator.label || indicator.key || 'Indikator'),
+        Native.createElement('span', null, indicator.trendLabel || '—'),
+        Native.createElement('small', null, indicator.points >= 2
+          ? `${formatAnalysisValue(indicator.firstValue, indicator.unit)} → ${formatAnalysisValue(indicator.latestValue, indicator.unit)} (${formatAnalysisValue(indicator.delta, indicator.unit)})`
+          : 'Memerlukan minimal dua titik bertanggal'),
+        Native.createElement('p', null, indicator.explanation || '')
+      )
+    )),
+    conclusions.length > 0 && Native.createElement('div', { className: 'growth-chart-analysis-list' },
+      Native.createElement('strong', null, 'Kesimpulan'),
+      Native.createElement('ul', null, conclusions.map((value, index) => Native.createElement('li', { key: `conclusion-${index}` }, value)))
+    ),
+    recommendations.length > 0 && Native.createElement('div', { className: 'growth-chart-analysis-list' },
+      Native.createElement('strong', null, 'Saran tindak lanjut'),
+      Native.createElement('ul', null, recommendations.map((value, index) => Native.createElement('li', { key: `recommendation-${index}` }, value)))
+    ),
+    analysis.disclaimer && Native.createElement('p', { className: 'growth-chart-analysis-disclaimer' }, analysis.disclaimer)
+  );
+}
+
 export default function GrowthChartsDialog({ child, history, onClose }) {
   const [activeType, setActiveType] = useState('bbu');
   const [exporting, setExporting] = useState('');
+  const [pythonState, setPythonState] = useState({ status: 'loading', result: null, error: null });
   const models = useMemo(() => getGrowthChartModels(history, child), [history, child]);
   const activeModel = models[activeType];
+  const activeAnomalyCount = activeModel.childPoints.filter((point) => point.anomaly).length;
+  const historyKey = useMemo(() => (history || []).map((item) => `${item?.id || ''}:${item?.tglUkur || ''}`).join('|'), [history]);
+
+  useEffect(() => {
+    let active = true;
+    setPythonState({ status: 'loading', result: null, error: null });
+    void requestGrowthAnalysis(child, history)
+      .then((response) => {
+        if (!response.graphAnalysis) throw new Error('Respons analisis pertumbuhan belum memuat ringkasan grafik.');
+        if (active) setPythonState({ status: 'success', result: response.graphAnalysis, error: null });
+      })
+      .catch((error) => {
+        if (active) setPythonState({ status: 'error', result: null, error: error instanceof Error ? error.message : 'Analisis pertumbuhan belum tersedia.' });
+      });
+    return () => { active = false; };
+  }, [child?.id, historyKey]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -137,8 +227,12 @@ export default function GrowthChartsDialog({ child, history, onClose }) {
         ),
         Native.createElement(GrowthCanvas, { model: activeModel }),
         Native.createElement('p', { className: 'growth-chart-footnote' },
-          `Garis menunjukkan -3, -2, median, +2, dan +3 SD standar WHO. ${activeModel.childPoints.length} titik biru hasil anak dihubungkan berdasarkan urutan pengukuran.`
-        )
+          `Garis menunjukkan -3, -2, median, +2, dan +3 SD standar WHO. ${activeModel.childPoints.length} titik hasil anak dihubungkan berdasarkan urutan pengukuran.`
+        ),
+        activeAnomalyCount > 0 && Native.createElement('div', { className: 'growth-chart-anomaly-note', role: 'alert' },
+          `Ditemukan ${activeAnomalyCount} titik anomali: tinggi/panjang badan lebih rendah dari pengukuran sebelumnya. Periksa ulang alat dan cara ukur.`
+        ),
+        Native.createElement(GrowthAnalysisPanel, { state: pythonState })
       ),
       Native.createElement('footer', { className: 'growth-chart-actions' },
         Native.createElement(Button, {

@@ -11,6 +11,10 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit},
 };
+use argon2::{
+    Argon2, PasswordHasher, PasswordVerifier,
+    password_hash::{PasswordHash, SaltString, rand_core::OsRng as PasswordOsRng},
+};
 use axum::{
     body::to_bytes,
     extract::Request,
@@ -43,6 +47,10 @@ const LOGIN_PAIR_MAX_ATTEMPTS: i64 = 5;
 const ADMIN_MFA_PENDING_TTL_SECONDS: i64 = 5 * 60;
 const ADMIN_RECOVERY_CODE_COUNT: usize = 10;
 const ACCOUNT_ONLINE_WINDOW_SECONDS: i64 = 3 * 60;
+// Presence is only used for the coarse online indicator.  Throttling writes
+// keeps the shared SQLite session store from becoming a write hotspot when a
+// dashboard fans out several authenticated requests at once.
+const PRESENCE_WRITE_INTERVAL_SECONDS: i64 = 30;
 const ACCOUNT_PRESENCE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
 const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 const ORACLE_ORIGIN_HEADER: &str = "x-e-posyandu-origin";
@@ -121,6 +129,11 @@ struct BrowserSession {
     mfa_verified: bool,
     #[serde(default)]
     mfa_pending_expires_at: Option<i64>,
+    /// Method used to complete the administrator's second factor.  Older
+    /// encrypted sessions do not have this field and are treated as stale so
+    /// they cannot bypass the current MFA ceremony.
+    #[serde(default)]
+    mfa_method: Option<String>,
     #[serde(default)]
     account_revision: i64,
 }
@@ -261,6 +274,9 @@ pub(crate) struct NativeAuth {
     allowed_origins: HashSet<String>,
     development: bool,
     local_turnstile_bypass: bool,
+    credential_migration_enabled: bool,
+    admin_credential_shadow_enabled: bool,
+    admin_security_shadow_enabled: bool,
 }
 
 fn required_env(name: &str) -> Result<String, String> {
@@ -582,6 +598,18 @@ fn jwt_expiration_seconds(token: &str) -> Option<i64> {
         .as_i64()
 }
 
+/// Native sessions that do not carry a Supabase access token cannot be
+/// forwarded to the legacy Queue API.  During the staged migration ordinary
+/// logins therefore obtain a short-lived Supabase session after the local
+/// Argon2 check and keep that token in the browser session.  An empty token is
+/// still supported for explicitly native-only sessions and must not enter the
+/// Supabase refresh flow.
+fn session_needs_refresh(access_token: &str, now: i64) -> bool {
+    !access_token.is_empty()
+        && jwt_expiration_seconds(access_token)
+            .is_none_or(|expires_at| expires_at <= now + SESSION_REFRESH_WINDOW_SECONDS)
+}
+
 fn jwt_aal(token: &str) -> Option<String> {
     let payload = token.split('.').nth(1)?;
     let decoded = general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
@@ -638,6 +666,23 @@ fn valid_admin_password(value: &str) -> bool {
         && value
             .chars()
             .any(|character| !character.is_ascii_alphanumeric())
+}
+
+fn hash_native_password(value: &str) -> Result<String, &'static str> {
+    let salt = SaltString::generate(&mut PasswordOsRng);
+    Argon2::default()
+        .hash_password(value.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|_| "hash Argon2id tidak dapat dibuat")
+}
+
+fn verify_native_password(password: &str, encoded_hash: &str) -> bool {
+    let Ok(parsed_hash) = PasswordHash::new(encoded_hash) else {
+        return false;
+    };
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed_hash)
+        .is_ok()
 }
 
 impl SessionStore {
@@ -870,6 +915,8 @@ impl SessionStore {
 
     fn touch_presence(&self, user_id: &str, session_identifier: &str) -> Result<(), NativeError> {
         let now = unix_seconds();
+        let user_hash = sha256_hex(&format!("presence-user:{user_id}"));
+        let session_hash = sha256_hex(&format!("presence-session:{session_identifier}"));
         let connection = self.connection.lock().map_err(|_| {
             NativeError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -877,17 +924,33 @@ impl SessionStore {
                 "Status aktivitas akun belum tersedia.",
             )
         })?;
+        let previous: Option<i64> = connection
+            .query_row(
+                "SELECT last_seen FROM account_presence WHERE user_id_hash=?1 AND session_hash=?2",
+                params![user_hash, session_hash],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| {
+                error!(%error, "presence akun tidak dapat dibaca");
+                NativeError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "presence_unavailable",
+                    "Status aktivitas akun belum tersedia.",
+                )
+            })?;
+        if previous.is_some_and(|last_seen| {
+            now.saturating_sub(last_seen) < PRESENCE_WRITE_INTERVAL_SECONDS
+        }) {
+            return Ok(());
+        }
         connection
             .execute(
                 "INSERT INTO account_presence(user_id_hash, session_hash, last_seen)
                  VALUES (?1, ?2, ?3)
-                 ON CONFLICT(user_id_hash, session_hash) DO UPDATE SET
+                ON CONFLICT(user_id_hash, session_hash) DO UPDATE SET
                     last_seen=excluded.last_seen",
-                params![
-                    sha256_hex(&format!("presence-user:{user_id}")),
-                    sha256_hex(&format!("presence-session:{session_identifier}")),
-                    now
-                ],
+                params![user_hash, session_hash, now],
             )
             .map_err(|error| {
                 error!(%error, "presence akun tidak dapat disimpan");
@@ -1607,13 +1670,12 @@ impl SupabaseClient {
         &self,
         access_token: &str,
         factor_id: &str,
-        payload: &Value,
     ) -> Result<Value, NativeError> {
         self.mfa_request(
             Method::POST,
             &format!("auth/v1/factors/{factor_id}/challenge"),
             access_token,
-            Some(payload),
+            None,
         )
         .await
     }
@@ -2127,6 +2189,16 @@ impl NativeAuth {
             .to_ascii_lowercase();
         let development = environment == "development";
         let local_turnstile_bypass = env_flag("ORACLE_API_LOCAL_TURNSTILE_BYPASS", false);
+        let credential_migration_enabled =
+            env_flag("ORACLE_API_NATIVE_CREDENTIAL_MIGRATION_ENABLED", false);
+        // Administrator passwords are shadowed only after Supabase verifies
+        // them successfully. The administrator still receives the existing
+        // Supabase MFA/passkey challenge until that verifier is migrated and
+        // tested, so this flag never changes the active admin login path.
+        let admin_credential_shadow_enabled =
+            env_flag("ORACLE_API_NATIVE_ADMIN_CREDENTIAL_SHADOW_ENABLED", false);
+        let admin_security_shadow_enabled =
+            env_flag("ORACLE_API_NATIVE_ADMIN_SECURITY_SHADOW_ENABLED", false);
         if local_turnstile_bypass && !development {
             return Err(
                 "ORACLE_API_LOCAL_TURNSTILE_BYPASS hanya boleh aktif di development.".into(),
@@ -2163,6 +2235,9 @@ impl NativeAuth {
             allowed_origins,
             development,
             local_turnstile_bypass,
+            credential_migration_enabled,
+            admin_credential_shadow_enabled,
+            admin_security_shadow_enabled,
         }))
     }
 
@@ -2383,8 +2458,11 @@ impl NativeAuth {
         if let Some(value) = bearer {
             let profile = self.supabase.verify_bearer(&value).await?;
             let account_revision = self.sessions.account_revision(&profile.user_id)?;
-            self.sessions
-                .touch_presence(&profile.user_id, &format!("bearer:{}", sha256_hex(&value)))?;
+            // Presence is telemetry only.  A busy SQLite telemetry write must
+            // not turn an otherwise valid bearer session into an error.
+            let _ = self
+                .sessions
+                .touch_presence(&profile.user_id, &format!("bearer:{}", sha256_hex(&value)));
             return Ok((
                 String::new(),
                 BrowserSession {
@@ -2399,6 +2477,7 @@ impl NativeAuth {
                     updated_at: now_iso(),
                     mfa_verified: true,
                     mfa_pending_expires_at: None,
+                    mfa_method: None,
                     account_revision,
                 },
             ));
@@ -2429,8 +2508,14 @@ impl NativeAuth {
                 "Hak akses akun berubah. Silakan masuk kembali.",
             ));
         }
-        let expires_soon = jwt_expiration_seconds(&session.access_token)
-            .is_none_or(|expires_at| expires_at <= unix_seconds() + SESSION_REFRESH_WINDOW_SECONDS);
+        // Reads from the dashboard fan out to several domain services at the
+        // same time.  Do not rewrite the shared SQLite row for every read:
+        // that turns harmless profile/collection reads into competing write
+        // transactions and can make a valid session look unauthorized while
+        // SQLite is busy.  Persist only when the provider token was refreshed
+        // or a legacy MFA flag had to be migrated.
+        let mut session_changed = false;
+        let expires_soon = session_needs_refresh(&session.access_token, unix_seconds());
         if expires_soon {
             let refreshed = match self.supabase.refresh(&session.refresh_token).await {
                 Ok(refreshed) => refreshed,
@@ -2451,6 +2536,22 @@ impl NativeAuth {
             session.refresh_token = refreshed.refresh_token;
             session.user = refreshed.user;
             session.updated_at = now_iso();
+            session_changed = true;
+        }
+        // A browser session from an earlier release may have the local
+        // `mfa_verified` flag set without recording which factor completed.
+        // Treat that legacy state as pending so it cannot bypass the current
+        // MFA ceremony. New sessions carry the method explicitly and remain
+        // valid when the short-lived provider token is refreshed.
+        if is_super_admin(&session.profile.role)
+            && session.mfa_verified
+            && session.mfa_method.is_none()
+        {
+            session.mfa_verified = false;
+            session.mfa_pending_expires_at = Some(unix_seconds() + ADMIN_MFA_PENDING_TTL_SECONDS);
+            session.mfa_method = None;
+            session.updated_at = now_iso();
+            session_changed = true;
         }
         if is_super_admin(&session.profile.role) && !session.mfa_verified {
             if session
@@ -2472,10 +2573,16 @@ impl NativeAuth {
                 ));
             }
         }
-        self.sessions.put(&identifier, &session)?;
+        if session_changed {
+            self.sessions.put(&identifier, &session)?;
+        }
         if !is_super_admin(&session.profile.role) || session.mfa_verified {
-            self.sessions
-                .touch_presence(&session.profile.user_id, &identifier)?;
+            // Presence is telemetry, not an authorization prerequisite.  A
+            // transient SQLite write contention must never log a user out of
+            // an otherwise valid browser session.
+            let _ = self
+                .sessions
+                .touch_presence(&session.profile.user_id, &identifier);
         }
         Ok((identifier, session))
     }
@@ -2506,6 +2613,9 @@ impl NativeAuth {
             .active_session(headers)
             .await
             .map_err(NativeError::into_response)?;
+        if session.access_token.is_empty() {
+            return Ok(None);
+        }
         HeaderValue::from_str(&format!("Bearer {}", session.access_token))
             .map(Some)
             .map_err(|_| {
@@ -2606,37 +2716,96 @@ impl NativeAuth {
                 "Username atau kata sandi tidak benar.",
             ));
         };
-        let Some(email) = account.email.as_deref().filter(|value| !value.is_empty()) else {
+        // Super-admin accounts remain on the Supabase path until the native
+        // MFA/passkey verifier is migrated. This keeps the existing second
+        // factor intact while ordinary migrated accounts can use Oracle only.
+        let native_first = !is_super_admin(&account.role);
+        let native_hash = if native_first {
             self.supabase
-                .audit_login(
-                    &request_id,
-                    &username,
-                    Some(&account),
-                    "login_failure",
-                    "account_email_missing",
-                )
-                .await;
-            return Err(NativeError::new(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "Username atau kata sandi tidak benar.",
-            ));
+                .database
+                .native_password_hash(&account.user_id)
+                .await
+                .map_err(|error_value| {
+                    native_database_error(error_value, "Layanan credential akun belum tersedia.")
+                })?
+        } else {
+            None
         };
-        let session = match self.supabase.password_login(email, &password).await {
-            Ok(session) => session,
-            Err(error_value) if error_value.status == StatusCode::UNAUTHORIZED => {
+        let (session, native_authenticated) = if let Some(encoded_hash) = native_hash {
+            if !verify_native_password(&password, &encoded_hash) {
                 self.supabase
                     .audit_login(
                         &request_id,
                         &username,
                         Some(&account),
                         "login_failure",
-                        "invalid_credentials",
+                        "invalid_native_credentials",
                     )
                     .await;
-                return Err(error_value);
+                return Err(NativeError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "Username atau kata sandi tidak benar.",
+                ));
             }
-            Err(error_value) => return Err(error_value),
+            // The analysis queue is still served by the legacy Cloudflare
+            // Worker.  It accepts Supabase bearer tokens only, so a local
+            // credential login must establish a bridge token after the
+            // Argon2 verification.  Keep the local hash as the primary
+            // verifier, while preserving the native-only fallback when an
+            // account has no email (those accounts cannot authenticate with
+            // Supabase until their profile is completed).
+            if let Some(email) = account.email.as_deref().filter(|value| !value.is_empty()) {
+                let bridge_session = self.supabase.password_login(email, &password).await?;
+                (bridge_session, true)
+            } else {
+                (
+                    SupabaseSession {
+                        access_token: String::new(),
+                        refresh_token: String::new(),
+                        user: SupabaseUser {
+                            id: account.user_id.clone(),
+                            email: account.email.clone(),
+                            factors: Vec::new(),
+                        },
+                    },
+                    true,
+                )
+            }
+        } else {
+            let Some(email) = account.email.as_deref().filter(|value| !value.is_empty()) else {
+                self.supabase
+                    .audit_login(
+                        &request_id,
+                        &username,
+                        Some(&account),
+                        "login_failure",
+                        "account_email_missing",
+                    )
+                    .await;
+                return Err(NativeError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "Username atau kata sandi tidak benar.",
+                ));
+            };
+            let session = match self.supabase.password_login(email, &password).await {
+                Ok(session) => session,
+                Err(error_value) if error_value.status == StatusCode::UNAUTHORIZED => {
+                    self.supabase
+                        .audit_login(
+                            &request_id,
+                            &username,
+                            Some(&account),
+                            "login_failure",
+                            "invalid_credentials",
+                        )
+                        .await;
+                    return Err(error_value);
+                }
+                Err(error_value) => return Err(error_value),
+            };
+            (session, false)
         };
         if session.user.id != account.user_id {
             self.supabase.logout(&session.access_token).await;
@@ -2663,6 +2832,55 @@ impl NativeAuth {
             account.posyandu.clone(),
             account.access_mode.clone(),
         )?;
+
+        // Dual-run migration: Supabase remains the password verifier. After a
+        // successful verification, persist only an Argon2id hash in Oracle so
+        // the account can be cut over after all validation is complete. The
+        // optional admin shadow writes the password hash for super_admin too,
+        // but deliberately leaves the Supabase MFA/passkey path active. A
+        // migration write failure must never block the existing login path.
+        if self.credential_migration_enabled
+            && !native_authenticated
+            && (!is_super_admin(&profile.role) || self.admin_credential_shadow_enabled)
+        {
+            match hash_native_password(&password) {
+                Ok(password_hash) => {
+                    if let Err(error_value) = self
+                        .supabase
+                        .database
+                        .store_native_password_hash(&profile.user_id, &password_hash)
+                        .await
+                    {
+                        warn!(
+                            user_id = %profile.user_id,
+                            error = ?error_value,
+                            "migrasi credential native gagal; Supabase tetap digunakan"
+                        );
+                    }
+                }
+                Err(error_value) => {
+                    warn!(
+                        user_id = %profile.user_id,
+                        error = error_value,
+                        "hash credential native gagal; Supabase tetap digunakan"
+                    );
+                }
+            }
+        }
+        if native_authenticated {
+            if let Err(error_value) = self
+                .supabase
+                .database
+                .mark_native_password_login(&profile.user_id)
+                .await
+            {
+                warn!(
+                    user_id = %profile.user_id,
+                    error = ?error_value,
+                    "status login credential native gagal diperbarui"
+                );
+            }
+        }
         let requires_mfa = is_super_admin(&profile.role);
         let factors = if requires_mfa {
             Some(self.admin_mfa_factors(&session).await)
@@ -2679,6 +2897,7 @@ impl NativeAuth {
             mfa_verified: !requires_mfa,
             mfa_pending_expires_at: requires_mfa
                 .then(|| unix_seconds() + ADMIN_MFA_PENDING_TTL_SECONDS),
+            mfa_method: None,
             account_revision: self.sessions.account_revision(&profile.user_id)?,
         };
         self.sessions.put(&identifier, &browser_session)?;
@@ -2741,22 +2960,51 @@ impl NativeAuth {
                 })
             })
             .collect::<Vec<_>>();
+        let mut passkey_count = Some(0_i32);
 
         // Supabase passkeys are credentials, not MFA factors. Include them in
         // the pending administrator response so the UI can choose the correct
         // passkey ceremony without pretending they are `/factors` records.
         match self.supabase.passkey_list(&session.access_token).await {
-            Ok(passkeys) => factors.extend(passkeys.into_iter().filter_map(|passkey| {
-                let id = passkey.get("id").and_then(Value::as_str)?.to_owned();
-                Some(json!({
-                    "id": id,
-                    "type": "webauthn",
-                    "name": passkey.get("friendly_name").cloned().unwrap_or(Value::Null)
-                }))
-            })),
+            Ok(passkeys) => {
+                passkey_count = i32::try_from(passkeys.len()).ok();
+                factors.extend(passkeys.into_iter().filter_map(|passkey| {
+                    let id = passkey.get("id").and_then(Value::as_str)?.to_owned();
+                    Some(json!({
+                        "id": id,
+                        "type": "webauthn",
+                        "name": passkey.get("friendly_name").cloned().unwrap_or(Value::Null)
+                    }))
+                }));
+            }
             Err(error_value) if error_value.code == "passkey_disabled" => {}
             Err(error_value) => {
+                passkey_count = None;
                 warn!(code = error_value.code, "daftar passkey tidak dapat dimuat");
+            }
+        }
+        if self.admin_security_shadow_enabled {
+            let totp_count = factors
+                .iter()
+                .filter(|factor| factor.get("type").and_then(Value::as_str) == Some("totp"))
+                .count();
+            if let Some(passkey_count) = passkey_count {
+                if let Err(error_value) = self
+                    .supabase
+                    .database
+                    .record_admin_security_shadow(
+                        &session.user.id,
+                        i32::try_from(totp_count).unwrap_or(i32::MAX),
+                        passkey_count,
+                    )
+                    .await
+                {
+                    warn!(
+                        user_id = %session.user.id,
+                        error = ?error_value,
+                        "metadata MFA/passkey administrator gagal disinkronkan"
+                    );
+                }
             }
         }
         factors
@@ -2862,6 +3110,7 @@ impl NativeAuth {
                 mfa_verified: !requires_mfa,
                 mfa_pending_expires_at: requires_mfa
                     .then(|| unix_seconds() + ADMIN_MFA_PENDING_TTL_SECONDS),
+                mfa_method: None,
                 account_revision: self.sessions.account_revision(&profile.user_id)?,
             },
         )?;
@@ -2964,10 +3213,9 @@ impl NativeAuth {
                 "Faktor verifikasi tidak valid.",
             ));
         }
-        let payload = json!({ "factorId": body.factor_id });
         let challenge = self
             .supabase
-            .mfa_challenge(&session.access_token, &body.factor_id, &payload)
+            .mfa_challenge(&session.access_token, &body.factor_id)
             .await?;
         Ok(response_json(
             StatusCode::OK,
@@ -3062,8 +3310,18 @@ impl NativeAuth {
                 .supabase
                 .mfa_verify(&session.access_token, factor_id, &payload)
                 .await?;
+            // Supabase's MFA endpoint has already checked the challenge and
+            // code. Some Auth deployments omit the optional `aal` claim from
+            // the returned JWT, so the local browser session must not reject
+            // an otherwise valid provider session solely because that claim
+            // is absent. Raw bearer requests remain protected by the strict
+            // AAL2 check in `verify_bearer`.
+            let verified_aal = jwt_aal(&verified.access_token);
             if verified.user.id != session.profile.user_id
-                || jwt_aal(&verified.access_token).as_deref() != Some("aal2")
+                || verified.access_token.is_empty()
+                || verified_aal
+                    .as_deref()
+                    .is_some_and(|aal| !matches!(aal, "aal1" | "aal2"))
             {
                 self.sessions.delete(&identifier);
                 return Err(NativeError::new(
@@ -3081,10 +3339,14 @@ impl NativeAuth {
         }
         session.mfa_verified = true;
         session.mfa_pending_expires_at = None;
+        session.mfa_method = Some(body.factor_type.clone());
         session.updated_at = now_iso();
         self.sessions.put(&identifier, &session)?;
-        self.sessions
-            .touch_presence(&session.profile.user_id, &identifier)?;
+        // Recording presence is best-effort and must never invalidate a
+        // successful MFA ceremony when the shared session database is busy.
+        let _ = self
+            .sessions
+            .touch_presence(&session.profile.user_id, &identifier);
         self.supabase
             .audit_mfa(&session.profile, &body.factor_type)
             .await;
@@ -3193,16 +3455,31 @@ impl NativeAuth {
         let recovery_codes = self
             .sessions
             .ensure_recovery_codes(&session.profile.user_id)?;
-        session.mfa_verified = true;
-        session.mfa_pending_expires_at = None;
+        // Registration creates a credential but does not authenticate it.
+        // Initial setup must continue with a passkey-authentication ceremony
+        // before accessing the application.  A registration performed from
+        // an already verified session remains verified.
+        let authenticated = session.mfa_verified && session.mfa_method.is_some();
+        session.mfa_verified = authenticated;
+        session.mfa_pending_expires_at = (!authenticated)
+            .then(|| unix_seconds() + ADMIN_MFA_PENDING_TTL_SECONDS);
+        if authenticated {
+            session.mfa_method = Some("webauthn".into());
+        } else {
+            session.mfa_method = None;
+        }
         session.updated_at = now_iso();
         self.sessions.put(&identifier, &session)?;
-        self.sessions
-            .touch_presence(&session.profile.user_id, &identifier)?;
-        self.supabase.audit_mfa(&session.profile, "webauthn").await;
+        if authenticated {
+            let _ = self
+                .sessions
+                .touch_presence(&session.profile.user_id, &identifier);
+            self.supabase.audit_mfa(&session.profile, "webauthn").await;
+        }
         Ok(response_json(
             StatusCode::OK,
             json!({
+                "mfaRequired": !authenticated,
                 "user": { "id": session.user.id, "email": session.user.email },
                 "profile": profile_payload(&session.profile),
                 "recoveryCodes": recovery_codes
@@ -3303,6 +3580,23 @@ impl NativeAuth {
                 "Passkey tersebut bukan milik akun administrator yang sedang masuk.",
             ));
         }
+        // Passkeys are verified by Supabase's WebAuthn endpoint rather than
+        // the TOTP MFA factor API. The resulting JWT may be AAL1 or omit the
+        // optional `aal` claim, so local MFA state records the successful
+        // ceremony while bearer authorization keeps its strict AAL2 policy.
+        let verified_aal = jwt_aal(&verified.access_token);
+        if verified.access_token.is_empty()
+            || verified_aal
+                .as_deref()
+                .is_some_and(|aal| !matches!(aal, "aal1" | "aal2"))
+        {
+            self.supabase.logout(&verified.access_token).await;
+            return Err(NativeError::new(
+                StatusCode::UNAUTHORIZED,
+                "mfa_failed",
+                "Verifikasi passkey tidak menghasilkan sesi administrator yang aman.",
+            ));
+        }
         session.access_token = verified.access_token;
         session.refresh_token = verified.refresh_token;
         session.user = verified.user;
@@ -3311,10 +3605,12 @@ impl NativeAuth {
             .ensure_recovery_codes(&session.profile.user_id)?;
         session.mfa_verified = true;
         session.mfa_pending_expires_at = None;
+        session.mfa_method = Some("webauthn".into());
         session.updated_at = now_iso();
         self.sessions.put(&identifier, &session)?;
-        self.sessions
-            .touch_presence(&session.profile.user_id, &identifier)?;
+        let _ = self
+            .sessions
+            .touch_presence(&session.profile.user_id, &identifier);
         self.supabase.audit_mfa(&session.profile, "webauthn").await;
         Ok(response_json(
             StatusCode::OK,
@@ -3776,7 +4072,12 @@ impl NativeAuth {
         drop(request);
         if let Some(identifier) = self.cookie_identifier(&headers) {
             if let Ok(Some(session)) = self.sessions.get(&identifier) {
-                self.supabase.logout(&session.access_token).await;
+                if !session.access_token.is_empty() {
+                    // Only revoke the token used by this browser session.
+                    // Supabase's default logout scope is `global`, which
+                    // would invalidate the same account on every device.
+                    self.supabase.logout_local(&session.access_token).await;
+                }
                 self.sessions
                     .clear_presence(&session.profile.user_id, &identifier);
             }
@@ -3838,6 +4139,7 @@ mod tests {
             updated_at: now_iso(),
             mfa_verified: true,
             mfa_pending_expires_at: None,
+            mfa_method: None,
             account_revision: 0,
         }
     }
@@ -3962,6 +4264,28 @@ mod tests {
         ));
         assert!(!account_is_online(false, Some(now), now));
         assert!(!account_is_online(true, None, now));
+    }
+
+    #[test]
+    fn native_password_hash_verifies_only_the_original_password() {
+        let encoded = hash_native_password("Valid-password-123!").expect("argon2id hash");
+        assert!(
+            encoded.starts_with("$argon2id$")
+                && verify_native_password("Valid-password-123!", &encoded)
+        );
+        assert!(!verify_native_password("wrong-password", &encoded));
+        assert!(!verify_native_password(
+            "Valid-password-123!",
+            "not-a-password-hash"
+        ));
+    }
+
+    #[test]
+    fn native_session_without_supabase_token_never_refreshes() {
+        assert!(!session_needs_refresh("", unix_seconds()));
+        // A non-empty malformed/expired token still follows the existing
+        // refresh policy, while native-only sessions remain Oracle-local.
+        assert!(session_needs_refresh("not-a-jwt", unix_seconds()));
     }
 
     #[test]

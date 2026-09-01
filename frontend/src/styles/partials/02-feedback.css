@@ -293,6 +293,40 @@
   animation: app-skeleton-shimmer 1.5s ease-in-out infinite;
 }
 
+/* Dashboard metric placeholders keep the real cards stable while the first
+ * stats response is fetched. This prevents the initial EMPTY_DASHBOARD_STATS
+ * values from flashing as genuine zeros. */
+.dashboard-stat-skeleton-value {
+  width: 58px;
+  height: 30px;
+  border-radius: 10px;
+}
+
+.dashboard-stat-skeleton-prevalence {
+  width: 64px;
+  height: 36px;
+  border-radius: 12px;
+}
+
+.dashboard-stat-skeleton-percent {
+  width: 34px;
+  height: 14px;
+  flex: 0 0 34px;
+  border-radius: 6px;
+}
+
+.dashboard-stat-skeleton-progress {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.dashboard-stat-skeleton-asi {
+  width: 132px;
+  height: 30px;
+  border-radius: 10px;
+}
+
 .app-loading-card-title,
 .app-page-skeleton-card-label,
 .app-table-skeleton-meta,

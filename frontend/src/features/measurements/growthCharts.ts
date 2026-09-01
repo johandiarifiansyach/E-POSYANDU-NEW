@@ -56,14 +56,21 @@ function chronologicalMeasurements(history, child) {
     .sort((left, right) => new Date(left.tglUkur).getTime() - new Date(right.tglUkur).getTime());
 
   return measurements.map((item, index) => {
-    if (index === 0) return { ...item, breakBefore: false };
+    if (index === 0) return { ...item, breakBefore: false, anomaly: null };
     const previous = measurements[index - 1];
     const currentMonth = calendarMonthIndex(item.tglUkur);
     const previousMonth = calendarMonthIndex(previous.tglUkur);
     const missedPreviousMonth = currentMonth !== null && previousMonth !== null && currentMonth - previousMonth > 1;
+    const currentHeight = numeric(item.tb);
+    const previousHeight = numeric(previous.tb);
+    const heightDecreased = currentHeight !== null && previousHeight !== null && currentHeight < previousHeight - 0.1;
     return {
       ...item,
       breakBefore: missedPreviousMonth || String(item.statusNaik || '').toUpperCase() === 'O',
+      anomaly: heightDecreased ? {
+        code: 'height_decreased',
+        message: 'Tinggi/panjang badan lebih rendah dari pengukuran sebelumnya',
+      } : null,
     };
   });
 }
@@ -98,6 +105,7 @@ function createModel({ type, title, xLabel, yLabel, unit, standard, measurements
     }
     childPoints.push({
       ...point,
+      anomaly: measurement.anomaly,
       breakBefore: childPoints.length > 0 && (skippedMeasurementSinceLastPoint || measurement.breakBefore === true),
     });
     skippedMeasurementSinceLastPoint = false;
@@ -339,8 +347,9 @@ export function drawGrowthChart(canvas, model, options = {}) {
     context.stroke();
   }
   model.childPoints.forEach((point) => {
-    context.fillStyle = '#ffffff';
-    context.strokeStyle = '#007aff';
+    const anomaly = Boolean(point.anomaly);
+    context.fillStyle = anomaly ? '#fff1f0' : '#ffffff';
+    context.strokeStyle = anomaly ? '#d92d20' : '#007aff';
     context.lineWidth = 4;
     context.beginPath();
     context.arc(mapX(point.x), mapY(point.y), 7, 0, Math.PI * 2);
@@ -364,6 +373,9 @@ export function drawGrowthChart(canvas, model, options = {}) {
     ...model.curves.map((curve) => ({ label: `${curve.zScore > 0 ? '+' : ''}${curve.zScore} SD`, color: curve.color, dashed: Math.abs(curve.zScore) === 3 })),
     { label: 'Hasil anak', color: '#007aff' },
   ];
+  if (model.childPoints.some((point) => point.anomaly)) {
+    legend.push({ label: 'Anomali tinggi', color: '#d92d20' });
+  }
   let legendX = margin.left;
   const legendY = 91;
   context.font = '600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';

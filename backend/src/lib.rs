@@ -33,8 +33,9 @@ const CSP_REPORT_MAX_BODY_BYTES: usize = 16 * 1024;
 const SCOPE_CACHE_MAX_ENTRIES: usize = 256;
 const INTERNAL_REQUEST_MAX_AGE_SECONDS: f64 = 60.0;
 const NUTRITION_BATCH_MAX_ITEMS: usize = 10_000;
-const NUTRITION_WORKER_HEALTH_KEY: &str = "monitoring:nutrition-worker:v1";
-const NUTRITION_WORKER_FAILURE_THRESHOLD: u32 = 3;
+const DATA_PROCESSING_WORKER_HEALTH_KEY: &str = "monitoring:data-processing-worker:v1";
+const LEGACY_NUTRITION_WORKER_HEALTH_KEY: &str = "monitoring:nutrition-worker:v1";
+const DATA_PROCESSING_WORKER_FAILURE_THRESHOLD: u32 = 3;
 const R2_STORAGE_STATE_KEY: &str = "monitoring:r2-storage:v1";
 const MONITORING_STATE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 const R2_CLEANUP_PREFIX: &str = "jobs/";
@@ -87,7 +88,7 @@ struct LoginAttempt {
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct NutritionWorkerHealth {
+struct DataProcessingWorkerHealth {
     status: String,
     checked_at: String,
     latency_ms: u64,
@@ -534,25 +535,29 @@ fn openapi_document() -> ApiResult<serde_json::Value> {
         .map_err(|_| ApiFailure::new(500, "Dokumentasi API tidak valid."))
 }
 
-async fn read_nutrition_worker_health(env: &Env) -> Option<NutritionWorkerHealth> {
-    let stored = redis_get_text(env, NUTRITION_WORKER_HEALTH_KEY).await?;
+async fn read_data_processing_worker_health(env: &Env) -> Option<DataProcessingWorkerHealth> {
+    let stored = if let Some(current) = redis_get_text(env, DATA_PROCESSING_WORKER_HEALTH_KEY).await {
+        current
+    } else {
+        redis_get_text(env, LEGACY_NUTRITION_WORKER_HEALTH_KEY).await?
+    };
     serde_json::from_str(&stored).ok()
 }
 
-async fn write_nutrition_worker_health(env: &Env, state: &NutritionWorkerHealth) {
+async fn write_data_processing_worker_health(env: &Env, state: &DataProcessingWorkerHealth) {
     let Ok(payload) = serde_json::to_string(state) else {
-        worker::console_warn!("Status nutrition worker tidak dapat diserialisasi.");
+        worker::console_warn!("Status data-processing worker tidak dapat diserialisasi.");
         return;
     };
     if !redis_set_text(
         env,
-        NUTRITION_WORKER_HEALTH_KEY,
+        DATA_PROCESSING_WORKER_HEALTH_KEY,
         payload,
         MONITORING_STATE_TTL_SECONDS,
     )
     .await
     {
-        worker::console_warn!("Status nutrition worker tidak dapat disimpan ke Redis.");
+        worker::console_warn!("Status data-processing worker tidak dapat disimpan ke Redis.");
     }
 }
 
@@ -733,16 +738,16 @@ fn monitoring_alert_configured(env: &Env) -> bool {
             && optional_secret(env, "ERROR_REPORT_EMAIL_FROM").is_some())
 }
 
-async fn send_monitoring_alert(env: &Env, state: &NutritionWorkerHealth, recovered: bool) {
+async fn send_monitoring_alert(env: &Env, state: &DataProcessingWorkerHealth, recovered: bool) {
     let environment = environment_name(env);
     let event = if recovered {
-        "nutrition_worker_recovered"
+        "data_processing_worker_recovered"
     } else {
-        "nutrition_worker_down"
+        "data_processing_worker_down"
     };
     let alert = json!({
         "event": event,
-        "service": "nutrition-grpc-worker",
+        "service": "data-processing-worker",
         "environment": environment,
         "status": state.status,
         "checkedAt": state.checked_at,
@@ -784,16 +789,16 @@ async fn send_monitoring_alert(env: &Env, state: &NutritionWorkerHealth, recover
         return;
     };
     let subject = if recovered {
-        format!("[E-Posyandu][{environment}] Nutrition worker kembali normal")
+        format!("[E-Posyandu][{environment}] Data-processing worker kembali normal")
     } else {
-        format!("[E-Posyandu][{environment}] Nutrition worker tidak tersedia")
+        format!("[E-Posyandu][{environment}] Data-processing worker tidak tersedia")
     };
     let body = json!({
         "from": email_from,
         "to": [email_to],
         "subject": subject,
         "text": format!(
-            "Layanan nutrition-grpc-worker berstatus {}.\nWaktu pemeriksaan: {}\nKegagalan berturut-turut: {}\n",
+            "Layanan data-processing-worker berstatus {}.\nWaktu pemeriksaan: {}\nKegagalan berturut-turut: {}\n",
             state.status, state.checked_at, state.consecutive_failures
         ),
     });
@@ -825,7 +830,7 @@ async fn monitoring_status(request: Request, env: &Env) -> ApiResult<serde_json:
             "Status infrastruktur hanya tersedia untuk Ahli Gizi.",
         ));
     }
-    let worker = read_nutrition_worker_health(env)
+    let worker = read_data_processing_worker_health(env)
         .await
         .map(|state| serde_json::to_value(state).unwrap_or_else(|_| json!({ "status": "unknown" })))
         .unwrap_or_else(|| {
@@ -886,7 +891,7 @@ async fn readiness_status(env: &Env) -> ApiResult<serde_json::Value> {
     let queue_configured = env.queue("E_POSYANDU_JOBS").is_ok();
     let storage_configured = env.bucket("E_POSYANDU_FILES").is_ok();
     let read_replica_configured = read_replica_configured(env);
-    let worker = read_nutrition_worker_health(env).await;
+    let worker = read_data_processing_worker_health(env).await;
     let worker_status = worker
         .as_ref()
         .map(|state| state.status.as_str())
@@ -929,7 +934,7 @@ async fn readiness_status(env: &Env) -> ApiResult<serde_json::Value> {
             },
             "queue": { "configured": queue_configured },
             "storage": { "configured": storage_configured },
-            "nutritionWorker": {
+            "dataProcessingWorker": {
                 "status": worker_status,
                 "checkedAt": worker.as_ref().map(|state| state.checked_at.clone()),
                 "latencyMs": worker.as_ref().map(|state| state.latency_ms),
@@ -2251,7 +2256,10 @@ async fn logout(request: &Request, env: &Env) -> serde_json::Value {
         ) {
             if let Ok(headers) = supabase_headers(&publishable_key, Some(&session.access_token)) {
                 let _ = request_value(
-                    format!("{}/auth/v1/logout", supabase_url.trim_end_matches('/')),
+                    format!(
+                        "{}/auth/v1/logout?scope=local",
+                        supabase_url.trim_end_matches('/')
+                    ),
                     Method::Post,
                     headers,
                     None,
@@ -2746,7 +2754,7 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
 }
 
 #[event(scheduled)]
-pub async fn keep_nutrition_worker_awake(
+pub async fn keep_data_processing_worker_awake(
     _event: worker::ScheduledEvent,
     env: Env,
     _context: worker::ScheduleContext,
@@ -2754,9 +2762,9 @@ pub async fn keep_nutrition_worker_awake(
     monitor_and_cleanup_r2(&env).await;
     cleanup_child_retention(&env).await;
     let checked_at = now_iso();
-    let previous = read_nutrition_worker_health(&env).await;
+    let previous = read_data_processing_worker_health(&env).await;
     let Some(health_url) = optional_secret(&env, "RUST_WORKER_HEALTH_URL") else {
-        let state = NutritionWorkerHealth {
+        let state = DataProcessingWorkerHealth {
             status: "unconfigured".into(),
             checked_at,
             latency_ms: 0,
@@ -2769,7 +2777,7 @@ pub async fn keep_nutrition_worker_awake(
                 .as_ref()
                 .and_then(|state| state.last_failure_at.clone()),
         };
-        write_nutrition_worker_health(&env, &state).await;
+        write_data_processing_worker_health(&env, &state).await;
         return;
     };
     let Ok(health_url) = url::Url::parse(&health_url) else {
@@ -2797,12 +2805,12 @@ pub async fn keep_nutrition_worker_awake(
     };
     let status = if healthy {
         "healthy"
-    } else if consecutive_failures >= NUTRITION_WORKER_FAILURE_THRESHOLD {
+    } else if consecutive_failures >= DATA_PROCESSING_WORKER_FAILURE_THRESHOLD {
         "down"
     } else {
         "degraded"
     };
-    let state = NutritionWorkerHealth {
+    let state = DataProcessingWorkerHealth {
         status: status.into(),
         checked_at: checked_at.clone(),
         latency_ms,
@@ -2827,13 +2835,13 @@ pub async fn keep_nutrition_worker_awake(
         .as_ref()
         .map(|state| state.status.as_str())
         .unwrap_or("unknown");
-    write_nutrition_worker_health(&env, &state).await;
+    write_data_processing_worker_health(&env, &state).await;
 
     worker::console_log!(
         "{}",
         json!({
             "level": if healthy { "info" } else { "warn" },
-            "event": "nutrition_worker_health",
+            "event": "data_processing_worker_health",
             "environment": environment_name(&env),
             "status": state.status,
             "status_code": state.status_code,

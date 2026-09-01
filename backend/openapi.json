@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "E-Posyandu Puskesmas Gumukmas API",
-    "version": "3.7.0",
+    "version": "3.8.0",
     "description": "REST API untuk autentikasi, CRUD, sinkronisasi, dan ekspor, serta endpoint GraphQL baca E-Posyandu."
   },
   "servers": [
@@ -1089,12 +1089,12 @@
           },
           "services": {
             "type": "object",
-            "required": ["api", "database", "redis", "nutritionWorker"],
+            "required": ["api", "database", "redis", "dataProcessingWorker"],
             "properties": {
               "api": { "type": "string", "enum": ["online", "offline"] },
               "database": { "type": "string", "enum": ["online", "offline"] },
               "redis": { "type": "string", "enum": ["online", "offline"] },
-              "nutritionWorker": { "type": "string", "enum": ["online", "offline"] }
+              "dataProcessingWorker": { "type": "string", "enum": ["online", "offline"] }
             }
           }
         }

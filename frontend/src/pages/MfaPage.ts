@@ -109,7 +109,27 @@ export function mountMfaPage(container: HTMLElement, options: Options): () => vo
             const ceremony = await completeWebAuthnRegistration(challenge);
             return verifyPasskeyRegistration(options.auth, ceremony.challengeId, ceremony.credential);
           })();
-      await finish({ profile: result.profile, recoveryCodes: result.recoveryCodes });
+      if (!factor && 'requiresAuthentication' in result && result.requiresAuthentication) {
+        // Registering the first passkey creates a credential but does not
+        // itself produce an AAL2 session. Immediately authenticate the newly
+        // registered credential so the administrator can enter the app while
+        // keeping the recovery codes generated during setup visible.
+        const challenge = await startPasskeyAuthentication();
+        const ceremony = await completeWebAuthnAuthentication(challenge);
+        const authenticated = await verifyPasskeyAuthentication(
+          options.auth,
+          ceremony.challengeId,
+          ceremony.credential
+        );
+        await finish({
+          profile: authenticated.profile,
+          recoveryCodes: result.recoveryCodes.length > 0
+            ? result.recoveryCodes
+            : authenticated.recoveryCodes
+        });
+      } else {
+        await finish({ profile: result.profile, recoveryCodes: result.recoveryCodes });
+      }
     } catch (error) {
       renderChoice(error instanceof Error ? error.message : 'Passkey tidak dapat diverifikasi.');
     } finally {
@@ -253,6 +273,9 @@ export function mountMfaPage(container: HTMLElement, options: Options): () => vo
         : 'Pilih metode verifikasi yang sudah terdaftar.'),
       message ? errorText(message) : null,
       button(passkey ? 'Gunakan passkey' : 'Daftarkan passkey', () => { void runPasskey(passkey); }),
+      passkey
+        ? button('Daftarkan passkey baru', () => { void runPasskey(); }, true)
+        : null,
       button(totp ? 'Gunakan authenticator (TOTP)' : 'Siapkan authenticator (TOTP)', () => {
         if (totp) renderTotp(totp.id);
         else void setupTotp();

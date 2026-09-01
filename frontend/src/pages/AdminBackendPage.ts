@@ -8,11 +8,11 @@ import { getAuth, startPasskeyRegistration, verifyPasskeyRegistration } from '..
 import { DATA_WILAYAH } from '../config/dashboard';
 import AdminMonitoringPanel from './AdminMonitoringPanel';
 import { AdminAccountTableSkeleton } from '../ui/skeleton';
-import { completeWebAuthnRegistration } from '../security/webauthn';
+import { completeWebAuthnRegistration, passkeyErrorMessage } from '../security/webauthn';
 import {
     Activity, AlertTriangle, CheckCircle2, ClipboardCheck, CloudflareLogo, Clock, Loader2, NeonLogo,
     Pencil, PostgreSQLLogo, RedisLogo, RotateCcw, Search, SupabaseLogo, Trash2, TrendingUp,
-    UserPlus, UserRound, Users, Utensils, X
+    UserPlus, UserRound, Users, X
 } from '../ui/icons';
 
 type AccountRole = AdminAccountInput['role'];
@@ -51,7 +51,7 @@ const formatDateTime = (value: string | null) => {
 };
 const serviceLabel = (key: string) => ({
     api: 'API Utama', database: 'Database', authentication: 'Autentikasi', cache: 'Cache',
-    queue: 'Antrean', storage: 'Penyimpanan', nutritionWorker: 'Worker Gizi',
+    queue: 'Antrean', storage: 'Penyimpanan', nutritionWorker: 'Worker Gizi', dataProcessingWorker: 'Data Processing Worker',
     nativeCore: 'Backend Native', migrationProxy: 'Jalur Migrasi',
     'oracle-api': 'Oracle API Gateway',
     'identity-service': 'Identity Service',
@@ -59,7 +59,7 @@ const serviceLabel = (key: string) => ({
     'realtime-service': 'Realtime Service',
     'monitoring-service': 'Monitoring Service',
     'redis-cache': 'Redis Cache',
-    'nutrition-worker': 'Nutrition Worker',
+    'data-processing-worker': 'Data Processing Worker',
     'health-proxy': 'Health Proxy',
     'oracle-database': 'Database Oracle',
     'supabase-database': 'Database Supabase',
@@ -75,7 +75,7 @@ const serviceIcon = (key: string) => ({
     'realtime-service': Activity,
     'monitoring-service': TrendingUp,
     'redis-cache': RedisLogo,
-    'nutrition-worker': Utensils,
+    'data-processing-worker': Activity,
     'health-proxy': CheckCircle2,
     'oracle-database': PostgreSQLLogo,
     'supabase-database': SupabaseLogo,
@@ -84,6 +84,25 @@ const serviceIcon = (key: string) => ({
     'cloudflare-pages': CloudflareLogo,
     'cloudflare-queue': CloudflareLogo
 }[key] || Activity);
+// Reuse the same palette as the sidebar so service cards are recognizable at
+// a glance. The online/offline text remains the source of truth for health;
+// the icon color communicates the service/provider category.
+const serviceTone = (key: string) => ({
+    'oracle-api': 'blue',
+    'identity-service': 'cyan',
+    'operations-service': 'indigo',
+    'realtime-service': 'pink',
+    'monitoring-service': 'orange',
+    'redis-cache': 'red',
+    'data-processing-worker': 'orange',
+    'health-proxy': 'slate',
+    'oracle-database': 'postgres',
+    'supabase-database': 'green',
+    'neon-database': 'purple',
+    'edge-api': 'orange',
+    'cloudflare-pages': 'orange',
+    'cloudflare-queue': 'orange'
+}[key] || 'blue');
 const serviceOnline = (component: Record<string, unknown>) => {
     if (component.enabled === false || component.configured === false) return false;
     if (component.reachable === false || component.databaseReachable === false) return false;
@@ -270,7 +289,7 @@ export default function AdminBackendPage() {
                 ? 'Passkey berhasil didaftarkan. Simpan recovery code yang baru ditampilkan secara offline.'
                 : 'Passkey berhasil didaftarkan untuk akun Administrator.');
         } catch (passkeyError) {
-            setError(passkeyError instanceof Error ? passkeyError.message : 'Passkey belum dapat didaftarkan.');
+            setError(passkeyErrorMessage(passkeyError, 'create'));
         } finally { setPasskeySaving(false); }
     };
 
@@ -278,7 +297,7 @@ export default function AdminBackendPage() {
         Native.createElement('section', { className: 'admin-backend-hero' },
             Native.createElement('div', { className: 'admin-backend-hero-copy' },
                 Native.createElement('span', { className: 'admin-backend-access-badge' },
-                    Native.createElement(CheckCircle2, { className: 'h-4 w-4' }), 'Akses backend penuh'),
+                    Native.createElement(CheckCircle2, { className: 'h-4 w-4' }), 'Akses administrator'),
                 Native.createElement('h2', null, 'Administrasi Backend'),
                 Native.createElement('p', null, 'Kelola akun, role, batas wilayah, hak baca/edit, serta pantau layanan dan aktivitas akun.')),
             Native.createElement('button', { type: 'button', className: 'admin-backend-refresh',
@@ -318,7 +337,7 @@ export default function AdminBackendPage() {
                     passkeySaving ? 'Mendaftarkan…' : 'Daftarkan passkey'))),
         activeSection === 'overview' && Native.createElement('section', { className: 'admin-backend-section' },
             Native.createElement('div', { className: 'admin-section-heading' },
-                Native.createElement('div', null, Native.createElement('h3', null, 'Status layanan backend'),
+                Native.createElement('div', null, Native.createElement('h3', null, 'Status layanan'),
                     Native.createElement('p', null, readiness?.environment || 'Memeriksa koneksi layanan...')),
                 readiness && Native.createElement('span', { className: `admin-system-badge ${readiness.ok ? 'is-online' : 'is-offline'}` },
                     Native.createElement('span', { className: 'admin-presence-dot' }), readiness.ok ? 'Sistem siap' : 'Perlu perhatian')),
@@ -335,7 +354,7 @@ export default function AdminBackendPage() {
                                         const online = serviceOnline(component);
                                         const ServiceIcon = serviceIcon(key);
                                         return Native.createElement('article', { key, className: 'admin-service-card' },
-                                            Native.createElement('span', { className: `admin-service-icon ${online ? 'is-online' : 'is-offline'}` }, Native.createElement(ServiceIcon, { className: 'h-5 w-5' })),
+                                            Native.createElement('span', { className: `admin-service-icon is-${serviceTone(key)} ${online ? 'is-online' : 'is-offline'}` }, Native.createElement(ServiceIcon, { className: 'h-5 w-5' })),
                                             Native.createElement('div', null, Native.createElement('strong', null, serviceLabel(key)), Native.createElement('p', null, serviceDetail(component))),
                                             Native.createElement('span', { className: `admin-service-state ${online ? 'is-online' : 'is-offline'}` }, online ? 'Online' : 'Offline'));
                                     })

@@ -8,12 +8,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .compile_protos(
             &[
-                "../nutrition-grpc/proto/nutrition.proto",
+                "../data-processing-service/proto/data_processing.proto",
+                "../analysis-service/proto/analysis.proto",
                 "proto/microservices.proto",
             ],
-            &["../nutrition-grpc/proto", "proto"],
+            &[
+                "../data-processing-service/proto",
+                "../analysis-service/proto",
+                "proto",
+            ],
         )?;
-    println!("cargo:rerun-if-changed=../nutrition-grpc/proto/nutrition.proto");
+    println!("cargo:rerun-if-changed=../data-processing-service/proto/data_processing.proto");
+    println!("cargo:rerun-if-changed=../analysis-service/proto/analysis.proto");
     println!("cargo:rerun-if-changed=proto/microservices.proto");
     Ok(())
 }

@@ -26,7 +26,7 @@ jobs:
           workspaces: |
             backend
             services/eposyandu-proto
-            services/nutrition-grpc
+            services/data-processing-service
             services/oracle-api
             services/oracle-domain
             services/identity-service
@@ -99,7 +99,7 @@ jobs:
           emit read_replica '^services/neon-read-worker/'
           emit frontend '^(frontend/|deploy/oracle/frontend/)'
           emit oracle_api '^(services/oracle-api/|services/oracle-domain/|services/(identity|operations|realtime|monitoring)-service/|services/eposyandu-proto/|deploy/oracle/)'
-          emit nutrition_worker '^services/(nutrition-grpc|eposyandu-proto)/'
+          emit data_processing_worker '^services/(data-processing-service|eposyandu-proto)/'
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: npm ci --prefix frontend
       - run: npm ci --prefix services/neon-read-worker

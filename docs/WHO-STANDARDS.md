@@ -22,4 +22,4 @@ Perubahan data acuan hanya boleh dilakukan melalui perubahan yang menyertakan:
 3. pembaruan golden tests untuk kedua jenis kelamin, titik batas umur, dan transisi panjang/tinggi;
 4. tinjauan tenaga gizi sebelum diterapkan ke production.
 
-Jalankan `npm run standards:verify` untuk memastikan file data lokal belum berubah dan frontend, Worker, serta layanan gRPC memakai tabel antropometri yang identik.
+Jalankan `npm run standards:verify` untuk memastikan file data lokal belum berubah dan frontend, Worker, serta `analysis-service` Python memakai tabel antropometri yang identik.

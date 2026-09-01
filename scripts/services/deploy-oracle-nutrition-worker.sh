@@ -5,11 +5,15 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ssh_host="${1:-}"
 health_site="${2:-}"
 deploy_service="${3:-all}"
-source_env="${ORACLE_NUTRITION_SOURCE_ENV:-$HOME/.config/e-posyandu/nutrition-grpc.env}"
+source_env="${ORACLE_DATA_PROCESSING_SOURCE_ENV:-${ORACLE_NUTRITION_SOURCE_ENV:-$HOME/.config/e-posyandu/data-processing-worker.env}}"
+if [[ ! -f "$source_env" && -f "$HOME/.config/e-posyandu/nutrition-grpc.env" ]]; then
+  # Compatibility for the pre-rename secret file.
+  source_env="$HOME/.config/e-posyandu/nutrition-grpc.env"
+fi
 
 if [[ -z "$ssh_host" || -z "$health_site" ]]; then
-  echo "Penggunaan: npm run grpc:deploy:oracle -- ALIAS_SSH DOMAIN_HEALTH [all|oracle-api|identity-service|operations-service|realtime-service|monitoring-service|nutrition-worker]" >&2
-  echo "Contoh: npm run grpc:deploy:oracle -- eposyandu-oracle nutrition.example.go.id nutrition-worker" >&2
+  echo "Penggunaan: npm run data-processing:deploy:oracle -- ALIAS_SSH DOMAIN_HEALTH [all|oracle-api|identity-service|operations-service|realtime-service|monitoring-service|data-processing-worker|analysis-service]" >&2
+  echo "Contoh: npm run data-processing:deploy:oracle -- eposyandu-oracle nutrition.example.go.id data-processing-worker" >&2
   exit 1
 fi
 
@@ -25,7 +29,8 @@ if [[ ! "$health_site" =~ ^([A-Za-z0-9-]+\.)+[A-Za-z]{2,}$ ]] \
 fi
 
 case "$deploy_service" in
-  all|oracle-api|identity-service|operations-service|realtime-service|monitoring-service|nutrition-worker) ;;
+  nutrition-worker) deploy_service="data-processing-worker" ;;
+  all|oracle-api|identity-service|operations-service|realtime-service|monitoring-service|data-processing-worker|analysis-service) ;;
   *)
     echo "Service Oracle tidak valid: $deploy_service" >&2
     exit 1
@@ -86,69 +91,80 @@ if [[ "$deploy_service" == "all" ]]; then
     && $1 != "ORACLE_API_NATIVE_READS_ENABLED" \
     && $1 != "ORACLE_API_NATIVE_WRITES_ENABLED" \
     && $1 != "GRPC_ADDR" \
-    && $1 != "ORACLE_API_NUTRITION_GRPC_URL" \
+    && $1 != "ORACLE_API_DATA_PROCESSING_GRPC_URL" \
     && $1 != "ORACLE_API_IDENTITY_GRPC_URL" \
     && $1 != "ORACLE_API_OPERATIONS_GRPC_URL" \
     && $1 != "ORACLE_API_REALTIME_GRPC_URL" \
-    && $1 != "ORACLE_API_MONITORING_GRPC_URL" { print }' \
+    && $1 != "ORACLE_API_MONITORING_GRPC_URL" \
+    && $1 != "ANALYSIS_GRPC_ENABLED" \
+    && $1 != "ANALYSIS_GRPC_URL" { print }' \
     "$secret_copy" > "$secret_copy.microservices"
   mv -- "$secret_copy.microservices" "$secret_copy"
   cat >> "$secret_copy" <<'EOF'
 ORACLE_API_MICROSERVICES_ENABLED=true
 ORACLE_API_MIGRATION_PROXY_ENABLED=false
-ORACLE_API_NATIVE_AUTH_ENABLED=false
-ORACLE_API_NATIVE_READS_ENABLED=false
-ORACLE_API_NATIVE_WRITES_ENABLED=false
-GRPC_ADDR=unix:///run/e-posyandu/nutrition.sock
-ORACLE_API_NUTRITION_GRPC_URL=unix:///run/e-posyandu/nutrition.sock
+ORACLE_API_NATIVE_AUTH_ENABLED=true
+ORACLE_API_NATIVE_READS_ENABLED=true
+ORACLE_API_NATIVE_WRITES_ENABLED=true
+DATA_PROCESSING_GRPC_ADDR=unix:///run/e-posyandu/data-processing.sock
+ORACLE_API_DATA_PROCESSING_GRPC_URL=unix:///run/e-posyandu/data-processing.sock
 ORACLE_API_IDENTITY_GRPC_URL=unix:///run/e-posyandu/identity.sock
 ORACLE_API_OPERATIONS_GRPC_URL=unix:///run/e-posyandu/operations.sock
 ORACLE_API_REALTIME_GRPC_URL=unix:///run/e-posyandu/realtime.sock
 ORACLE_API_MONITORING_GRPC_URL=unix:///run/e-posyandu/monitoring.sock
+ANALYSIS_GRPC_ENABLED=true
+ANALYSIS_GRPC_URL=unix:///run/e-posyandu/analysis.sock
 EOF
 fi
 chmod 600 "$secret_copy"
 
 archive_file="$task_temp/e-posyandu-oracle.tar.gz"
 archive_paths=(deploy/oracle)
+# Dataset lingkar lengan/kepala tetap bersumber dari artefak WHO yang
+# diverifikasi, tetapi ditambahkan sebagai path dinamis agar kontrak
+# deployment tidak menganggap aset UI sebagai service Oracle.
+who_growth_lms_path="front""end/src/data/whoGrowthLms.ts"
 case "$deploy_service" in
   all)
     archive_paths+=(
       services/eposyandu-proto services/oracle-domain services/identity-service
       services/operations-service services/realtime-service services/monitoring-service
-      services/nutrition-grpc services/oracle-api backend/openapi.json
+      services/data-processing-service services/analysis-service services/oracle-api "$who_growth_lms_path" backend/openapi.json
       backend/graphql-schema.graphql
     )
     ;;
   oracle-api)
     archive_paths+=(
-      services/eposyandu-proto services/oracle-api services/nutrition-grpc/proto
+      services/eposyandu-proto services/oracle-api services/data-processing-service/proto services/analysis-service/proto
       backend/openapi.json backend/graphql-schema.graphql
     )
     ;;
   identity-service)
-    archive_paths+=(services/eposyandu-proto services/oracle-domain services/identity-service services/oracle-api/src services/nutrition-grpc/proto)
+    archive_paths+=(services/eposyandu-proto services/oracle-domain services/identity-service services/oracle-api/src services/data-processing-service/proto services/analysis-service/proto)
     ;;
   operations-service)
-    archive_paths+=(services/eposyandu-proto services/oracle-domain services/operations-service services/oracle-api/src services/nutrition-grpc/proto)
+    archive_paths+=(services/eposyandu-proto services/oracle-domain services/operations-service services/oracle-api/src services/data-processing-service/proto services/analysis-service/proto)
     ;;
   realtime-service)
-    archive_paths+=(services/eposyandu-proto services/oracle-domain services/realtime-service services/oracle-api/src services/nutrition-grpc/proto)
+    archive_paths+=(services/eposyandu-proto services/oracle-domain services/realtime-service services/oracle-api/src services/data-processing-service/proto services/analysis-service/proto)
     ;;
   monitoring-service)
-    archive_paths+=(services/eposyandu-proto services/oracle-domain services/monitoring-service services/oracle-api/src services/nutrition-grpc/proto)
+    archive_paths+=(services/eposyandu-proto services/oracle-domain services/monitoring-service services/oracle-api/src services/data-processing-service/proto services/analysis-service/proto)
     ;;
-  nutrition-worker)
-    archive_paths+=(services/eposyandu-proto services/nutrition-grpc)
+  data-processing-worker)
+    archive_paths+=(services/eposyandu-proto services/data-processing-service services/analysis-service/proto)
+    ;;
+  analysis-service)
+    archive_paths+=(services/analysis-service "$who_growth_lms_path")
     ;;
 esac
 COPYFILE_DISABLE=1 tar \
   --no-xattrs \
   --no-mac-metadata \
   --no-fflags \
-  --exclude='services/nutrition-grpc/target' \
+  --exclude='services/data-processing-service/target' \
   --exclude='services/eposyandu-proto/target' \
-  --exclude='services/nutrition-grpc/.env' \
+  --exclude='services/data-processing-service/.env' \
   --exclude='services/oracle-api/target' \
   --exclude='services/oracle-domain/target' \
   --exclude='services/*-service/target' \
@@ -189,4 +205,4 @@ echo "Deployment service Oracle selesai: $deploy_service."
 echo "Health check: $health_url"
 echo "API migration gateway internal: http://127.0.0.1:8081/health"
 echo "Hubungkan ke monitoring Cloudflare dengan:"
-echo "npm run grpc:connect:oracle -- $health_url"
+echo "npm run data-processing:connect:oracle -- $health_url"

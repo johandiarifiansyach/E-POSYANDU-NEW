@@ -3591,7 +3591,7 @@ pub(crate) async fn internal_background_job(
                 id,
                 Some(json!({ "status": previous_status })),
                 Some(json!({ "status": status, "progress": progress })),
-                json!({ "source": "nutrition-grpc" }),
+                json!({ "source": "data-processing-worker" }),
             )
             .await;
         }

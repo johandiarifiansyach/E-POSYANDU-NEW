@@ -23,7 +23,8 @@ if [[ ! "$release_id" =~ ^[0-9]{14}$ ]]; then
 fi
 
 case "$deployment_service" in
-  all|oracle-api|identity-service|operations-service|realtime-service|monitoring-service|nutrition-worker) ;;
+  nutrition-worker) deployment_service="data-processing-worker" ;;
+  all|oracle-api|identity-service|operations-service|realtime-service|monitoring-service|data-processing-worker|analysis-service) ;;
   *)
     echo "Service Oracle tidak valid: $deployment_service" >&2
     exit 1
@@ -118,7 +119,9 @@ if [[ -f /etc/e-posyandu/nutrition-grpc.env ]]; then
     ORACLE_API_NATIVE_READS_ENABLED \
     ORACLE_API_NATIVE_WRITES_ENABLED \
     ORACLE_API_MIGRATION_PROXY_ENABLED \
-    ORACLE_API_NUTRITION_GRPC_URL; do
+    ORACLE_API_DATA_PROCESSING_GRPC_URL \
+    ANALYSIS_GRPC_ENABLED \
+    ANALYSIS_GRPC_URL; do
     deployment_value="$(sed -n "s/^${deployment_name}=//p" /etc/e-posyandu/nutrition-grpc.env | tail -n 1)"
     if [[ -n "$deployment_value" ]]; then
       preserved_deployment_values["$deployment_name"]="$deployment_value"
@@ -304,7 +307,8 @@ if [[ "$deployment_service" == "all" && "$skip_build" != "true" ]]; then
     operations-service \
     realtime-service \
     monitoring-service \
-    nutrition-worker \
+    data-processing-worker \
+    analysis-service \
     oracle-api; do
     echo "Membangun image $build_service secara berurutan ..."
     "${compose_command[@]}" \
@@ -352,8 +356,8 @@ api_health_check=(curl --fail --silent --show-error --max-time 3 http://127.0.0.
 
 for attempt in $(seq 1 30); do
   service_healthy=true
-  if [[ "$deployment_service" == "all" || "$deployment_service" == "nutrition-worker" ]]; then
-    "${health_check[@]}" 2>/dev/null | grep -Fq "E-Posyandu nutrition worker aktif" || service_healthy=false
+  if [[ "$deployment_service" == "all" || "$deployment_service" == "data-processing-worker" ]]; then
+    "${health_check[@]}" 2>/dev/null | grep -Fq "E-Posyandu data processing worker aktif" || service_healthy=false
   fi
   if [[ "$deployment_service" == "all" || "$deployment_service" == "oracle-api" ]]; then
     "${api_health_check[@]}" 2>/dev/null | grep -Fq '"ok":true' || service_healthy=false
@@ -369,11 +373,17 @@ for attempt in $(seq 1 30); do
       [[ "$internal_status" == "running" ]] || service_healthy=false
     fi
   done
+  if [[ "$deployment_service" == "all" || "$deployment_service" == "analysis-service" ]]; then
+    analysis_container="e-posyandu-oracle_analysis-service_1"
+    analysis_status="$($container_engine inspect \
+      --format '{{.State.Status}}' "$analysis_container" 2>/dev/null || true)"
+    [[ "$analysis_status" == "running" ]] || service_healthy=false
+  fi
   if [[ "$service_healthy" == true ]]; then
     ln -sfn "$release_dir" /opt/e-posyandu/current
     release_activated=true
     if [[ "$deployment_service" == "all" ]]; then
-      echo "API dan nutrition worker Oracle aktif."
+      echo "API dan data processing worker Oracle aktif."
     else
       echo "Service Oracle $deployment_service aktif; service lain tidak di-restart."
     fi

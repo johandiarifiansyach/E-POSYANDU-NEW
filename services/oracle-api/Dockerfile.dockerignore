@@ -7,6 +7,7 @@
 !services/eposyandu-proto/build.rs
 !services/eposyandu-proto/src/**
 !services/eposyandu-proto/proto/**
-!services/nutrition-grpc/proto/**
+!services/data-processing-service/proto/**
+!services/analysis-service/proto/**
 !backend/openapi.json
 !backend/graphql-schema.graphql

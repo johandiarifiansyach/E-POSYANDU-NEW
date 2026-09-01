@@ -16,6 +16,7 @@ export {
   enrollMfaFactor,
   getAuth,
   getCurrentAccessProfile,
+  isAuthenticationError,
   initializeApp,
   onAuthStateChanged,
   reportAccountPresence,

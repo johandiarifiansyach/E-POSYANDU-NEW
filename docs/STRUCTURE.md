@@ -33,8 +33,9 @@ E-POSYANDU/
 │   ├── operations-service/   Microservice CRUD, cache, dan sinkronisasi
 │   ├── realtime-service/     Microservice stream perubahan data
 │   ├── monitoring-service/   Microservice metrik operasional admin
+│   ├── analysis-service/     Microservice Python kalkulasi WHO deterministik
 │   ├── neon-read-worker/    Gateway privat baca-only menuju replika Neon
-│   └── nutrition-grpc/      Worker job berat Rust dan pull consumer Queue
+│   └── data-processing-service/ Worker job berat Rust dan pull consumer Queue
 ├── deploy/oracle/           Runtime terisolasi dan bootstrap worker Oracle
 ├── database/migrations/     Migration PostgreSQL berurutan
 ├── docs/                    Dokumentasi arsitektur dan operasional

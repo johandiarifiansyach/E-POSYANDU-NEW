@@ -15,6 +15,9 @@ services:
     environment:
       IDENTITY_GRPC_ADDR: ${IDENTITY_GRPC_ADDR:-unix:///run/e-posyandu/identity.sock}
       ORACLE_API_NATIVE_AUTH_ENABLED: "true"
+      ORACLE_API_NATIVE_CREDENTIAL_MIGRATION_ENABLED: "true"
+      ORACLE_API_NATIVE_ADMIN_CREDENTIAL_SHADOW_ENABLED: "true"
+      ORACLE_API_NATIVE_ADMIN_SECURITY_SHADOW_ENABLED: "true"
       ORACLE_API_SESSION_DB_PATH: /var/lib/e-posyandu-api/sessions.sqlite
       ORACLE_API_ENVIRONMENT: production
       TURNSTILE_HOSTNAMES: ${ORACLE_API_TURNSTILE_HOSTNAMES:-eposyandu.app}
@@ -195,16 +198,20 @@ services:
       ORACLE_API_LISTEN_ADDR: 0.0.0.0:8081
       ORACLE_API_ENVIRONMENT: production
       ORACLE_REDIS_URL: redis://redis-cache:6379
-      ORACLE_API_NATIVE_AUTH_ENABLED: ${ORACLE_API_NATIVE_AUTH_ENABLED:-false}
-      ORACLE_API_NATIVE_READS_ENABLED: ${ORACLE_API_NATIVE_READS_ENABLED:-false}
-      ORACLE_API_NATIVE_WRITES_ENABLED: ${ORACLE_API_NATIVE_WRITES_ENABLED:-false}
+      # The gateway must understand Oracle-native browser sessions even while
+      # background jobs are still bridged to the legacy Cloudflare Queue API.
+      ORACLE_API_NATIVE_AUTH_ENABLED: ${ORACLE_API_NATIVE_AUTH_ENABLED:-true}
+      # Job creation/status uses the native API so cookie sessions (including
+      # administrator MFA) are not revalidated by the legacy Worker.
+      ORACLE_API_NATIVE_READS_ENABLED: ${ORACLE_API_NATIVE_READS_ENABLED:-true}
+      ORACLE_API_NATIVE_WRITES_ENABLED: ${ORACLE_API_NATIVE_WRITES_ENABLED:-true}
       ORACLE_DATABASE_POOL_SIZE: ${ORACLE_DATABASE_POOL_SIZE:-5}
       ORACLE_API_SESSION_DB_PATH: /var/lib/e-posyandu-api/sessions.sqlite
       CORS_ORIGINS: ${ORACLE_API_CORS_ORIGINS:-https://eposyandu.app,https://www.eposyandu.app}
       TURNSTILE_HOSTNAMES: ${ORACLE_API_TURNSTILE_HOSTNAMES:-eposyandu.app}
       ORACLE_API_PUBLIC_ORIGIN: ${ORACLE_API_PUBLIC_ORIGIN:-https://api.eposyandu.app}
       ORACLE_API_LEGACY_ORIGIN: ${ORACLE_API_LEGACY_ORIGIN:-https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev}
-      ORACLE_API_NUTRITION_GRPC_URL: ${ORACLE_API_NUTRITION_GRPC_URL:-unix:///run/e-posyandu/nutrition.sock}
+      ORACLE_API_DATA_PROCESSING_GRPC_URL: ${ORACLE_API_DATA_PROCESSING_GRPC_URL:-unix:///run/e-posyandu/data-processing.sock}
       ORACLE_API_MICROSERVICES_ENABLED: ${ORACLE_API_MICROSERVICES_ENABLED:-true}
       ORACLE_API_IDENTITY_GRPC_URL: ${ORACLE_API_IDENTITY_GRPC_URL:-unix:///run/e-posyandu/identity.sock}
       ORACLE_API_OPERATIONS_GRPC_URL: ${ORACLE_API_OPERATIONS_GRPC_URL:-unix:///run/e-posyandu/operations.sock}
@@ -294,28 +301,40 @@ services:
     logging:
       driver: journald
 
-  nutrition-worker:
+  data-processing-worker:
     build:
       context: ../..
-      dockerfile: services/nutrition-grpc/Dockerfile
-    image: ${NUTRITION_WORKER_IMAGE:-e-posyandu-nutrition-worker:oracle}
+      dockerfile: services/data-processing-service/Dockerfile
+    image: ${DATA_PROCESSING_WORKER_IMAGE:-e-posyandu-data-processing-worker:oracle}
     restart: unless-stopped
     env_file:
+      # File lama dipertahankan sebagai alias agar deployment berjalan tanpa
+      # downtime; nama service/container aktif tetap data-processing-worker.
       - ${ORACLE_NUTRITION_ENV_FILE:-/etc/e-posyandu/nutrition-grpc.env}
       - ${ORACLE_NUTRITION_VAULT_ENV_FILE:-/run/e-posyandu/nutrition-grpc-vault.env}
     environment:
-      # Service satu host memakai UDS. Set GRPC_ADDR=host:port bila worker
+      # Service satu host memakai UDS. Set DATA_PROCESSING_GRPC_ADDR=host:port bila worker
       # dipindahkan ke server/platform lain.
-      GRPC_ADDR: ${GRPC_ADDR:-unix:///run/e-posyandu/nutrition.sock}
+      DATA_PROCESSING_GRPC_ADDR: ${DATA_PROCESSING_GRPC_ADDR:-unix:///run/e-posyandu/data-processing.sock}
+      # WHO, screening risiko, dan deteksi anomali diproses oleh Python.
+      # Set false hanya saat melakukan rollout worker sebelum analysis-service.
+      ANALYSIS_GRPC_ENABLED: ${ANALYSIS_GRPC_ENABLED:-true}
+      ANALYSIS_GRPC_URL: ${ANALYSIS_GRPC_URL:-unix:///run/e-posyandu/analysis.sock}
       PORT: "8080"
       QUEUE_BATCH_SIZE: ${QUEUE_BATCH_SIZE:-2}
       QUEUE_POLL_INTERVAL_MS: ${QUEUE_POLL_INTERVAL_MS:-15000}
+      # Native Oracle jobs live in the local PostgreSQL database. The worker
+      # calls the HMAC-protected internal bridge on the same Compose network;
+      # the legacy Cloudflare origin is no longer used for job status.
+      EPOSYANDU_API_URL: ${ORACLE_WORKER_API_URL:-http://oracle-api:8081}
     expose:
       - "8080"
       - "50051"
     read_only: true
     volumes:
       - /var/lib/e-posyandu/grpc:/run/e-posyandu:rw,z
+    depends_on:
+      - analysis-service
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
     cap_drop:
@@ -329,12 +348,49 @@ services:
     logging:
       driver: journald
 
+  analysis-service:
+    build:
+      context: ../..
+      dockerfile: services/analysis-service/Dockerfile
+    image: ${ANALYSIS_SERVICE_IMAGE:-e-posyandu-analysis-service:oracle}
+    restart: unless-stopped
+    env_file:
+      - ${ORACLE_API_VAULT_ENV_FILE:-/run/e-posyandu/oracle-api-vault.env}
+    environment:
+      ANALYSIS_GRPC_ADDR: ${ANALYSIS_GRPC_ADDR:-unix:///run/e-posyandu/analysis.sock}
+      ANALYSIS_HTTP_PORT: "8082"
+      LOG_LEVEL: ${ANALYSIS_LOG_LEVEL:-INFO}
+    expose:
+      - "8082"
+    volumes:
+      - /var/lib/e-posyandu/grpc:/run/e-posyandu:rw,z
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 384m
+    mem_swappiness: 0
+    cpus: 0.25
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - default
+    logging:
+      driver: journald
+
   health-proxy:
     image: docker.io/library/caddy:2.10.2-alpine
     restart: unless-stopped
     depends_on:
       - oracle-api
-      - nutrition-worker
+      - data-processing-worker
     environment:
       ORACLE_HEALTH_SITE: ${ORACLE_HEALTH_SITE:?ORACLE_HEALTH_SITE wajib diisi}
       ORACLE_API_SITE: ${ORACLE_API_SITE:-http://api.invalid}

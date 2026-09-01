@@ -28,6 +28,48 @@ Migrasi `027_close_direct_browser_fallback.sql` mencabut RPC fallback browser la
 
 Migrasi `028_remove_second_step_policies.sql` membersihkan kebijakan autentikasi dua langkah lama bila versi awal migrasi 027 sempat diterapkan pada suatu environment. Migration ini tidak membuka kembali RPC browser.
 
+Migrasi `032_native_auth_tables.sql` hanya membuat tabel persiapan autentikasi
+native di PostgreSQL Oracle: credential Argon2id, session, revocation,
+presence, rate limit, challenge passkey/MFA, passkey, faktor TOTP, recovery
+code, dan token email. Migration ini tidak mengisi atau mengubah
+`public.app_users`, sehingga role, desa, posyandu, `access_mode`, dan status
+akun tetap sama. Pengisian credential dan pengalihan login dilakukan pada tahap
+terpisah setelah validasi staging.
+
+Migrasi `033_native_auth_profiles.sql` menyalin profil akun yang sudah ada ke
+`public.auth_profiles` di PostgreSQL Oracle dan membuat trigger sinkronisasi
+dari `public.app_users`. Supabase tetap aktif sebagai sumber identitas/login;
+tidak ada akun yang dinonaktifkan atau dihapus sebelum pengujian migrasi
+selesai. Nilai role, desa, posyandu, `access_mode`, dan status akun disalin
+apa adanya.
+
+Migrasi `034_native_auth_credential_dual_run.sql` menyiapkan status perpindahan
+credential. Identity service masih memverifikasi password melalui Supabase,
+lalu hanya setelah login berhasil menulis hash Argon2id ke
+`public.auth_credentials` Oracle secara atomik bersama status `migrated`.
+Kegagalan penulisan tidak memblokir login lama, dan Supabase tidak dinonaktifkan
+selama tahap dual-run ini.
+
+Setelah identity service Oracle-first diaktifkan, akun non-administrator yang
+memiliki baris `auth_credentials` diverifikasi langsung di Oracle. Akun yang
+belum memiliki credential tetap memakai Supabase dan otomatis di-hash ke Oracle
+setelah login berhasil. Password yang salah pada credential Oracle tidak pernah
+jatuh kembali ke Supabase. `super_admin` sementara tetap pada jalur Supabase
+sampai verifier MFA/passkey native selesai dipindahkan, sehingga perlindungan
+administrator tidak berkurang.
+
+Pada tahap dual-run berikutnya, `ORACLE_API_NATIVE_ADMIN_CREDENTIAL_SHADOW_ENABLED`
+menyimpan hash Argon2id administrator ke `auth_credentials` setelah password
+berhasil diverifikasi Supabase. Ini hanya persiapan credential; `super_admin`
+tetap memerlukan MFA/passkey Supabase dan belum memakai hash Oracle untuk masuk.
+Jika penulisan shadow gagal, login administrator tetap berjalan seperti biasa.
+
+Migration `035_native_admin_security_dual_run.sql` menyiapkan status dual-run
+MFA/passkey administrator. Identity service hanya menyimpan jumlah dan status
+metadata faktor yang dikembalikan Supabase; secret TOTP, credential passkey,
+dan kunci publik tidak dicatat pada tahap ini. Verifier Supabase tetap aktif
+sampai implementasi verifier native lulus uji perangkat dan uji pemulihan.
+
 ## Supabase primary dan Neon read replica
 
 Neon dipakai sebagai replika baca asinkron untuk dashboard, daftar balita, masalah gizi, ASI eksklusif, dan ekspor pengukuran. Semua perubahan tetap masuk ke Supabase. Aplikasi otomatis kembali membaca Supabase bila Neon belum aktif atau gagal merespons. Keterlambatan replikasi dipantau secara operasional; setelah mutasi, akun penulis sementara diarahkan ke primary agar perubahan langsung terlihat.

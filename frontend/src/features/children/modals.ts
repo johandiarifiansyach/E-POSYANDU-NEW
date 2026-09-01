@@ -10,6 +10,21 @@ const {
     syncPendingMutations, DATA_WILAYAH, ROLES, Baby, X, AlertTriangle
 } = Context;
 
+// The document id identifies the child in the URL/path and is not an
+// editable database column.  Edit forms receive it together with the cached
+// document, so keep an explicit allowlist for the identity patch instead of
+// spreading the whole cached object into updateDoc().
+const CHILD_IDENTITY_FIELDS = [
+    'nama', 'nik', 'anakKe', 'tglLahir', 'jk', 'noKK', 'hasKK', 'hasNIK',
+    'usiaKehamilan', 'bbLahir', 'pbLahir', 'lkLahir', 'bukuKIA', 'bukuKIAKecil',
+    'imd', 'namaOrtu', 'nikOrtu', 'noHpOrtu', 'alamat', 'rt', 'rw', 'desa', 'posyandu'
+];
+
+const childIdentityPatch = (value) => CHILD_IDENTITY_FIELDS.reduce((patch, field) => {
+    if (Object.prototype.hasOwnProperty.call(value || {}, field)) patch[field] = value[field];
+    return patch;
+}, {});
+
 export const DeleteChildModal = ({ child, onClose, onConfirm }) => {
     const [reason, setReason] = useState('Salah Input');
     const [deathDate, setDeathDate] = useState('');
@@ -100,15 +115,16 @@ export const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = nu
             pbLahir: birthLength ?? '',
             lkLahir: birthHeadCircumference ?? ''
         };
+        const identityData = childIdentityPatch(normalizedFormData);
         setSaveState({ status: 'loading' });
         try {
             if (isEdit && initialData && initialData.id) {
                 // Log Changes
                 const changes = [];
-                Object.keys(formData).forEach((key) => {
+                Object.keys(identityData).forEach((key) => {
                     const k = key;
-                    if (JSON.stringify(formData[k]) !== JSON.stringify(initialData[k]) && k !== 'updatedAt' && k !== 'createdAt') {
-                        changes.push({ field: String(k), oldValue: initialData[k], newValue: formData[k] });
+                    if (JSON.stringify(identityData[k]) !== JSON.stringify(initialData[k])) {
+                        changes.push({ field: String(k), oldValue: initialData[k], newValue: identityData[k] });
                     }
                 });
                 if (changes.length > 0) {
@@ -120,7 +136,7 @@ export const LegacyAddChildModal = ({ user, onClose, onSuccess, initialData = nu
                         timestamp: serverTimestamp()
                     });
                 }
-                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', initialData.id), { ...normalizedFormData, updatedAt: serverTimestamp() });
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', initialData.id), { ...identityData, updatedAt: serverTimestamp() });
             }
             else {
                 const newChildRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'children'), { ...normalizedFormData, currentBB: normalizedFormData.bbLahir, currentTB: normalizedFormData.pbLahir, currentLK: normalizedFormData.lkLahir, currentLILA: 0, createdAt: serverTimestamp(), createdBy: user.role, deletedAt: null });
@@ -478,16 +494,15 @@ export const AddChildModal = ({ user, onClose, onSuccess, initialData = null, is
             pbLahir: birthLength ?? '',
             lkLahir: birthHeadCircumference ?? ''
         };
+        const identityData = childIdentityPatch(normalizedFormData);
         setSaveState({ status: 'loading' });
         try {
             if (isEdit && initialData?.id) {
                 const changes = [];
-                Object.keys(formData).forEach((key) => {
+                Object.keys(identityData).forEach((key) => {
                     const field = key;
-                    if (JSON.stringify(formData[field]) !== JSON.stringify(initialData[field]) &&
-                        field !== 'updatedAt' &&
-                        field !== 'createdAt') {
-                        changes.push({ field: String(field), oldValue: initialData[field], newValue: formData[field] });
+                    if (JSON.stringify(identityData[field]) !== JSON.stringify(initialData[field])) {
+                        changes.push({ field: String(field), oldValue: initialData[field], newValue: identityData[field] });
                     }
                 });
                 if (changes.length > 0) {
@@ -500,7 +515,7 @@ export const AddChildModal = ({ user, onClose, onSuccess, initialData = null, is
                     });
                 }
                 await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', initialData.id), {
-                    ...normalizedFormData,
+                    ...identityData,
                     updatedAt: serverTimestamp()
                 });
             }

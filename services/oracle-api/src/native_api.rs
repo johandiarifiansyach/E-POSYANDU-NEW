@@ -76,7 +76,7 @@ impl Resource {
 }
 
 #[derive(Debug)]
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
     code: &'static str,
     message: String,
@@ -99,7 +99,7 @@ impl ApiError {
         )
     }
 
-    fn into_response(self) -> Response {
+    pub(crate) fn into_response(self) -> Response {
         api_response(
             self.status,
             json!({ "error": { "code": self.code, "message": self.message } }),
@@ -1412,9 +1412,12 @@ impl NativeApi {
                     | "/api/v1/exports/sigizi-measurements"
                     | "/api/v1/children/page"
                     | "/api/v1/exclusive-breastfeeding/page"
-            ) || path.starts_with("/api/v1/collections/"));
+            )
+                || path.starts_with("/api/v1/collections/")
+                || (path.starts_with("/api/v1/jobs/") && !path.ends_with("/file")));
         let write = self.writes_enabled
             && ((path == "/api/v1/sync" && request.method() == Method::POST)
+                || (path == "/api/v1/jobs" && request.method() == Method::POST)
                 || (path.starts_with("/api/v1/collections/")
                     && matches!(
                         *request.method(),
@@ -1449,12 +1452,19 @@ impl NativeApi {
             .auth
             .authorize(request.headers().clone())
             .await
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::UNAUTHORIZED,
-                    "unauthorized",
-                    "Sesi masuk diperlukan.",
-                )
+            .map_err(|response| {
+                // Preserve transient auth/storage failures (for example a
+                // 503 while SQLite is busy) instead of converting every
+                // authorization error into 401.  The frontend treats 401 as
+                // a real logout, so collapsing 503 here can erase a valid
+                // browser session after MFA succeeds.
+                let status = response.status();
+                let (code, message) = if status == StatusCode::UNAUTHORIZED {
+                    ("unauthorized", "Sesi masuk diperlukan.")
+                } else {
+                    ("auth_unavailable", "Sesi belum dapat diverifikasi. Silakan coba lagi.")
+                };
+                ApiError::new(status, code, message)
             })?;
         let _access_token = session.access_token;
         let scope = session.scope;
@@ -1533,12 +1543,16 @@ impl NativeApi {
             ));
         }
         let (request_id, idempotency_key) = mutation_metadata(&headers)?;
-        let session = self.auth.authorize(headers.clone()).await.map_err(|_| {
-            ApiError::new(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "Sesi masuk diperlukan.",
-            )
+        let session = self.auth.authorize(headers.clone()).await.map_err(|response| {
+            // Keep service/database failures distinguishable from an expired
+            // cookie so one busy request cannot force a logout in the UI.
+            let status = response.status();
+            let (code, message) = if status == StatusCode::UNAUTHORIZED {
+                ("unauthorized", "Sesi masuk diperlukan.")
+            } else {
+                ("auth_unavailable", "Sesi belum dapat diverifikasi. Silakan coba lagi.")
+            };
+            ApiError::new(status, code, message)
         })?;
         if session.scope.access_mode != "write" {
             return Err(ApiError::new(
@@ -1648,7 +1662,11 @@ impl NativeApi {
             .post(endpoint)
             .bearer_auth(&queue.api_token)
             .json(&json!({
-                "body": { "job_id": job_id },
+                // Cloudflare Queue delivers this object as the message body.
+                // Keep the public camelCase field aligned with the consumer;
+                // the consumer also accepts the historical snake_case form
+                // so messages already in-flight remain processable.
+                "body": { "jobId": job_id },
                 "content_type": "json"
             }))
             .send()
@@ -1740,6 +1758,144 @@ impl NativeApi {
             })?;
         let job = self.fetch_background_job(scope, &id).await?;
         Self::public_background_job(&job, None)
+    }
+
+    /// Internal queue-consumer bridge for jobs created in the Oracle-native
+    /// PostgreSQL table. The public job endpoints remain session-scoped;
+    /// this bridge is authenticated by the gateway's HMAC envelope and is
+    /// intentionally limited to the worker's GET/PATCH/file workflow.
+    pub(crate) async fn internal_background_job(
+        &self,
+        method: Method,
+        path: &str,
+        body: &str,
+    ) -> Result<(StatusCode, Value), ApiError> {
+        let suffix = path.trim_start_matches("/internal/v1/jobs/");
+        let mut parts = suffix.split('/');
+        let id = parts
+            .next()
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .map(|value| value.to_string())
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "Job tidak ditemukan."))?;
+        let file_upload = parts.next() == Some("file");
+        if parts.next().is_some() {
+            return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "Job tidak ditemukan."));
+        }
+
+        let job_id = id.clone();
+        let fetch = |include_payload: bool| {
+            let job_id = job_id.clone();
+            async move {
+            let select = if include_payload {
+                "id,kind,status,progress,owner_user_id,actor_role,village,posyandu,idempotency_key,request_id,payload,result,error,object_key,file_name,content_type,size_bytes,created_at,updated_at,started_at,completed_at,expires_at"
+            } else {
+                "id,kind,status,progress,owner_user_id,result,error,object_key,file_name,content_type,size_bytes,created_at,updated_at,started_at,completed_at,expires_at"
+            };
+            let parameters = vec![
+                ("select".into(), select.into()),
+                ("id".into(), format!("eq.{job_id}")),
+                ("limit".into(), "1".into()),
+            ];
+            let (payload, _) = self.rest_get("background_jobs", &parameters, false).await?;
+            payload
+                .as_array()
+                .and_then(|rows| rows.first())
+                .cloned()
+                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "Job tidak ditemukan."))
+            }
+        };
+
+        if method == Method::GET && !file_upload {
+            let current = fetch(true).await?;
+            let row = row(&current)?;
+            return Ok((
+                StatusCode::OK,
+                json!({
+                    "id": text(row.get("id")),
+                    "kind": text(row.get("kind")),
+                    "status": text(row.get("status")),
+                    "progress": number_or_null(row.get("progress")),
+                    "payload": nullable(row.get("payload")),
+                    "actorRole": text(row.get("actor_role")),
+                    "village": nullable(row.get("village")),
+                    "posyandu": nullable(row.get("posyandu")),
+                }),
+            ));
+        }
+
+        if method == Method::PATCH && !file_upload {
+            let current = fetch(true).await?;
+            let current_row = row(&current)?;
+            let previous_status = text(current_row.get("status"));
+            let payload = serde_json::from_str::<Value>(body)
+                .map_err(|_| ApiError::validation("Pembaruan job tidak valid."))?;
+            let payload = payload
+                .as_object()
+                .ok_or_else(|| ApiError::validation("Pembaruan job tidak valid."))?;
+            let status = text(payload.get("status"));
+            if !matches!(
+                status.as_str(),
+                "queued" | "processing" | "completed" | "failed" | "cancelled"
+            ) {
+                return Err(ApiError::validation("Status job tidak valid."));
+            }
+            let progress = payload
+                .get("progress")
+                .and_then(Value::as_u64)
+                .filter(|value| *value <= 100)
+                .ok_or_else(|| ApiError::validation("Progres job tidak valid."))?;
+            let update = json!({
+                "status": status.clone(),
+                "progress": progress,
+                "result": nullable(payload.get("result")),
+                "error": nullable(payload.get("error")),
+            });
+            let updated = self
+                .rest_write(
+                    Method::PATCH,
+                    "background_jobs",
+                    &[("id".into(), format!("eq.{id}"))],
+                    Some(&update),
+                    Some("return=representation"),
+                )
+                .await?;
+            let updated = updated
+                .as_array()
+                .and_then(|rows| rows.first())
+                .cloned()
+                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "Job tidak ditemukan."))?;
+            // Keep the transition visible to realtime subscribers even though
+            // this request has no browser session context.
+            if previous_status != status {
+                let actor = row(&updated)?;
+                self.publish_realtime(RealtimeEvent::new(
+                    "background_jobs",
+                    "update",
+                    text(actor.get("updated_at")),
+                    (!text(actor.get("village")).is_empty()).then(|| text(actor.get("village"))),
+                    (!text(actor.get("posyandu")).is_empty()).then(|| text(actor.get("posyandu"))),
+                ))
+                .await;
+            }
+            return Ok((StatusCode::OK, Self::public_background_job(&updated, None)?));
+        }
+
+        // Native Oracle storage currently has no R2 binding. Nutrition
+        // reports return JSON, so a file upload is not part of this path.
+        // Return a deterministic response instead of forwarding to the
+        // legacy database, which would make the job appear to hang.
+        if method == Method::POST && file_upload {
+            return Err(ApiError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "file_storage_unavailable",
+                "Penyimpanan berkas job native belum diaktifkan.",
+            ));
+        }
+        Err(ApiError::new(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+            "Metode API job tidak didukung.",
+        ))
     }
 
     async fn record_job_audit(

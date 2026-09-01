@@ -7,7 +7,8 @@
 !services/eposyandu-proto/build.rs
 !services/eposyandu-proto/src/**
 !services/eposyandu-proto/proto/**
-!services/nutrition-grpc/proto/**
+!services/data-processing-service/proto/**
+!services/analysis-service/proto/**
 !services/oracle-api/src/**
 !services/identity-service/Cargo.toml
 !services/identity-service/Cargo.lock

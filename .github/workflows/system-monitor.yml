@@ -20,11 +20,11 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Check frontend, API, readiness, and nutrition worker
+      - name: Check frontend, API, readiness, and data-processing worker
         env:
           MONITOR_FRONTEND_URL: https://e-posyandu.pages.dev
           MONITOR_API_URL: https://api.eposyandu.app
-          MONITOR_GRPC_HEALTH_URL: ${{ vars.NUTRITION_WORKER_HEALTH_URL || 'https://nutrition.eposyandu.app/health' }}
+          MONITOR_GRPC_HEALTH_URL: ${{ vars.DATA_PROCESSING_WORKER_HEALTH_URL || vars.NUTRITION_WORKER_HEALTH_URL || 'https://nutrition.eposyandu.app/health' }}
           MONITOR_OUTPUT_PATH: ${{ runner.temp }}/system-monitor.json
         run: node scripts/operations/monitor-system.mjs
       - name: Publish monitoring summary

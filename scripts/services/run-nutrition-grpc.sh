@@ -2,8 +2,8 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-env_file="${EPOSYANDU_GRPC_ENV_FILE:-$HOME/.config/e-posyandu/nutrition-grpc.env}"
-binary="${EPOSYANDU_GRPC_BINARY:-$project_root/services/nutrition-grpc/target/release/e-posyandu-nutrition-grpc}"
+env_file="${EPOSYANDU_GRPC_ENV_FILE:-$HOME/.config/e-posyandu/data-processing-worker.env}"
+binary="${EPOSYANDU_GRPC_BINARY:-$project_root/services/data-processing-service/target/release/data-processing-worker}"
 
 if [[ ! -f "$env_file" ]]; then
   echo "Konfigurasi gRPC tidak ditemukan: $env_file" >&2
@@ -30,7 +30,7 @@ for name in "${required[@]}"; do
 done
 
 if [[ ! -x "$binary" ]]; then
-  echo "Binary gRPC belum dibuat. Jalankan npm run grpc:build." >&2
+    echo "Binary data-processing-worker belum dibuat. Jalankan npm run data-processing:build." >&2
   exit 1
 fi
 

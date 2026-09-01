@@ -366,7 +366,8 @@ export type AdminMonitoringSample = {
     api: 'online' | 'offline';
     database: 'online' | 'offline';
     redis: 'online' | 'offline';
-    nutritionWorker: 'online' | 'offline';
+    dataProcessingWorker?: 'online' | 'offline';
+    nutritionWorker?: 'online' | 'offline';
   };
 };
 
@@ -444,6 +445,7 @@ const REALTIME_RECONNECT_DELAY_MS = 3_000;
 
 const authState: Auth = { currentUser: null };
 const authListeners = new Set<(user: AuthUser | null) => void>();
+let authInvalidationPromise: Promise<void> | null = null;
 const activeViewRefreshers = new Set<() => Promise<void>>();
 const realtimeListeners = new Set<() => void>();
 const syncStateListeners = new Set<(syncing: boolean) => void>();
@@ -620,6 +622,12 @@ function isNetworkError(error: unknown) {
   return /failed to fetch|network|offline|load failed|fetch failed|connection|tidak dapat terhubung|sementara tidak tersedia|terlalu lama merespons|error code:\s*1027/i.test(message);
 }
 
+/** True when the API rejected the browser session rather than the request data. */
+export function isAuthenticationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /sesi masuk diperlukan|sesi.*kedaluwarsa|authentication required|unauthorized/i.test(message);
+}
+
 function isDashboardTimeoutError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return /statement timeout|cancell?ing statement|query cancell?ed/i.test(message);
@@ -772,6 +780,7 @@ type AuthenticatedResponse = {
   user: { id: string; email?: string | null };
   profile?: AccessProfile;
   recoveryCodes?: string[];
+  mfaRequired?: boolean;
 };
 
 export type MfaFactor = {
@@ -910,7 +919,18 @@ async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (response.status === 204) return undefined as T;
   if (!response.ok) {
-    throw new Error(await responseErrorDetail(response, `Permintaan API gagal (${response.status}).`));
+    const detail = await responseErrorDetail(response, `Permintaan API gagal (${response.status}).`);
+    if (response.status === 401 && authState.currentUser) {
+      // A stale local user must not keep rendering a dashboard whose cookie
+      // session has expired or was invalidated during a service rollout.
+      if (!authInvalidationPromise) {
+        authInvalidationPromise = clearLocalAuthState(authState).finally(() => {
+          authInvalidationPromise = null;
+        });
+      }
+      await authInvalidationPromise;
+    }
+    throw new Error(detail);
   }
   clearApiUnavailable();
   return response.json() as Promise<T>;
@@ -1564,7 +1584,7 @@ export async function signInWithPassword(
     }
     throw error;
   }
-  if ('mfaRequired' in response) return response;
+  if (response.mfaRequired === true) return response as MfaPendingSignIn;
   const nextSession = sessionFromResponse(response);
   const changesAccount = !auth.currentUser || auth.currentUser.uid !== nextSession.uid;
   await initializeOfflineStoreSession(nextSession.uid, { forceReset: changesAccount });
@@ -1640,7 +1660,7 @@ export async function completeAdminInvitation(
     throw new Error(await responseErrorDetail(response, 'Undangan administrator tidak dapat diaktifkan.'));
   }
   const result = await response.json() as LoginResponse;
-  if ('mfaRequired' in result) return result;
+  if (result.mfaRequired === true) return result as MfaPendingSignIn;
   const nextSession = sessionFromResponse(result);
   const changesAccount = !authState.currentUser || authState.currentUser.uid !== nextSession.uid;
   await initializeOfflineStoreSession(nextSession.uid, { forceReset: changesAccount });
@@ -1700,7 +1720,7 @@ export async function verifyPasskeyRegistration(
   auth: Auth,
   challengeId: string,
   credential: unknown
-): Promise<AuthenticatedSignInResult & { recoveryCodes: string[] }> {
+): Promise<AuthenticatedSignInResult & { recoveryCodes: string[]; requiresAuthentication: boolean }> {
   const response = await passkeyRequest<AuthenticatedResponse>('registration/verify', {
     challengeId,
     credential
@@ -1716,7 +1736,8 @@ export async function verifyPasskeyRegistration(
     mfaRequired: false,
     session: nextSession,
     profile: response.profile || null,
-    recoveryCodes: response.recoveryCodes || []
+    recoveryCodes: response.recoveryCodes || [],
+    requiresAuthentication: response.mfaRequired === true
   };
 }
 
@@ -2012,12 +2033,20 @@ function syncMutationPayload(mutation: PendingMutation) {
     )
       ? mutation.payload
       : { data: mutation.payload || {} };
+    // Older builds accidentally queued the immutable document id inside the
+    // update patch.  Keep the document id in the envelope only (where the
+    // API expects it) and strip it from any queued legacy patch before retrying
+    // synchronization.  This lets users recover pending edits after an
+    // upgrade without clearing their offline data manually.
+    const data = envelope.data && typeof envelope.data === 'object'
+      ? Object.fromEntries(Object.entries(envelope.data).filter(([key]) => key !== 'id'))
+      : {};
     return {
       id: mutation.id,
       operation: mutation.type,
       resource: mutation.tableName,
       documentId: mutation.documentId,
-      data: envelope.data,
+      data,
       expectedVersion: envelope.expectedVersion,
       expectedUpdatedAt: envelope.expectedUpdatedAt
     };

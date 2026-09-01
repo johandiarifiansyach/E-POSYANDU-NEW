@@ -17,8 +17,8 @@ for (const artifact of provenance.localArtifacts) {
 }
 
 const backend = await readJson('backend/data/anthropometry.json');
-const grpc = await readJson('services/nutrition-grpc/data/anthropometry.json');
-assert.deepEqual(grpc, backend, 'Tabel WHO backend dan gRPC harus identik');
+const analysis = await readJson('services/analysis-service/data/anthropometry.json');
+assert.deepEqual(analysis, backend, 'Tabel WHO backend dan analysis-service harus identik');
 
 const frontendSource = await readText('frontend/src/data/anthropometry.ts');
 const prefix = 'export const WHO_0_TO_5 = ';

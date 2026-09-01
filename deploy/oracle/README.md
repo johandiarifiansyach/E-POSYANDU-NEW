@@ -2,7 +2,12 @@
 
 Cloudflare Pages menjalankan frontend, sedangkan Oracle menjalankan gateway
 `oracle-api`, `identity-service`, `operations-service`, `realtime-service`,
-`monitoring-service`, dan `nutrition-grpc` sebagai origin backend produksi.
+`monitoring-service`, `data-processing-worker`, serta `analysis-service` Python sebagai
+origin backend produksi. `analysis-service` hanya menghitung indikator WHO
+secara deterministik menggunakan tabel LMS yang dicheck-in, lalu menjalankan
+screening risiko logistic ringan, analisis tren grafik, dan deteksi anomali
+kualitas data. Screening ini advisory (bukan diagnosis) dan belum menjadi
+keputusan klinis otomatis.
 PostgreSQL native pada
 OCI Block Volume adalah primary writable untuk data inti aplikasi. Supabase
 masih menyediakan Auth serta jalur legacy untuk Queue/R2 dan job berkas selama
@@ -30,20 +35,23 @@ jalur legacy agar metadata Queue dan berkas R2 tidak terpecah antar-database.
 
 Jangan menghapus Worker Cloudflare atau Pages. Keduanya adalah rollback
 darurat, sedangkan Queue dan R2 tetap komponen produksi yang aktif. Pastikan
-Hanya satu consumer Queue (`nutrition-grpc` Oracle) yang berjalan. Setiap service
+Hanya satu consumer Queue (`data-processing-worker` Oracle) yang berjalan. Setiap service
 dapat dirilis terpisah; deployment service tidak me-restart service lain yang
 sedang sehat.
 
 Untuk deployment microservice Oracle, argumen ketiga pada script menentukan
 target: `oracle-api`, `identity-service`, `operations-service`, `realtime-service`,
-`monitoring-service`, `nutrition-worker`, atau `all`.
+`monitoring-service`, `data-processing-worker`, `analysis-service`, atau `all`.
 
 ```bash
 # Hanya API native Oracle
 npm run oracle:deploy:api -- eposyandu-oracle nutrition.example.go.id
 
-# Hanya worker gizi
-npm run oracle:deploy:nutrition -- eposyandu-oracle nutrition.example.go.id
+# Hanya data-processing worker
+npm run oracle:deploy:data-processing -- eposyandu-oracle nutrition.example.go.id
+
+# Hanya kalkulator WHO Python
+npm run oracle:deploy:analysis -- eposyandu-oracle nutrition.example.go.id
 
 # Hanya satu domain service
 npm run oracle:deploy:identity -- eposyandu-oracle nutrition.example.go.id
@@ -60,9 +68,16 @@ environment URL bila service dipindahkan ke server/platform lain. Compose hanya 
 ikut di-restart. Migration database dijalankan terpisah sebelum service yang
 membutuhkan skema baru dirilis.
 
+Pada rilis penuh, worker mengirim batch pengukuran ke `analysis-service` melalui
+`ANALYSIS_GRPC_URL=unix:///run/e-posyandu/analysis.sock` dan
+`ANALYSIS_GRPC_ENABLED=true`. Deploy worker saja boleh memakai
+`ANALYSIS_GRPC_ENABLED=false` ketika service analisis belum dirilis, tetapi
+job `nutrition_report` akan gagal-terkontrol (tanpa fallback kalkulator Rust)
+sampai health check kedua service berhasil.
+
 Frontend tidak dibangun atau dijalankan pada VM Oracle. `eposyandu.app` dan
 `www.eposyandu.app` dilayani oleh Cloudflare Pages; hanya hostname API dan
-nutrition yang diarahkan melalui Tunnel ke Oracle.
+health data-processing worker yang diarahkan melalui Tunnel ke Oracle.
 
 ## Cache Redis privat
 
@@ -114,6 +129,10 @@ Host eposyandu-oracle
 Jangan mengirim atau menyimpan private key di repository.
 
 ## Secret runtime
+
+Nama file konfigurasi lama `nutrition-grpc.env` dan `nutrition-grpc-vault.env`
+dipertahankan sebagai alias kompatibilitas; service yang dijalankan tetap
+`data-processing-worker` dan socket aktifnya `data-processing.sock`.
 
 Salin contoh konfigurasi ke lokasi privat:
 
@@ -252,13 +271,13 @@ periksa `MANIFEST.json`. Jangan mengekstrak langsung ke `/etc` atau
 Pastikan DNS health sudah mengarah ke Oracle, lalu jalankan dari root project:
 
 ```bash
-npm run grpc:deploy:oracle -- eposyandu-oracle nutrition.example.go.id
+npm run data-processing:deploy:oracle -- eposyandu-oracle nutrition.example.go.id
 ```
 
 Perintah yang sama juga tersedia dengan nama yang lebih umum:
 
 ```bash
-npm run oracle:deploy -- eposyandu-oracle nutrition.example.go.id
+npm run oracle:deploy:data-processing -- eposyandu-oracle nutrition.example.go.id
 ```
 
 Script memeriksa SSH, mengirim source yang diperlukan, memasang Podman resmi
@@ -271,7 +290,7 @@ berhasil aktif.
 Setelah HTTPS aktif, hubungkan health check ke Cloudflare:
 
 ```bash
-npm run grpc:connect:oracle -- https://nutrition.example.go.id/health
+npm run data-processing:connect:oracle -- https://nutrition.example.go.id/health
 ```
 
 ## Pemeriksaan
@@ -289,7 +308,7 @@ Periksa log tanpa menyalin secret:
 
 ```bash
 ssh eposyandu-oracle \
-  'sudo podman-compose -p e-posyandu-oracle -f /opt/e-posyandu/current/deploy/oracle/compose.yaml --env-file /etc/e-posyandu/nutrition-grpc.env logs --tail 100 nutrition-worker'
+  'sudo podman-compose -p e-posyandu-oracle -f /opt/e-posyandu/current/deploy/oracle/compose.yaml --env-file /etc/e-posyandu/nutrition-grpc.env logs --tail 100 data-processing-worker'
 ```
 
 Hapus layanan Render/macOS lama hanya setelah Oracle sehat, job uji selesai,

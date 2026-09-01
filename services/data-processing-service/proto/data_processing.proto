@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package eposyandu.data_processing.v1;
+
+service DataProcessingWorker {
+  rpc ValidateImport(ValidateImportRequest) returns (ValidateImportResponse);
+  rpc PrepareExport(PrepareExportRequest) returns (PrepareExportResponse);
+  rpc NormalizeSyncBatch(NormalizeSyncBatchRequest) returns (NormalizeSyncBatchResponse);
+  rpc ProcessJob(ProcessJobRequest) returns (ProcessJobResponse);
+}
+
+message ImportRow {
+  uint64 row_number = 1;
+  string record_id = 2;
+  string nik = 3;
+  string birth_date = 4;
+  optional string measurement_date = 5;
+  optional double weight_kg = 6;
+  optional double height_cm = 7;
+  optional int32 age_months = 8;
+  string sex = 9;
+  optional string measurement_method = 10;
+  string village = 11;
+  string posyandu = 12;
+}
+
+message ValidateImportRequest {
+  repeated ImportRow rows = 1;
+  repeated string existing_niks = 2;
+}
+
+message ValidationIssue {
+  uint64 row_number = 1;
+  string field = 2;
+  string code = 3;
+  string message = 4;
+  string severity = 5;
+}
+
+message ValidateImportResponse {
+  uint64 total_rows = 1;
+  uint64 valid_rows = 2;
+  uint64 invalid_rows = 3;
+  uint64 duplicate_rows = 4;
+  repeated ValidationIssue issues = 5;
+}
+
+message ExportRow {
+  repeated string cells = 1;
+}
+
+message PrepareExportRequest {
+  string format = 1;
+  string title = 2;
+  string filename = 3;
+  repeated string columns = 4;
+  repeated ExportRow rows = 5;
+}
+
+message PrepareExportResponse {
+  bytes content = 1;
+  string content_type = 2;
+  string filename = 3;
+  string sha256 = 4;
+  uint64 row_count = 5;
+}
+
+message SyncRecord {
+  string resource = 1;
+  string operation = 2;
+  string document_id = 3;
+  string idempotency_key = 4;
+  uint64 version = 5;
+  string payload_json = 6;
+}
+
+message NormalizeSyncBatchRequest {
+  repeated SyncRecord records = 1;
+}
+
+message NormalizeSyncBatchResponse {
+  uint64 accepted = 1;
+  uint64 rejected = 2;
+  repeated SyncRecord records = 3;
+  repeated ValidationIssue issues = 4;
+}
+
+message ProcessJobRequest {
+  string job_id = 1;
+  string kind = 2;
+  string payload_json = 3;
+  string actor_role = 4;
+  optional string village = 5;
+  optional string posyandu = 6;
+}
+
+message ProcessJobResponse {
+  string job_id = 1;
+  string status = 2;
+  uint32 progress = 3;
+  string result_json = 4;
+  bytes file_content = 5;
+  string file_content_type = 6;
+  string file_name = 7;
+  repeated ValidationIssue issues = 8;
+}

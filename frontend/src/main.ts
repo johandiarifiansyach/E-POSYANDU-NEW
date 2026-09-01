@@ -5,7 +5,7 @@ import { setupProblemReporter } from './ui/problemReporter';
 import './styles/index.css';
 
 const rootNode = document.getElementById('root');
-const SERVICE_WORKER_CACHE_VERSION = 'v38';
+const SERVICE_WORKER_CACHE_VERSION = 'v40';
 const SERVICE_WORKER_MIGRATION_KEY = 'e-posyandu:service-worker-cache-version';
 
 if (!rootNode) throw new Error('Root element tidak ditemukan.');

@@ -46,8 +46,9 @@ Salin template frontend yang sesuai menjadi file lokal tanpa akhiran `.example`.
 ## Platform utama di Oracle
 
 Cloudflare Pages menjalankan frontend. Oracle Compute menjalankan `oracle-api`,
-`nutrition-grpc`, dan PostgreSQL native sebagai origin serta primary writable
-untuk data inti. Cloudflare tetap menjadi edge dan pemilik Queue/R2;
+domain services, `data-processing-worker`, `analysis-service` Python, dan PostgreSQL
+native sebagai origin serta primary writable untuk data inti. Cloudflare tetap
+menjadi edge dan pemilik Queue/R2;
 Worker/Pages lama dipertahankan sebagai rollback darurat. Supabase tetap
 menyediakan Auth dan jalur job legacy, tetapi bukan lagi primary data inti.
 
@@ -193,7 +194,7 @@ operasional; jangan masukkan data kesehatan ke dalam pesan notifikasi.
 4. Jalankan `npm run worker:deploy:staging` dan `npm run pages:deploy:staging`.
 5. Uji alur online, offline, konflik edit, fallback replika, dan request berulang.
 6. Terapkan migrasi di production.
-7. Deploy hanya service yang berubah: `oracle-api`, `nutrition-worker`, Neon Read
+7. Deploy hanya service yang berubah: `oracle-api`, `data-processing-worker`, Neon Read
    Worker, Cloudflare Worker, atau Pages. Deployment Oracle menerima target
    service sebagai argumen ketiga dan tidak me-restart service lain.
 8. Deploy private Neon Read Worker production sebelum menjalankan Worker yang
@@ -267,7 +268,7 @@ Pantau setiap hari pada masa awal rilis:
 | Request, subrequest, CPU, bandwidth | Cloudflare Workers > Metrics | Cari endpoint dengan lonjakan subrequest atau waktu CPU |
 | Egress database | Supabase > Usage | Bandingkan pemakaian harian; periksa ekspor besar dan full sync |
 | Login dibatasi | Log status 429 dan Upstash | Pastikan bukan salah konfigurasi Redis atau serangan berulang |
-| Nutrition worker | Dashboard Ahli Gizi dan key Redis `monitoring:nutrition-worker:v1` | Alarm setelah 3 kegagalan beruntun; periksa Oracle, Caddy, dan Queue |
+| Data processing worker | Dashboard Ahli Gizi dan key Redis `monitoring:data-processing-worker:v1` | Alarm setelah 3 kegagalan beruntun; periksa Oracle, Caddy, dan Queue |
 
 Jangan menulis NIK, KK, nama balita, token, password, atau isi formulir ke log runtime.
 
@@ -319,7 +320,7 @@ Mode ini menjaga daftar dan dashboard tetap dapat dibuka dalam gangguan singkat,
 
 Periksa kondisi replika dengan `npm run replica:verify`. Pantau `lastSuccessAt` dan `lagSeconds` pada health private Worker, error `replica_sync_failed`, fallback `read_router_fallback`, compute Neon, dan egress Supabase. Sinkronisasi hanya mengambil baris yang berubah dengan overlap lima detik serta aman diulang. Bila lag melebihi 15 menit, set `READ_REPLICA_MODE=primary-only` terlebih dahulu; jangan mengarahkan operasi tulis aplikasi ke Neon.
 
-Pemeriksaan terpadu tersedia pada `GET /api/v1/health/ready`. Endpoint ini memeriksa konfigurasi database, Redis dinamis, KV global, Queue, R2, dan status nutrition worker tanpa membaca data balita. GitHub Actions menjalankannya pada Senin-Jumat pukul 07.07-16.00 WIB bersama pemeriksaan frontend dan health worker Oracle melalui `system-monitor.yml`. Pemeriksaan manual tetap dapat dijalankan kapan saja.
+Pemeriksaan terpadu tersedia pada `GET /api/v1/health/ready`. Endpoint ini memeriksa konfigurasi database, Redis dinamis, KV global, Queue, R2, dan status data-processing worker tanpa membaca data balita. GitHub Actions menjalankannya pada Senin-Jumat pukul 07.07-16.00 WIB bersama pemeriksaan frontend dan health worker Oracle melalui `system-monitor.yml`. Pemeriksaan manual tetap dapat dijalankan kapan saja.
 
 Jalankan pemeriksaan yang sama dari komputer pengelola dengan:
 
@@ -370,7 +371,7 @@ Load test gRPC lokal memakai data sintetis tanpa identitas nyata:
 LOAD_GRPC_REQUESTS=50 \
 LOAD_GRPC_CONCURRENCY=8 \
 LOAD_GRPC_ITEMS=250 \
-npm run grpc:load
+npm run data-processing:load
 ```
 
 Alur production lengkap REST -> Queue -> worker gRPC diuji secara manual melalui workflow `load-test.yml`. Buat GitHub Environment `load-test`, lalu isi secret `LOAD_SUPABASE_URL`, `LOAD_SUPABASE_PUBLISHABLE_KEY`, `LOAD_TEST_EMAIL`, dan `LOAD_TEST_PASSWORD`. Email dan kata sandi harus milik akun khusus pengujian yang memiliki akses Ahli Gizi. Workflow membuat access token baru pada awal setiap pengujian, sehingga token sesi yang kedaluwarsa tidak perlu disimpan. Setelah itu pilih **Actions > Queue and gRPC Load Test > Run workflow**. Batas keras script adalah 50 job, paralel 10, dan 1.000 data sintetis per job agar pengujian tidak menghabiskan kuota gratis secara tidak sengaja.

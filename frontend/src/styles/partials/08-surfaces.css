@@ -33,7 +33,8 @@
   min-height: 40px;
   border-radius: 12px;
   letter-spacing: 0;
-  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.055), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  /* Action buttons use a flat, solid surface instead of the old glass highlight. */
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.1);
 }
 
 .apple-button .apple-symbol {
@@ -57,19 +58,16 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.28);
+  border: 1px solid transparent;
   border-radius: 9px;
-  background: rgba(255, 255, 255, 0.18);
+  background: inherit;
+  background-color: inherit;
   color: #fff;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34), 0 2px 5px rgba(0, 0, 0, 0.08);
+  box-shadow: none;
 }
 
 .ios-button-symbol::after {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.17), transparent 55%);
-  content: "";
-  pointer-events: none;
+  display: none;
 }
 
 .apple-button.ios-toolbar-button .ios-button-symbol .apple-symbol {
@@ -90,12 +88,15 @@
 }
 
 .apple-button-primary {
-  box-shadow: 0 7px 18px rgba(0, 122, 255, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  box-shadow: 0 4px 10px rgba(0, 122, 255, 0.18);
 }
 
 .apple-button-secondary {
-  -webkit-backdrop-filter: blur(16px) saturate(160%);
-  backdrop-filter: blur(16px) saturate(160%);
+  border-color: #dbe3ef;
+  background: #f8fafc;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .apple-button-ghost,

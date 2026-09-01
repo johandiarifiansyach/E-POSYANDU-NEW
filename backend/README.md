@@ -24,10 +24,10 @@ Alamat produksi:
 
 - REST `/api/v1/*`: autentikasi, CRUD, sinkronisasi offline, dan ekspor.
 - GraphQL `POST /api/v1/graphql`: query baca dashboard, halaman balita, dan ASI eksklusif. Endpoint ini memakai sesi HttpOnly serta pembatasan wilayah yang sama dengan REST. Bearer token tetap diterima hanya untuk smoke test/operasi terkontrol.
-- gRPC `services/nutrition-grpc`: validasi impor, kalkulasi laporan gizi, normalisasi sinkronisasi, dan pembuatan XLSX/PDF pada jaringan privat. Service ini tidak dipanggil langsung oleh browser dan tidak dijalankan di runtime Cloudflare Worker.
+- gRPC `services/data-processing-service`: validasi impor, normalisasi sinkronisasi, dan pembuatan XLSX/PDF pada jaringan privat. Job laporan gizi diteruskan ke `analysis-service` Python; service ini tidak dipanggil langsung oleh browser dan tidak dijalankan di runtime Cloudflare Worker.
 - Cloudflare Queue `e-posyandu-jobs`: antrean pekerjaan berat agar login dan CRUD tetap responsif. Status job dibaca melalui REST `/api/v1/jobs/{jobId}`.
 
-Schema GraphQL dapat dibaca melalui `GET /api/v1/graphql/schema`. Service gRPC lokal dijalankan dari root dengan `npm run grpc:dev` dan memakai UDS `unix:///tmp/e-posyandu/nutrition.sock` secara default; URL TCP tetap dapat dipilih lewat `GRPC_ADDR`/`GRPC_URL` untuk lintas server.
+Schema GraphQL dapat dibaca melalui `GET /api/v1/graphql/schema`. Service data-processing lokal dijalankan dari root dengan `npm run data-processing:dev` dan memakai UDS `unix:///tmp/e-posyandu/data-processing.sock` secara default; URL TCP tetap dapat dipilih lewat `DATA_PROCESSING_GRPC_ADDR`/`DATA_PROCESSING_GRPC_URL` untuk lintas server.
 
 ## Penyimpanan Data
 

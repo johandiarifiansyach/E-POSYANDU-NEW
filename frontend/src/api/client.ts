@@ -9,5 +9,6 @@ export * from './authApi';
 export * from './childrenApi';
 export * from './measurementApi';
 export * from './dashboardApi';
+export * from './analysisApi';
 export * from './exportApi';
 export * from './syncApi';

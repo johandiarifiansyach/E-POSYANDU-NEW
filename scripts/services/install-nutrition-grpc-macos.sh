@@ -2,13 +2,17 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-label="com.eposyandu.nutrition-grpc"
-env_file="$HOME/.config/e-posyandu/nutrition-grpc.env"
+label="com.eposyandu.data-processing-worker"
+env_file="$HOME/.config/e-posyandu/data-processing-worker.env"
+if [[ ! -f "$env_file" && -f "$HOME/.config/e-posyandu/nutrition-grpc.env" ]]; then
+  # Compatibility for installations created before the service rename.
+  env_file="$HOME/.config/e-posyandu/nutrition-grpc.env"
+fi
 agent_file="$HOME/Library/LaunchAgents/$label.plist"
 log_dir="$HOME/Library/Logs/EPosyandu"
-install_dir="$HOME/Library/Application Support/EPosyandu/nutrition-grpc"
-installed_binary="$install_dir/e-posyandu-nutrition-grpc"
-installed_runner="$install_dir/run-nutrition-grpc.sh"
+install_dir="$HOME/Library/Application Support/EPosyandu/data-processing-worker"
+installed_binary="$install_dir/data-processing-worker"
+installed_runner="$install_dir/run-data-processing-worker.sh"
 uid="$(id -u)"
 
 for name in CLOUDFLARE_QUEUES_API_TOKEN RUST_WORKER_SHARED_SECRET; do
@@ -19,17 +23,17 @@ for name in CLOUDFLARE_QUEUES_API_TOKEN RUST_WORKER_SHARED_SECRET; do
   fi
 done
 
-cargo build --locked --release --manifest-path "$project_root/services/nutrition-grpc/Cargo.toml"
+cargo build --locked --release --manifest-path "$project_root/services/data-processing-service/Cargo.toml"
 mkdir -p "$HOME/Library/LaunchAgents" "$log_dir" "$install_dir"
 install -m 755 \
-  "$project_root/services/nutrition-grpc/target/release/nutrition-grpc-standalone" \
+  "$project_root/services/data-processing-service/target/release/data-processing-worker" \
   "$installed_binary"
-install -m 755 "$project_root/scripts/services/run-nutrition-grpc.sh" "$installed_runner"
+install -m 755 "$project_root/scripts/services/run-data-processing-worker.sh" "$installed_runner"
 
 sed \
   -e "s|__HOME__|$HOME|g" \
   -e "s|__INSTALL_DIR__|$install_dir|g" \
-  "$project_root/services/nutrition-grpc/com.eposyandu.nutrition-grpc.plist.template" \
+  "$project_root/services/data-processing-service/com.eposyandu.data-processing-worker.plist.template" \
   > "$agent_file"
 chmod 600 "$agent_file"
 
@@ -39,4 +43,4 @@ launchctl enable "gui/$uid/$label"
 launchctl kickstart -k "gui/$uid/$label"
 
 echo "Layanan $label aktif."
-echo "Log: $log_dir/nutrition-grpc.log"
+echo "Log: $log_dir/data-processing-worker.log"

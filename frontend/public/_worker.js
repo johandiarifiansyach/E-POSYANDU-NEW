@@ -2,10 +2,11 @@ const PRODUCTION_API_ORIGIN = 'https://e-posyandu-api.eposyandu-puskesmas-gumukm
 const STAGING_API_ORIGIN = 'https://e-posyandu-api-staging.eposyandu-puskesmas-gumukmas.workers.dev';
 const SAFE_RETRY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 // During the Oracle microservices migration an existing browser may still
-// carry a valid legacy Cloudflare session. A 401 from the new gateway is
-// therefore retried against the legacy origin for safe read requests; native
-// sessions continue to be served by Oracle and mutations are never retried.
-const RETRYABLE_GATEWAY_STATUSES = new Set([401, 502, 503, 504]);
+// carry a valid legacy Cloudflare session.  Transport failures can still use
+// the legacy origin for safe read requests, but an authorization failure must
+// never fall back: doing so can make a legacy cookie look valid and then fail
+// on the Oracle operations service, sending the user through a login loop.
+const RETRYABLE_GATEWAY_STATUSES = new Set([502, 503, 504]);
 
 function safeConfiguredOrigin(value, fallback) {
   if (!value) return fallback;
@@ -54,6 +55,15 @@ function createUpstreamRequest(request, origin, pathname, search) {
   });
 }
 
+function hasAuthenticatedCredentials(request) {
+  if (request.headers.has('Authorization')) return true;
+  const cookie = request.headers.get('Cookie') || '';
+  // Native sessions use the __Host- prefix in production and the unprefixed
+  // name in local development.  Never send an authenticated request to the
+  // legacy fallback origin: it cannot validate the native session cookie.
+  return /(?:^|;\s*)(?:__Host-)?e-posyandu-session=/.test(cookie);
+}
+
 function markFallback(response) {
   const headers = new Headers(response.headers);
   headers.set('X-E-Posyandu-Fallback', 'cloudflare-worker');
@@ -71,7 +81,9 @@ export default {
 
     const primaryOrigin = upstreamOrigin(incomingUrl.hostname, env);
     const fallback = fallbackOrigin(incomingUrl.hostname, env, primaryOrigin);
-    const canRetry = SAFE_RETRY_METHODS.has(request.method.toUpperCase()) && fallback;
+    const canRetry = SAFE_RETRY_METHODS.has(request.method.toUpperCase())
+      && fallback
+      && !hasAuthenticatedCredentials(request);
     let primaryResponse;
 
     try {

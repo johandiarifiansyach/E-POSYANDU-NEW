@@ -15,12 +15,15 @@ from oci.auth.signers import InstancePrincipalsSecurityTokenSigner
 
 
 CONFIG_FILE = Path("/etc/e-posyandu/vault.env")
-NUTRITION_OUTPUT_FILE = Path("/run/e-posyandu/nutrition-grpc-vault.env")
+DATA_PROCESSING_OUTPUT_FILE = Path("/run/e-posyandu/data-processing-worker-vault.env")
+# Keep the old path populated during the rolling rename so an existing
+# compose/bootstrap process can be restarted without interrupting services.
+LEGACY_NUTRITION_OUTPUT_FILE = Path("/run/e-posyandu/nutrition-grpc-vault.env")
 ORACLE_API_OUTPUT_FILE = Path("/run/e-posyandu/oracle-api-vault.env")
 CLOUDFLARE_TUNNEL_TOKEN_FILE = Path(
     "/run/e-posyandu/cloudflare-tunnel-token"
 )
-NUTRITION_SECRET_SPECS = (
+DATA_PROCESSING_SECRET_SPECS = (
     ("CLOUDFLARE_QUEUES_API_TOKEN", "OCI_SECRET_CLOUDFLARE_QUEUES_API_TOKEN_ID"),
     ("RUST_WORKER_SHARED_SECRET", "OCI_SECRET_RUST_WORKER_SHARED_SECRET_ID"),
 )
@@ -112,17 +115,18 @@ def write_secret_file(path: Path, value: str) -> None:
 def main() -> None:
     config = parse_env(CONFIG_FILE)
     region = config.get("OCI_VAULT_REGION", "ap-batam-1")
-    missing = [key for _, key in NUTRITION_SECRET_SPECS if not config.get(key)]
+    missing = [key for _, key in DATA_PROCESSING_SECRET_SPECS if not config.get(key)]
     if missing:
         raise RuntimeError(f"Konfigurasi Vault belum lengkap: {', '.join(missing)}")
 
     signer = InstancePrincipalsSecurityTokenSigner()
     client = oci.secrets.SecretsClient({"region": region}, signer=signer)
-    nutrition_values = {
+    data_processing_values = {
         name: fetch_secret(client, config[secret_id_key], name)
-        for name, secret_id_key in NUTRITION_SECRET_SPECS
+        for name, secret_id_key in DATA_PROCESSING_SECRET_SPECS
     }
-    write_env_file(NUTRITION_OUTPUT_FILE, nutrition_values)
+    write_env_file(DATA_PROCESSING_OUTPUT_FILE, data_processing_values)
+    write_env_file(LEGACY_NUTRITION_OUTPUT_FILE, data_processing_values)
 
     configured_api = [
         config_key for _, config_key in ORACLE_API_SECRET_SPECS if config.get(config_key)
@@ -143,13 +147,13 @@ def main() -> None:
     }
     # Oracle membuat job langsung di database dan mendorong pesan ke Queue.
     # Gunakan token Vault yang sama; jangan menyalinnya ke env host.
-    oracle_api_values["CLOUDFLARE_QUEUES_API_TOKEN"] = nutrition_values[
+    oracle_api_values["CLOUDFLARE_QUEUES_API_TOKEN"] = data_processing_values[
         "CLOUDFLARE_QUEUES_API_TOKEN"
     ]
     # API native dan worker gizi memakai token yang sama untuk autentikasi
     # komunikasi gRPC privat. Nilai tetap berasal dari Vault dan hanya ditulis
     # ke tmpfs mode 0600.
-    oracle_api_values["RUST_WORKER_SHARED_SECRET"] = nutrition_values[
+    oracle_api_values["RUST_WORKER_SHARED_SECRET"] = data_processing_values[
         "RUST_WORKER_SHARED_SECRET"
     ]
     database_password_secret_id = config.get(

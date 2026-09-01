@@ -427,7 +427,7 @@ def application_containers_running() -> list[str]:
     return [
         name
         for name in output.splitlines()
-        if "oracle-api" in name or "nutrition-worker" in name
+        if "oracle-api" in name or "data-processing-worker" in name
     ]
 
 
@@ -437,7 +437,7 @@ def promote(database: str) -> None:
     running = application_containers_running()
     if running:
         raise RuntimeError(
-            "Hentikan API dan nutrition worker sebelum promosi: " + ", ".join(running)
+            "Hentikan API dan data-processing worker sebelum promosi: " + ", ".join(running)
         )
     if not database_exists(database) or not database_exists(LIVE_DATABASE):
         raise RuntimeError("Database kandidat atau database live tidak ditemukan")

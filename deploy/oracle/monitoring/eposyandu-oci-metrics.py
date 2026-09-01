@@ -165,7 +165,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     metadata = read_instance_metadata()
     timestamp = dt.datetime.now(dt.timezone.utc)
-    dimensions = {"instanceId": metadata["instance_id"], "service": "nutrition-worker"}
+    dimensions = {"instanceId": metadata["instance_id"], "service": "data-processing-worker"}
     api_dimensions = {"instanceId": metadata["instance_id"], "service": "oracle-api"}
     tunnel_dimensions = {
         "instanceId": metadata["instance_id"],

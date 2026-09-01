@@ -196,7 +196,7 @@ export default function AdminMonitoringPanel() {
     const latest = samples[samples.length - 1] || null;
     const serviceEntries = useMemo(() => latest ? [
         ['API Utama', latest.services.api], ['Database', latest.services.database],
-        ['Redis', latest.services.redis], ['Worker Gizi', latest.services.nutritionWorker]
+        ['Redis', latest.services.redis], ['Data Processing', latest.services.dataProcessingWorker || latest.services.nutritionWorker]
     ] as Array<[string, 'online' | 'offline']> : [], [latest]);
 
     return Native.createElement('section', { className: 'admin-monitoring-panel', 'data-admin-monitoring-panel': 'true' },

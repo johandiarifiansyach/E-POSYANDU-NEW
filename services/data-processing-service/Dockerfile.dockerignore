@@ -1,0 +1,12 @@
+**
+!services/data-processing-service/Cargo.toml
+!services/data-processing-service/Cargo.lock
+!services/data-processing-service/build.rs
+!services/data-processing-service/proto/**
+!services/data-processing-service/src/**
+!services/eposyandu-proto/Cargo.toml
+!services/eposyandu-proto/Cargo.lock
+!services/eposyandu-proto/build.rs
+!services/eposyandu-proto/src/**
+!services/eposyandu-proto/proto/**
+!services/analysis-service/proto/**

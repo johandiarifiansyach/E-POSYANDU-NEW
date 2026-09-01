@@ -12,6 +12,7 @@ import {
   calculateZScore
 } from '../../frontend/src/shared/dashboardUtils';
 import { getGrowthChartModels } from '../../frontend/src/features/measurements/growthCharts';
+import { quickMeasurementAnomaly } from '../../frontend/src/features/measurements/measurementAnalysis';
 import { fetchChildMeasurementHistory } from '../../frontend/src/services/measurementService';
 
 const child = { tglLahir: '2026-01-01', jk: 'L' };
@@ -182,6 +183,19 @@ test.describe('measurement feature', () => {
     expect(models.lilau.curves[0].points[0].x).toBe(3);
     expect(models.lilau.childPoints).toHaveLength(1);
     expect(models.lku.childPoints).toHaveLength(2);
+  });
+
+  test('flags a height decrease from the previous month in the quick guard and chart', () => {
+    const history = [
+      { id: 'm-aug', tglUkur: '2026-08-01', bb: 8, tb: 75, lila: 14, lk: 43 },
+      { id: 'm-jul', tglUkur: '2026-07-01', bb: 7.8, tb: 76, lila: 13.9, lk: 42.8 },
+    ];
+    const quick = quickMeasurementAnomaly(history, history[0]);
+    expect(quick.detected).toBe(true);
+    expect(quick.items[0].code).toBe('height_decreased');
+
+    const models = getGrowthChartModels(history, child);
+    expect(models.tbu.childPoints.at(-1).anomaly.code).toBe('height_decreased');
   });
 
   test('loads every previous measurement and plots them chronologically as multiple points', async () => {

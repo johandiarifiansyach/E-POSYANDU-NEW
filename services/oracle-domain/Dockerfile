@@ -8,9 +8,10 @@ WORKDIR /app
 # every service gets its own binary and container lifecycle.
 COPY services/oracle-domain services/oracle-domain
 COPY services/eposyandu-proto services/eposyandu-proto
-# The shared proto build script imports nutrition.proto from this path.
+# The shared proto build script imports data_processing.proto from this path.
 # Keep the source available in every domain-service build context.
-COPY services/nutrition-grpc/proto services/nutrition-grpc/proto
+COPY services/data-processing-service/proto services/data-processing-service/proto
+COPY services/analysis-service/proto services/analysis-service/proto
 COPY services/oracle-api/src services/oracle-api/src
 COPY services/${SERVICE_DIR} services/${SERVICE_DIR}
 RUN cargo build --locked --release --manifest-path services/${SERVICE_DIR}/Cargo.toml --bin ${SERVICE_BIN}

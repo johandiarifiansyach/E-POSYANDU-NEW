@@ -2,7 +2,11 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-env_file="$HOME/.config/e-posyandu/nutrition-grpc.env"
+env_file="${EPOSYANDU_DATA_PROCESSING_ENV_FILE:-$HOME/.config/e-posyandu/data-processing-worker.env}"
+if [[ ! -f "$env_file" && -f "$HOME/.config/e-posyandu/nutrition-grpc.env" ]]; then
+  # Compatibility for installations created before the service rename.
+  env_file="$HOME/.config/e-posyandu/nutrition-grpc.env"
+fi
 
 if [[ ! -f "$env_file" ]]; then
   echo "Konfigurasi tidak ditemukan: $env_file" >&2
@@ -50,4 +54,4 @@ fi
 
 "$project_root/scripts/services/install-nutrition-grpc-macos.sh"
 
-echo "Aktivasi selesai. Rust gRPC worker kini berjalan sebagai layanan macOS."
+echo "Aktivasi selesai. Data processing worker kini berjalan sebagai layanan macOS."

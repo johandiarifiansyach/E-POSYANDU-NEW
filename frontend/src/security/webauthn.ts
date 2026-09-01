@@ -81,6 +81,34 @@ type PasskeyCeremony = {
   credential: unknown;
 };
 
+let activeCeremony: Promise<unknown> | null = null;
+
+export function passkeyErrorMessage(error: unknown, operation: 'create' | 'request' = 'create'): string {
+  // Safari can expose WebAuthn errors from a different realm, so relying only
+  // on `instanceof DOMException` would leak its raw English message.
+  const candidate = error as { name?: unknown; message?: unknown } | null;
+  const name = typeof candidate?.name === 'string' ? candidate.name : '';
+  const message = typeof candidate?.message === 'string' ? candidate.message : String(error || '');
+  if (name === 'InvalidStateError' || /invalidstateerror|object is in an invalid state/i.test(`${name} ${message}`)) {
+    return operation === 'create'
+      ? 'Passkey pada perangkat ini mungkin sudah terdaftar atau proses sebelumnya belum selesai. Gunakan passkey yang ada, selesaikan TOTP lalu coba lagi dari Administrasi Backend, atau gunakan perangkat lain.'
+      : 'Sesi passkey pada perangkat ini tidak valid. Tutup permintaan passkey yang masih terbuka, muat ulang halaman, lalu coba lagi.';
+  }
+  if (name === 'NotAllowedError' || name === 'AbortError' || /notallowederror|aborted|timed out/i.test(`${name} ${message}`)) {
+    return 'Permintaan passkey dibatalkan atau melewati batas waktu. Tekan tombol sekali dan selesaikan dialog perangkat.';
+  }
+  if (name === 'SecurityError') {
+    return 'Passkey hanya dapat digunakan pada domain HTTPS eposyandu.app.';
+  }
+  return error instanceof Error && error.message
+    ? error.message
+    : 'Passkey tidak dapat diverifikasi pada perangkat ini.';
+}
+
+function normalizePasskeyError(error: unknown, operation: 'create' | 'request'): Error {
+  return new Error(passkeyErrorMessage(error, operation));
+}
+
 function passkeyOptions(challenge: any): any {
   const challengeId = challenge?.id || challenge?.challenge_id;
   const options = challenge?.options;
@@ -94,20 +122,35 @@ async function completePasskeyCeremony(
   challenge: any,
   operation: 'create' | 'request'
 ): Promise<PasskeyCeremony> {
+  if (activeCeremony) {
+    throw new Error('Proses passkey sebelumnya masih berjalan. Selesaikan atau tutup dialog perangkat terlebih dahulu.');
+  }
   if (!window.PublicKeyCredential || !navigator.credentials) {
     throw new Error('Perangkat atau browser ini belum mendukung passkey.');
   }
   const parsed = passkeyOptions(challenge);
-  const credential = operation === 'create'
-    ? await navigator.credentials.create({ publicKey: creationOptions(parsed.options) })
-    : await navigator.credentials.get({ publicKey: requestOptions(parsed.options) });
-  if (!(credential instanceof PublicKeyCredential)) {
-    throw new Error('Verifikasi passkey dibatalkan atau tidak menghasilkan kredensial.');
+  const ceremony = (async () => {
+    try {
+      const credential = operation === 'create'
+        ? await navigator.credentials.create({ publicKey: creationOptions(parsed.options) })
+        : await navigator.credentials.get({ publicKey: requestOptions(parsed.options) });
+      if (!(credential instanceof PublicKeyCredential)) {
+        throw new Error('Verifikasi passkey dibatalkan atau tidak menghasilkan kredensial.');
+      }
+      return {
+        challengeId: parsed.challengeId,
+        credential: serializeCredential(credential, operation)
+      };
+    } catch (error) {
+      throw normalizePasskeyError(error, operation);
+    }
+  })();
+  activeCeremony = ceremony;
+  try {
+    return await ceremony;
+  } finally {
+    if (activeCeremony === ceremony) activeCeremony = null;
   }
-  return {
-    challengeId: parsed.challengeId,
-    credential: serializeCredential(credential, operation)
-  };
 }
 
 export async function completeWebAuthnRegistration(challenge: any): Promise<PasskeyCeremony> {

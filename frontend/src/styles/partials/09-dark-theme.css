@@ -155,16 +155,18 @@ html[data-theme="dark"] .ios-page-indicator strong {
 
 html[data-theme="dark"] .apple-button.ios-back-button,
 html[data-theme="dark"] .apple-button-secondary {
-  border-color: rgba(100, 210, 255, 0.2);
-  background: rgba(58, 58, 64, 0.78);
+  border-color: #334155;
+  background: #1f2937;
   color: #64d2ff;
-  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.24);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 html[data-theme="dark"] .apple-button.ios-back-button:hover,
 html[data-theme="dark"] .apple-button-secondary:hover {
-  border-color: rgba(100, 210, 255, 0.34);
-  background: rgba(72, 72, 78, 0.92);
+  border-color: #475569;
+  background: #273449;
   color: #fff;
 }
 
@@ -567,6 +569,122 @@ html[data-theme="dark"] .ios-week-button.is-complete::after {
 
 html[data-theme="dark"] .ios-identity-modal .identity-modal-scroll > section {
   border-color: rgba(235, 235, 245, 0.11);
+}
+
+html[data-theme="dark"] .growth-chart-dialog,
+html[data-theme="dark"] .measurement-analysis-card {
+  border-color: rgba(235, 235, 245, 0.14);
+  background: rgba(28, 28, 32, 0.96);
+}
+
+html[data-theme="dark"] .growth-chart-header,
+html[data-theme="dark"] .growth-chart-actions {
+  border-color: rgba(235, 235, 245, 0.12);
+  background: rgba(38, 38, 43, 0.94);
+}
+
+html[data-theme="dark"] .growth-chart-header h2,
+html[data-theme="dark"] .measurement-analysis-card-heading h3,
+html[data-theme="dark"] .measurement-analysis-risk > strong {
+  color: #f5f5f7;
+}
+
+html[data-theme="dark"] .growth-chart-header p,
+html[data-theme="dark"] .measurement-analysis-card-heading p,
+html[data-theme="dark"] .measurement-analysis-risk > small,
+html[data-theme="dark"] .measurement-analysis-list span,
+html[data-theme="dark"] .measurement-analysis-guidance-list ul,
+html[data-theme="dark"] .measurement-analysis-guidance-disclaimer {
+  color: rgba(235, 235, 245, 0.64);
+}
+
+html[data-theme="dark"] .measurement-analysis-card-alert {
+  border-color: rgba(255, 69, 58, 0.38);
+  background: rgba(255, 69, 58, 0.12);
+}
+
+html[data-theme="dark"] .measurement-analysis-guidance-findings span {
+  border-color: rgba(255, 69, 58, 0.34);
+  color: #ffb4ab;
+  background: rgba(118, 118, 128, 0.16);
+}
+
+html[data-theme="dark"] .measurement-analysis-guidance-list > strong {
+  color: #f5f5f7;
+}
+
+html[data-theme="dark"] .measurement-analysis-who-card,
+html[data-theme="dark"] .measurement-analysis-who-item {
+  border-color: rgba(235, 235, 245, 0.14);
+  background: rgba(118, 118, 128, 0.1);
+}
+
+html[data-theme="dark"] .measurement-analysis-who-item > strong {
+  color: #f5f5f7;
+}
+
+html[data-theme="dark"] .measurement-analysis-who-item > span,
+html[data-theme="dark"] .measurement-analysis-who-item > small {
+  color: rgba(235, 235, 245, 0.64);
+}
+
+html[data-theme="dark"] .growth-chart-anomaly-note {
+  border-color: rgba(255, 69, 58, 0.38);
+  color: #ffb4ab;
+  background: rgba(255, 69, 58, 0.12);
+}
+
+html[data-theme="dark"] .growth-chart-analysis {
+  border-color: rgba(100, 210, 255, 0.2);
+  background: rgba(38, 38, 43, 0.86);
+}
+
+html[data-theme="dark"] .growth-chart-analysis-header h3,
+html[data-theme="dark"] .growth-chart-analysis-indicator > strong,
+html[data-theme="dark"] .growth-chart-analysis-list > strong {
+  color: #f5f5f7;
+}
+
+html[data-theme="dark"] .growth-chart-analysis-header p,
+html[data-theme="dark"] .growth-chart-analysis-indicator > small,
+html[data-theme="dark"] .growth-chart-analysis-indicator > p,
+html[data-theme="dark"] .growth-chart-analysis-list ul,
+html[data-theme="dark"] .growth-chart-analysis-disclaimer,
+html[data-theme="dark"] .growth-chart-analysis-summary {
+  color: rgba(235, 235, 245, 0.66);
+}
+
+html[data-theme="dark"] .growth-chart-analysis-confidence {
+  color: #64d2ff;
+  background: rgba(10, 132, 255, 0.2);
+}
+
+html[data-theme="dark"] .growth-chart-analysis-indicator {
+  border-color: rgba(235, 235, 245, 0.12);
+  background: rgba(118, 118, 128, 0.1);
+}
+
+html[data-theme="dark"] .growth-chart-analysis-warning {
+  border-color: rgba(255, 69, 58, 0.38);
+  color: #ffb4ab;
+  background: rgba(255, 69, 58, 0.12);
+}
+
+html[data-theme="dark"] .measurement-analysis-card-ok {
+  border-color: rgba(48, 209, 88, 0.34);
+  background: rgba(48, 209, 88, 0.1);
+}
+
+html[data-theme="dark"] .measurement-analysis-risk {
+  background: rgba(118, 118, 128, 0.16);
+}
+
+html[data-theme="dark"] .measurement-analysis-risk-high {
+  background: rgba(255, 69, 58, 0.14);
+}
+
+html[data-theme="dark"] .measurement-analysis-risk-medium {
+  background: rgba(255, 159, 10, 0.14);
 }
 
 html[data-theme="dark"] .bg-red-50,

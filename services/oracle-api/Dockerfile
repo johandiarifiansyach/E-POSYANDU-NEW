@@ -3,7 +3,8 @@ FROM docker.io/library/rust:1.97-bookworm AS builder
 WORKDIR /app
 COPY services/oracle-api services/oracle-api
 COPY services/eposyandu-proto services/eposyandu-proto
-COPY services/nutrition-grpc/proto services/nutrition-grpc/proto
+COPY services/data-processing-service/proto services/data-processing-service/proto
+COPY services/analysis-service/proto services/analysis-service/proto
 COPY backend/openapi.json backend/openapi.json
 COPY backend/graphql-schema.graphql backend/graphql-schema.graphql
 RUN cargo build --locked --release --manifest-path services/oracle-api/Cargo.toml

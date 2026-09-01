@@ -350,7 +350,11 @@ export const Dashboard = ({ user, onLogout }) => {
         const m = String(filterMonth).padStart(2, '0');
         const y = filterYear;
         const startStr = `${y}-${m}-01`;
-        const endStr = `${y}-${m}-31`;
+        // `filterMonth` is 1-based.  Using a fixed day of 31 creates invalid
+        // dates (for example, September 31) and makes the API reject the
+        // query before the measurements can be loaded.
+        const lastDay = String(new Date(y, filterMonth, 0).getDate()).padStart(2, '0');
+        const endStr = `${y}-${m}-${lastDay}`;
         const measurementsCollection = collection(db, 'artifacts', appId, 'public', 'data', 'measurements');
         const scopedDesa = isFullAccessRole(user.role) ? viewDesa : user.desa;
         const scopedPosyandu = user.role === ROLES.KADER ? user.posyandu : viewPosyandu;
@@ -851,12 +855,57 @@ export const Dashboard = ({ user, onLogout }) => {
     const handleExportSigizi = async () => {
         await runExport('file identitas Sigizi', async () => {
             const xlsx = await ensureXlsx();
-            const exportedChildren = await fetchExportChildren({ currentFilterDate, ...exportQueryContext });
+            const { start, end } = getSelectedMonthRange(filterMonth, filterYear);
+            let exportedChildren;
+            try {
+                // The paginated "Balita Baru" endpoint intentionally returns
+                // a compact summary. Identity exports need the full document,
+                // so read the complete collection with a server-side month
+                // range (including the final day's timestamps).
+                const fullChildren = await fetchExportDocuments({
+                    resource: 'children',
+                    dateField: 'createdAt',
+                    start: `${start}T00:00:00.000Z`,
+                    end: `${end}T23:59:59.999Z`,
+                    ...exportQueryContext,
+                });
+                exportedChildren = filterChildrenByAgeRange(fullChildren, 0, 59, currentFilterDate);
+            }
+            catch (collectionError) {
+                // Compatibility fallback for older API deployments and cached
+                // sessions that do not expose filtered collection exports.
+                console.warn('Ekspor identitas lengkap memakai jalur halaman cadangan:', collectionError);
+                const recentChildren = [];
+                const pageSize = 50;
+                try {
+                    for (let page = 1; page <= 200; page += 1) {
+                        const response = await getChildrenPage({
+                            asOf: start,
+                            measurementEnd: end,
+                            measurementStart: start,
+                            page,
+                            posyandu: viewPosyandu || undefined,
+                            size: pageSize,
+                            sort: 'recent',
+                            view: 'recent',
+                            village: viewDesa || undefined,
+                        });
+                        recentChildren.push(...response.items.map((item) => ({ id: item.id, ...item.data })));
+                        if (response.items.length < pageSize || recentChildren.length >= response.total)
+                            break;
+                    }
+                    exportedChildren = filterChildrenByAgeRange(recentChildren, 0, 59, currentFilterDate);
+                }
+                catch (recentError) {
+                    console.warn('Jalur halaman balita baru tidak tersedia, memakai koleksi lokal:', recentError);
+                    exportedChildren = await fetchExportChildren({ currentFilterDate, ...exportQueryContext });
+                }
+            }
             const rows = getSigiziIdentityRows(exportedChildren, filterMonth, filterYear);
             const worksheet = createSafeWorksheet(xlsx, [SIGIZI_IDENTITY_HEADERS, ...rows]);
             const workbook = xlsx.utils.book_new();
             xlsx.utils.book_append_sheet(workbook, worksheet, "Data Balita");
-            xlsx.writeFile(workbook, `Format_Identitas_Sigizi_${MONTHS[filterMonth - 1]}_${filterYear}.xls`);
+            xlsx.writeFile(workbook, `Format_Identitas_Sigizi_${MONTHS[filterMonth - 1]}_${filterYear}.xls`, { bookType: 'biff8' });
         });
     };
     const handleExportPengukuranSigizi = async () => {
@@ -1288,7 +1337,7 @@ export const Dashboard = ({ user, onLogout }) => {
                         Native.createElement("div", { className: "account-menu-divider" }),
                         user.role === ROLES.SUPER_ADMIN && Native.createElement("button", { type: "button", role: "menuitem", className: "account-admin-button", onClick: handleOpenAdminBackend },
                             Native.createElement(Activity, { className: "h-4 w-4" }),
-                            Native.createElement("span", null, "Akses Backend Penuh")),
+                            Native.createElement("span", null, "Akses Administrator")),
                         Native.createElement("button", { type: "button", role: "menuitem", className: "account-logout-button", onClick: () => {
                                 setIsAccountMenuOpen(false);
                                 onLogout();
@@ -1316,7 +1365,7 @@ export const Dashboard = ({ user, onLogout }) => {
                                 Native.createElement("button", { type: "button", className: "apple-button apple-button-secondary px-4 py-2 text-sm font-semibold", onClick: () => void handleResolveSyncConflict(syncConflicts[0].id, 'accept-server') }, "Gunakan Data Server")))))),
                 activeTab !== 'add_child' && activeTab !== 'measurement' && activeTab !== 'change_history' && activeTab !== 'admin_backend' && (Native.createElement("div", { className: "mb-6" },
                     Native.createElement(LocationFilterPanel, { draftDesa: draftDesa, draftPosyandu: draftPosyandu, filterMonth: filterMonth, filterYear: filterYear, onApply: handleApplyLocationFilter, onReset: handleResetLocationFilter, role: user.role, setDraftDesa: setDraftDesa, setDraftPosyandu: setDraftPosyandu, setFilterMonth: setFilterMonth, setFilterYear: setFilterYear, user: user }))),
-                Native.createElement(Native.Suspense, { fallback: Native.createElement(DashboardPageSkeleton, null) }, activeTab === 'admin_backend' ? (user.role === ROLES.SUPER_ADMIN ? Native.createElement(AdminBackendPage, null) : Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, pageState: dashboardPageState, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'add_child' ? (Native.createElement(AddChildPage, { allChildren: children, onBack: handleBackFromAddChild, onSuccess: handleBackFromAddChild, user: user })) : activeTab === 'measurement' ? (measurementChild ? (Native.createElement(MeasurementPage, { child: measurementChild, onBack: handleBackFromMeasurement })) : (Native.createElement(Card, { className: "p-8 text-center text-slate-500" }, childrenLoading ? 'Memuat data balita...' : 'Data balita tidak ditemukan atau tidak dapat diakses.'))) : activeTab === 'dashboard' ? (Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, pageState: dashboardPageState, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'asi_eksklusif' ? (Native.createElement(ExclusiveBreastfeedingPage, { filterMonth: filterMonth, filterYear: filterYear, refreshKey: dataRevision, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'pmt_program' ? (Native.createElement(PmtProgramPage, { childrenData: children, pmtPrograms: pmtPrograms, pageState: pmtPageState, onExportPmt: handleExportPmt, onDeleteProgram: handleDeletePmt, onOpenMonitoring: handleOpenPmtMonitoring })) : activeTab === 'change_history' ? (Native.createElement(ChangeHistoryPage, { changeLogs: changeLogs, loading: changeHistoryLoading, error: changeHistoryError, pageState: changeHistoryPageState, currentPage: changeHistoryPage, total: changeHistoryTotal, pageSize: 10, onPageChange: setChangeHistoryPage, onRetry: () => setChangeHistoryRevision((revision) => revision + 1) })) : (Native.createElement(ChildrenTablePage, { activeTab: activeTab, currentFilterDate: currentFilterDate, currentPage: currentPage, displayData: tableDisplayData, fileInputRef: fileInputRef, filterMonth: filterMonth, filterYear: filterYear, handleExportMpasi: handleExportMpasi, handleExportPengukuranSigizi: handleExportPengukuranSigizi, handleExportTable: handleExportTable, handleImportIdentitas: handleImportIdentitas, handlePermanentDelete: handlePermanentDelete, handleRestore: handleRestore, itemsPerPage: itemsPerPage, loading: tableLoading, pageState: pagedChildrenPageState, monthlyMeasurements: tableMeasurements, mpasiLogs: tableMpasiLogs, paginatedData: tablePaginatedData, searchTerm: searchTerm, searchDraft: searchDraft, setChildToDelete: setChildToDelete, setChildToMpasi: setChildToMpasi, setCurrentPage: setCurrentPage, onEditChild: handleOpenEditChild, setPmtModalData: setPmtModalData, setSearchDraft: setSearchDraft, onClearSearch: handleClearSearch, onSubmitSearch: handleSearchSubmit, onOpenMeasurement: handleOpenMeasurementPage, onOpenAddChild: handleOpenAddChildPage, setSortOrder: setSortOrder, sortOrder: sortOrder, totalDataCount: tableTotalCount, user: user, readOnly: !canWrite })))),
+                Native.createElement(Native.Suspense, { fallback: Native.createElement(DashboardPageSkeleton, null) }, activeTab === 'admin_backend' ? (user.role === ROLES.SUPER_ADMIN ? Native.createElement(AdminBackendPage, null) : Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, pageState: dashboardPageState, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'add_child' ? (Native.createElement(AddChildPage, { allChildren: children, onBack: handleBackFromAddChild, onSuccess: handleBackFromAddChild, user: user })) : activeTab === 'measurement' ? (measurementChild ? (Native.createElement(MeasurementPage, { child: measurementChild, onBack: handleBackFromMeasurement })) : (Native.createElement(Card, { className: "p-8 text-center text-slate-500" }, childrenLoading ? 'Memuat data balita...' : 'Data balita tidak ditemukan atau tidak dapat diakses.'))) : activeTab === 'dashboard' ? (Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, pageState: dashboardPageState, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'asi_eksklusif' ? (Native.createElement(ExclusiveBreastfeedingPage, { filterMonth: filterMonth, filterYear: filterYear, refreshKey: dataRevision, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'pmt_program' ? (Native.createElement(PmtProgramPage, { childrenData: children, pmtPrograms: pmtPrograms, pageState: pmtPageState, onExportPmt: handleExportPmt, onDeleteProgram: handleDeletePmt, onOpenMonitoring: handleOpenPmtMonitoring })) : activeTab === 'change_history' ? (Native.createElement(ChangeHistoryPage, { changeLogs: changeLogs, loading: changeHistoryLoading, error: changeHistoryError, pageState: changeHistoryPageState, currentPage: changeHistoryPage, total: changeHistoryTotal, pageSize: 10, onPageChange: setChangeHistoryPage, onRetry: () => setChangeHistoryRevision((revision) => revision + 1) })) : (Native.createElement(ChildrenTablePage, { activeTab: activeTab, currentFilterDate: currentFilterDate, currentPage: currentPage, displayData: tableDisplayData, fileInputRef: fileInputRef, filterMonth: filterMonth, filterYear: filterYear, handleExportMpasi: handleExportMpasi, handleExportPengukuranSigizi: handleExportPengukuranSigizi, handleExportSigizi: handleExportSigizi, handleExportTable: handleExportTable, handleImportIdentitas: handleImportIdentitas, handlePermanentDelete: handlePermanentDelete, handleRestore: handleRestore, itemsPerPage: itemsPerPage, loading: tableLoading, pageState: pagedChildrenPageState, monthlyMeasurements: tableMeasurements, mpasiLogs: tableMpasiLogs, paginatedData: tablePaginatedData, searchTerm: searchTerm, searchDraft: searchDraft, setChildToDelete: setChildToDelete, setChildToMpasi: setChildToMpasi, setCurrentPage: setCurrentPage, onEditChild: handleOpenEditChild, setPmtModalData: setPmtModalData, setSearchDraft: setSearchDraft, onClearSearch: handleClearSearch, onSubmitSearch: handleSearchSubmit, onOpenMeasurement: handleOpenMeasurementPage, onOpenAddChild: handleOpenAddChildPage, setSortOrder: setSortOrder, sortOrder: sortOrder, totalDataCount: tableTotalCount, user: user, readOnly: !canWrite })))),
             Native.createElement("footer", { className: "app-footer" },
                 Native.createElement("p", null, "\u00A9 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach"),
                 Native.createElement("button", { type: "button", className: "app-version-button", onClick: openReleaseNotes, "aria-haspopup": "dialog", title: "Lihat apa yang baru" }, `E-Posyandu v${APP_VERSION}`))),

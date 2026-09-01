@@ -8,8 +8,8 @@ on:
     paths:
       - 'backend/Cargo.lock'
       - 'backend/Cargo.toml'
-      - 'services/nutrition-grpc/Cargo.lock'
-      - 'services/nutrition-grpc/Cargo.toml'
+      - 'services/data-processing-service/Cargo.lock'
+      - 'services/data-processing-service/Cargo.toml'
 
 permissions:
   contents: read
@@ -29,5 +29,5 @@ jobs:
         run: cargo install cargo-audit --locked
       - name: Audit Cloudflare API dependencies
         run: cargo audit --file backend/Cargo.lock
-      - name: Audit nutrition worker dependencies
-        run: cargo audit --file services/nutrition-grpc/Cargo.lock
+      - name: Audit data-processing worker dependencies
+        run: cargo audit --file services/data-processing-service/Cargo.lock

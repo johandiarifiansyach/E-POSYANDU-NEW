@@ -6,7 +6,10 @@ import { Card, InputGroup } from '../ui/dashboardPrimitives';
 import { CheckCircle2, ChevronLeft, History, Loader2, Pencil, Plus, Scale, Trash2, TrendingUp } from '../ui/icons';
 import { showError, showSuccess } from '../ui/notifications';
 import GrowthChartsDialog from '../features/measurements/GrowthChartsDialog';
+import MeasurementAnalysisDialog from '../features/measurements/MeasurementAnalysisDialog';
+import { quickMeasurementAnomaly } from '../features/measurements/measurementAnalysis';
 import { fetchChildMeasurementHistory } from '../services/measurementService';
+import { requestMeasurementAnalysis } from '../api/analysisApi';
 import { TableLoadingSkeleton } from '../ui/skeleton';
 import {
     calculateWeightGainStatus as calculateMeasurementWeightGainStatus,
@@ -44,6 +47,7 @@ export default function MeasurementPage({ child, onBack }) {
     const [deletingMeasurementId, setDeletingMeasurementId] = useState(null);
     const [editingMeasurementId, setEditingMeasurementId] = useState(null);
     const [showGrowthCharts, setShowGrowthCharts] = useState(false);
+    const [analysisState, setAnalysisState] = useState({ status: 'idle', result: null, error: null, measurement: null });
     useEffect(() => {
         if (!child.id) {
             setHistoryState({ status: 'success', data: [] });
@@ -156,6 +160,22 @@ export default function MeasurementPage({ child, onBack }) {
         setEditingMeasurementId(null);
         setActiveMenu('history');
     };
+    const startMeasurementAnalysis = (measurement, analysisHistory) => {
+        const quickAnomaly = quickMeasurementAnomaly(analysisHistory, measurement);
+        setAnalysisState({
+            status: 'loading',
+            result: { anomaly: quickAnomaly, risk: null },
+            error: null,
+            measurement,
+        });
+        void requestMeasurementAnalysis(child, measurement, analysisHistory)
+            .then((result) => setAnalysisState({ status: 'success', result, error: null, measurement }))
+            .catch((error) => setAnalysisState((previous) => ({
+                ...previous,
+                status: 'error',
+                error: error instanceof Error ? error.message : 'Analisis pertumbuhan belum tersedia.',
+            })));
+    };
     const handleSubmit = async (event) => {
         event.preventDefault();
         if (!child.id)
@@ -247,6 +267,10 @@ export default function MeasurementPage({ child, onBack }) {
             await syncMeasurementMutationsNow([measurementMutation.mutationId, ...statusMutationIds, childMutation.mutationId]);
             setHistoryState({ status: 'success', data: projectedHistory });
             setSaveState({ status: 'success', data: undefined });
+            startMeasurementAnalysis(
+                projectedHistory.find((item) => item.id === measurementId) || { id: measurementId, ...measurementData },
+                projectedHistory,
+            );
             showSuccess(editingMeasurementId ? 'Data penimbangan berhasil diperbarui.' : 'Data penimbangan berhasil disimpan.');
             handleShowHistory();
         }
@@ -315,6 +339,16 @@ export default function MeasurementPage({ child, onBack }) {
         saveState.status === 'error' && (Native.createElement("div", { className: "ios-inline-notification ios-inline-notification-error", role: "alert" },
             Native.createElement("strong", null, "Data penimbangan belum tersimpan"),
             Native.createElement("span", null, saveState.message))),
+        analysisState.status !== 'idle' && Native.createElement(MeasurementAnalysisDialog, {
+            child,
+            measurement: analysisState.measurement,
+            state: analysisState,
+            onClose: () => setAnalysisState({ status: 'idle', result: null, error: null, measurement: null }),
+            onOpenChart: () => {
+                setAnalysisState({ status: 'idle', result: null, error: null, measurement: null });
+                setShowGrowthCharts(true);
+            },
+        }),
         showGrowthCharts && Native.createElement(GrowthChartsDialog, { child: child, history: monthlyHistory, onClose: () => setShowGrowthCharts(false) }),
         Native.createElement("div", { className: "flex flex-col lg:flex-row lg:items-end justify-between gap-4" },
             Native.createElement("div", null,
@@ -350,6 +384,9 @@ export default function MeasurementPage({ child, onBack }) {
                     Native.createElement(Button, { type: "button", variant: "secondary", className: "measurement-growth-button", onClick: () => setShowGrowthCharts(true), title: "Buka enam grafik pertumbuhan WHO" },
                         Native.createElement(TrendingUp, { className: "h-4 w-4" }),
                         Native.createElement("span", null, "Grafik Pertumbuhan")),
+                monthlyHistory[0] && Native.createElement(Button, { type: "button", variant: "secondary", className: "measurement-analysis-button", onClick: () => startMeasurementAnalysis(monthlyHistory[0], monthlyHistory), title: "Analisis pertumbuhan, anomali, edukasi, dan tindak lanjut" },
+                        Native.createElement(TrendingUp, { className: "h-4 w-4" }),
+                        Native.createElement("span", null, "Analisis Pertumbuhan")),
                     Native.createElement("span", { className: "measurement-history-count", "aria-label": `${monthlyHistory.length} catatan` }, monthlyHistory.length))),
             historyError && (Native.createElement("div", { className: "ios-inline-notification ios-inline-notification-error mb-4", role: "alert" },
                 Native.createElement("strong", null, "Riwayat penimbangan tidak dapat dimuat"),

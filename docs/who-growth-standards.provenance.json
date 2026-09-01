@@ -117,7 +117,7 @@
       "sha256": "9973fec065b08cda78130faaff4cc7a7f31baeab75443a0596dd7d417cc6655a"
     },
     {
-      "path": "services/nutrition-grpc/data/anthropometry.json",
+      "path": "services/analysis-service/data/anthropometry.json",
       "sha256": "9973fec065b08cda78130faaff4cc7a7f31baeab75443a0596dd7d417cc6655a"
     },
     {

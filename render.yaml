@@ -1,10 +1,10 @@
 services:
   - type: web
-    name: e-posyandu-nutrition-worker
+    name: e-posyandu-data-processing-worker
     runtime: docker
     plan: free
     region: singapore
-    dockerfilePath: ./services/nutrition-grpc/Dockerfile
+    dockerfilePath: ./services/data-processing-service/Dockerfile
     dockerContext: .
     healthCheckPath: /health
     autoDeployTrigger: commit

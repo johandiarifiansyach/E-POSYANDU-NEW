@@ -4,6 +4,8 @@ import {
   getAuth,
   getCurrentAccessProfile,
   initializeApp,
+  isAuthenticationError,
+  onAuthStateChanged,
   restoreAuthSession,
   signInWithPassword,
   signOut
@@ -289,20 +291,39 @@ export function mountApp(container: HTMLElement): Cleanup {
     if (disposed) return;
     replaceView(() => {
       const root = createRoot(container);
+      let intentionalSessionEnd = false;
+      let redirectingAfterAuthExpiry = false;
+      const stopAuth = onAuthStateChanged(auth, (currentUser) => {
+        if (currentUser || disposed || intentionalSessionEnd || redirectingAfterAuthExpiry) return;
+        redirectingAfterAuthExpiry = true;
+        clearStoredUser();
+        void renderLogin().finally(() => {
+          redirectingAfterAuthExpiry = false;
+        });
+      });
       const logout = async () => {
+        intentionalSessionEnd = true;
         try {
           await clearSession();
           await renderLogin();
         } catch (error) {
           window.alert(error instanceof Error ? error.message : 'Tidak dapat keluar dari aplikasi.');
+        } finally {
+          intentionalSessionEnd = false;
         }
       };
       root.render(() => Native.createElement(Dashboard, { user, onLogout: logout }));
       const stopIdleSession = startIdleSession(async () => {
-        await expireSession();
-        await renderLogin();
+        intentionalSessionEnd = true;
+        try {
+          await expireSession();
+          await renderLogin();
+        } finally {
+          intentionalSessionEnd = false;
+        }
       });
       return () => {
+        stopAuth();
         stopIdleSession();
         root.unmount();
       };
@@ -344,6 +365,12 @@ export function mountApp(container: HTMLElement): Cleanup {
       await renderDashboard(user);
     } catch (error) {
       console.warn('Profil akun belum dapat diperbarui:', error);
+      if (isAuthenticationError(error)) {
+        clearStoredUser();
+        await expireAuthSession(auth);
+        await renderLogin();
+        return;
+      }
       if (storedUser) await renderDashboard(storedUser);
       else await renderLogin();
     }

@@ -3,6 +3,7 @@ import type { DashboardStatsResponse, MonitoringStatus } from '../api/dashboardA
 import type { PageState } from '../shared/pageState';
 import { Activity, AlertTriangle, Baby, CircleOff, Minus, Scale, TrendingUp, UserPlus, Users } from '../ui/icons';
 import { Card } from '../ui/dashboardPrimitives';
+import { SkeletonBlock } from '../ui/skeleton';
 import { MONTHS } from './DashboardApp';
 
 type DashboardOverviewPageProps = {
@@ -23,6 +24,29 @@ export default function DashboardOverviewPage({ stats: providedStats, pageState,
     const pageLoading = resolvedState.status === 'loading';
     const pageError = resolvedState.status === 'error' ? resolvedState.message : null;
     const stats = resolvedState.status === 'success' ? resolvedState.data : providedStats;
+    // Do not render the initial empty stats object as real zeros. The parent
+    // starts with an empty object while the dashboard request is in flight;
+    // showing it makes a healthy dashboard briefly look empty. Keep the
+    // layout visible and replace every data-dependent value with a skeleton
+    // until the first complete response arrives.
+    const metricValue = (value: number | string, className = '') => pageLoading
+        ? SkeletonBlock({ className: `dashboard-stat-skeleton-value ${className}`.trim() })
+        : value;
+    const metricPercent = (value: string) => pageLoading
+        ? SkeletonBlock({ className: 'dashboard-stat-skeleton-percent' })
+        : `${value}%`;
+    const metricProgress = (value: string, colorClass: string) => pageLoading
+        ? SkeletonBlock({ className: 'dashboard-stat-skeleton-progress' })
+        : Native.createElement('div', { className: `h-full ${colorClass} rounded-full`, style: { width: `${value}%` } });
+    const asiSummary = pageLoading
+        ? SkeletonBlock({ className: 'dashboard-stat-skeleton-asi' })
+        : Native.createElement(Native.Fragment, null,
+            stats.asiEksklusif,
+            ' ',
+            Native.createElement('span', { className: 'text-base font-medium text-slate-500' },
+                '/ ',
+                stats.asiTarget,
+                ' bayi'));
     const workerStatus = monitoringStatus?.worker?.status;
     const monitoringMessage = workerStatus === 'down'
         ? `Worker laporan tidak tersedia setelah ${monitoringStatus?.worker.consecutiveFailures || 3} pemeriksaan. Login dan input data tetap dapat digunakan.`
@@ -37,7 +61,7 @@ export default function DashboardOverviewPage({ stats: providedStats, pageState,
         : storageStatus?.status === 'cleaned'
             ? `${storageStatus.deletedObjects} file ekspor lama dibersihkan otomatis untuk menjaga kapasitas R2.`
             : '';
-    return (Native.createElement("div", { className: "apple-page space-y-6" },
+    return (Native.createElement("div", { className: "apple-page space-y-6", "aria-busy": pageLoading ? "true" : "false" },
         Native.createElement("div", { className: "apple-page-header flex justify-between items-end" },
             Native.createElement("div", null,
                 Native.createElement("h2", { className: "apple-page-title" }, "Capaian Program SKDN"),
@@ -68,52 +92,49 @@ export default function DashboardOverviewPage({ stats: providedStats, pageState,
                 Native.createElement("div", { className: "flex items-center justify-between mb-2" },
                     Native.createElement("span", { className: "text-xs font-bold text-slate-400 uppercase" }, "S (Sasaran)"),
                     Native.createElement(Users, { className: "w-4 h-4 text-blue-500" })),
-                Native.createElement("p", { className: "text-2xl font-bold text-slate-800" }, stats.S),
+                Native.createElement("p", { className: "text-2xl font-bold text-slate-800" }, metricValue(stats.S)),
                 Native.createElement("p", { className: "text-xs text-slate-400" }, "Total Balita Aktif")),
             Native.createElement(Card, { className: "apple-metric-card apple-metric-green p-4" },
                 Native.createElement("div", { className: "flex items-center justify-between mb-2" },
                     Native.createElement("span", { className: "text-xs font-bold text-slate-400 uppercase" }, "D (Ditimbang)"),
                     Native.createElement(Scale, { className: "w-4 h-4 text-emerald-500" })),
-                Native.createElement("p", { className: "text-2xl font-bold text-slate-800" }, stats.D),
+                Native.createElement("p", { className: "text-2xl font-bold text-slate-800" }, metricValue(stats.D)),
                 Native.createElement("div", { className: "flex items-center gap-1 mt-1" },
                     Native.createElement("div", { className: "h-1.5 w-full bg-slate-100 rounded-full overflow-hidden" },
-                        Native.createElement("div", { className: "h-full bg-emerald-500 rounded-full", style: { width: `${stats.perD}%` } })),
+                        metricProgress(stats.perD, 'bg-emerald-500')),
                     Native.createElement("span", { className: "text-xs font-bold text-emerald-600" },
-                        stats.perD,
-                        "%"))),
+                        metricPercent(stats.perD)))),
             Native.createElement(Card, { className: "apple-metric-card apple-metric-indigo p-4" },
                 Native.createElement("div", { className: "flex items-center justify-between mb-2" },
                     Native.createElement("span", { className: "text-xs font-bold text-slate-400 uppercase" }, "N (Naik)"),
                     Native.createElement(TrendingUp, { className: "w-4 h-4 text-indigo-500" })),
-                Native.createElement("p", { className: "text-2xl font-bold text-slate-800" }, stats.N),
+                Native.createElement("p", { className: "text-2xl font-bold text-slate-800" }, metricValue(stats.N)),
                 Native.createElement("div", { className: "flex items-center gap-1 mt-1" },
                     Native.createElement("div", { className: "h-1.5 w-full bg-slate-100 rounded-full overflow-hidden" },
-                        Native.createElement("div", { className: "h-full bg-indigo-500 rounded-full", style: { width: `${stats.perN}%` } })),
+                        metricProgress(stats.perN, 'bg-indigo-500')),
                     Native.createElement("span", { className: "text-xs font-bold text-indigo-600" },
-                        stats.perN,
-                        "%"))),
+                        metricPercent(stats.perN)))),
             Native.createElement(Card, { className: "apple-metric-card apple-metric-orange p-4" },
                 Native.createElement("div", { className: "flex items-center justify-between mb-2" },
                     Native.createElement("span", { className: "text-xs font-bold text-slate-400 uppercase" }, "T (Tidak Naik)"),
                     Native.createElement(Minus, { className: "w-4 h-4 text-amber-500" })),
-                Native.createElement("p", { className: "text-2xl font-bold text-slate-800" }, stats.T),
+                Native.createElement("p", { className: "text-2xl font-bold text-slate-800" }, metricValue(stats.T)),
                 Native.createElement("div", { className: "flex items-center gap-1 mt-1" },
                     Native.createElement("div", { className: "h-1.5 w-full bg-slate-100 rounded-full overflow-hidden" },
-                        Native.createElement("div", { className: "h-full bg-amber-500 rounded-full", style: { width: `${stats.perT}%` } })),
+                        metricProgress(stats.perT, 'bg-amber-500')),
                     Native.createElement("span", { className: "text-xs font-bold text-amber-600" },
-                        stats.perT,
-                        "%"))),
+                        metricPercent(stats.perT)))),
             Native.createElement(Card, { className: "apple-metric-card apple-metric-cyan p-4" },
                 Native.createElement("div", { className: "flex items-center justify-between mb-2" },
                     Native.createElement("span", { className: "text-xs font-bold text-slate-400 uppercase" }, "B (Bayi Baru)"),
                     Native.createElement(UserPlus, { className: "w-4 h-4 text-cyan-500" })),
-                Native.createElement("p", { className: "text-2xl font-bold text-slate-800" }, stats.B),
+                Native.createElement("p", { className: "text-2xl font-bold text-slate-800" }, metricValue(stats.B)),
                 Native.createElement("p", { className: "text-xs text-slate-400" }, "Diinput bulan ini")),
             Native.createElement(Card, { className: "apple-metric-card apple-metric-red p-4" },
                 Native.createElement("div", { className: "flex items-center justify-between mb-2" },
                     Native.createElement("span", { className: "text-xs font-bold text-slate-400 uppercase" }, "O (Tidak Ditimbang)"),
                     Native.createElement(CircleOff, { className: "w-4 h-4 text-rose-500" })),
-                Native.createElement("p", { className: "text-2xl font-bold text-slate-800" }, stats.O ?? '-'),
+                Native.createElement("p", { className: "text-2xl font-bold text-slate-800" }, metricValue(stats.O ?? '-')),
                 Native.createElement("p", { className: "text-xs text-slate-400" }, "Bulan sebelumnya"))),
         Native.createElement("h2", { className: "apple-section-title mt-6" }, "Capaian ASI Eksklusif"),
         Native.createElement(Card, { className: "apple-feature-card p-5" },
@@ -126,17 +147,11 @@ export default function DashboardOverviewPage({ stats: providedStats, pageState,
                         Native.createElement("p", { className: "text-xs text-slate-500" }, "Tercatat ASI eksklusif pada bulan laporan"))),
                 Native.createElement("div", { className: "sm:text-right" },
                     Native.createElement("p", { className: "text-2xl font-bold text-slate-800" },
-                        stats.asiEksklusif,
-                        " ",
-                        Native.createElement("span", { className: "text-base font-medium text-slate-500" },
-                            "/ ",
-                            stats.asiTarget,
-                            " bayi")),
+                        asiSummary),
                     Native.createElement("p", { className: "text-sm font-bold text-sky-600" },
-                        stats.perAsiEksklusif,
-                        "%"))),
+                        metricPercent(stats.perAsiEksklusif)))),
             Native.createElement("div", { className: "mt-4 h-2 w-full bg-slate-100 rounded-full overflow-hidden" },
-                Native.createElement("div", { className: "h-full bg-sky-500 rounded-full", style: { width: `${stats.perAsiEksklusif}%` } }))),
+                metricProgress(stats.perAsiEksklusif, 'bg-sky-500'))),
         Native.createElement("h2", { className: "apple-section-title mt-6" }, "Prevalensi Status Gizi"),
         Native.createElement("div", { className: "grid grid-cols-1 md:grid-cols-3 gap-4" },
             Native.createElement(Card, { className: "apple-prevalence-card prevalence-red p-5 flex flex-col justify-between" },
@@ -145,46 +160,43 @@ export default function DashboardOverviewPage({ stats: providedStats, pageState,
                         Native.createElement("span", { className: "prevalence-dot bg-rose-500", "aria-hidden": "true" }),
                         Native.createElement("span", { className: "font-bold text-slate-700" }, "Underweight (BB/U)")),
                     Native.createElement("div", { className: "flex items-baseline gap-2" },
-                        Native.createElement("span", { className: "text-3xl font-bold text-slate-800" }, stats.underweight),
+                        Native.createElement("span", { className: "text-3xl font-bold text-slate-800" }, metricValue(stats.underweight, 'dashboard-stat-skeleton-prevalence')),
                         Native.createElement("span", { className: "text-sm text-slate-500" }, "Balita"))),
                 Native.createElement("div", { className: "mt-4" },
                     Native.createElement("div", { className: "flex justify-between text-xs mb-1" },
                         Native.createElement("span", { className: "text-slate-500" }, "Persentase"),
                         Native.createElement("span", { className: "font-bold text-rose-600" },
-                            stats.perUnderweight,
-                            "%")),
+                            metricPercent(stats.perUnderweight))),
                     Native.createElement("div", { className: "h-2 w-full bg-slate-100 rounded-full overflow-hidden" },
-                        Native.createElement("div", { className: "h-full bg-rose-500 rounded-full", style: { width: `${stats.perUnderweight}%` } })))),
+                        metricProgress(stats.perUnderweight, 'bg-rose-500')))),
             Native.createElement(Card, { className: "apple-prevalence-card prevalence-orange p-5 flex flex-col justify-between" },
                 Native.createElement("div", null,
                     Native.createElement("div", { className: "flex items-center gap-2 mb-2" },
                         Native.createElement("span", { className: "prevalence-dot bg-orange-500", "aria-hidden": "true" }),
                         Native.createElement("span", { className: "font-bold text-slate-700" }, "Stunting (TB/U)")),
                     Native.createElement("div", { className: "flex items-baseline gap-2" },
-                        Native.createElement("span", { className: "text-3xl font-bold text-slate-800" }, stats.stunting),
+                        Native.createElement("span", { className: "text-3xl font-bold text-slate-800" }, metricValue(stats.stunting, 'dashboard-stat-skeleton-prevalence')),
                         Native.createElement("span", { className: "text-sm text-slate-500" }, "Balita"))),
                 Native.createElement("div", { className: "mt-4" },
                     Native.createElement("div", { className: "flex justify-between text-xs mb-1" },
                         Native.createElement("span", { className: "text-slate-500" }, "Persentase"),
                         Native.createElement("span", { className: "font-bold text-orange-600" },
-                            stats.perStunting,
-                            "%")),
+                            metricPercent(stats.perStunting))),
                     Native.createElement("div", { className: "h-2 w-full bg-slate-100 rounded-full overflow-hidden" },
-                        Native.createElement("div", { className: "h-full bg-orange-500 rounded-full", style: { width: `${stats.perStunting}%` } })))),
+                        metricProgress(stats.perStunting, 'bg-orange-500')))),
             Native.createElement(Card, { className: "apple-prevalence-card prevalence-yellow p-5 flex flex-col justify-between" },
                 Native.createElement("div", null,
                     Native.createElement("div", { className: "flex items-center gap-2 mb-2" },
                         Native.createElement("span", { className: "prevalence-dot bg-yellow-500", "aria-hidden": "true" }),
                         Native.createElement("span", { className: "font-bold text-slate-700" }, "Wasting (BB/TB)")),
                     Native.createElement("div", { className: "flex items-baseline gap-2" },
-                        Native.createElement("span", { className: "text-3xl font-bold text-slate-800" }, stats.wasting),
+                        Native.createElement("span", { className: "text-3xl font-bold text-slate-800" }, metricValue(stats.wasting, 'dashboard-stat-skeleton-prevalence')),
                         Native.createElement("span", { className: "text-sm text-slate-500" }, "Balita"))),
                 Native.createElement("div", { className: "mt-4" },
                     Native.createElement("div", { className: "flex justify-between text-xs mb-1" },
                         Native.createElement("span", { className: "text-slate-500" }, "Persentase"),
                         Native.createElement("span", { className: "font-bold text-yellow-600" },
-                            stats.perWasting,
-                            "%")),
+                            metricPercent(stats.perWasting))),
                     Native.createElement("div", { className: "h-2 w-full bg-slate-100 rounded-full overflow-hidden" },
-                        Native.createElement("div", { className: "h-full bg-yellow-500 rounded-full", style: { width: `${stats.perWasting}%` } })))))));
+                        metricProgress(stats.perWasting, 'bg-yellow-500')))))));
 }

@@ -20,6 +20,7 @@
 
 .admin-backend-hero,
 .admin-backend-section {
+  min-width: 0;
   border: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(255, 255, 255, 0.78);
   box-shadow: 0 16px 44px rgba(15, 23, 42, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.9);
@@ -127,12 +128,17 @@
 
 .admin-backend-tabs {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.86);
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
   scrollbar-width: none;
+  touch-action: pan-x pan-y;
 }
 
 .admin-backend-tabs::-webkit-scrollbar { display: none; }
@@ -140,7 +146,7 @@
 .admin-backend-tabs button {
   position: relative;
   min-width: max-content;
-  flex: 1 0 auto;
+  flex: 1 0 max-content;
   padding: 18px 24px;
   color: #64748b;
   font-size: 13px;
@@ -298,8 +304,18 @@
   border-radius: 13px;
 }
 
-.admin-service-icon.is-online { background: rgba(220, 252, 231, 0.9); color: #16a34a; }
-.admin-service-icon.is-offline { background: rgba(241, 245, 249, 0.95); color: #64748b; }
+.admin-service-icon.is-blue { background: rgba(0, 122, 255, 0.14); color: #007aff; }
+.admin-service-icon.is-cyan { background: rgba(50, 173, 230, 0.16); color: #168fca; }
+.admin-service-icon.is-indigo { background: rgba(88, 86, 214, 0.14); color: #5856d6; }
+.admin-service-icon.is-pink { background: rgba(255, 45, 85, 0.14); color: #ff2d55; }
+.admin-service-icon.is-orange { background: rgba(255, 149, 0, 0.16); color: #d97706; }
+.admin-service-icon.is-red { background: rgba(255, 59, 48, 0.14); color: #ff3b30; }
+.admin-service-icon.is-slate { background: rgba(142, 142, 147, 0.16); color: #6b6b70; }
+.admin-service-icon.is-green { background: rgba(52, 199, 89, 0.16); color: #1f9f4a; }
+.admin-service-icon.is-purple { background: rgba(175, 82, 222, 0.15); color: #af52de; }
+.admin-service-icon.is-postgres { background: rgba(51, 103, 145, 0.14); color: #336791; }
+.admin-service-icon.is-online { box-shadow: 0 0 0 1px rgba(52, 199, 89, 0.2); }
+.admin-service-icon.is-offline { opacity: 0.62; filter: saturate(0.7); }
 
 .admin-service-card strong {
   display: block;
@@ -536,9 +552,14 @@
 }
 
 .admin-account-table-wrap {
+  width: 100%;
+  max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
   border: 1px solid rgba(148, 163, 184, 0.17);
   border-radius: 17px;
+  touch-action: pan-x pan-y;
 }
 
 .admin-account-table {
@@ -1010,7 +1031,22 @@ html[data-theme="dark"] .admin-chart-value { fill: #a1a1aa; }
 
 html[data-theme="dark"] .admin-account-table-wrap,
 html[data-theme="dark"] .admin-account-table td { border-color: rgba(255, 255, 255, 0.08); }
-html[data-theme="dark"] .admin-account-table tbody tr:hover { background: rgba(10, 132, 255, 0.08); }
+html[data-theme="dark"] .admin-account-table-wrap { background: rgba(28, 28, 32, 0.92); }
+html[data-theme="dark"] .admin-account-table,
+html[data-theme="dark"] .admin-account-table tbody { background: transparent; }
+html[data-theme="dark"] .admin-account-table td {
+  background: rgba(30, 30, 34, 0.94);
+  color: #f5f5f7;
+}
+html[data-theme="dark"] .admin-account-table tbody tr:nth-child(even) td { background: rgba(38, 38, 43, 0.96); }
+html[data-theme="dark"] .admin-account-table tbody tr:hover td {
+  background: rgba(10, 132, 255, 0.18);
+  color: #fff;
+}
+html[data-theme="dark"] .admin-account-table .admin-account-identity p,
+html[data-theme="dark"] .admin-account-table .admin-account-scope,
+html[data-theme="dark"] .admin-account-table .admin-last-seen,
+html[data-theme="dark"] .admin-account-table .admin-active-label { color: rgba(235, 235, 245, 0.64); }
 html[data-theme="dark"] .admin-account-loading-row td { background: rgba(35, 35, 40, 0.72); }
 
 @media (max-width: 1023px) {
@@ -1022,7 +1058,12 @@ html[data-theme="dark"] .admin-account-loading-row td { background: rgba(35, 35,
 
 @media (max-width: 767px) {
   .admin-backend-page { gap: 16px; }
-  .admin-backend-tabs button { padding: 15px 18px; }
+  .admin-backend-tabs { overflow-x: scroll; scrollbar-width: thin; }
+  .admin-backend-tabs button {
+    flex: 0 0 132px;
+    padding: 15px 16px;
+    white-space: nowrap;
+  }
   .admin-backend-hero { align-items: stretch; flex-direction: column; padding: 20px; }
   .admin-backend-refresh { width: 100%; }
   .admin-backend-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1033,6 +1074,9 @@ html[data-theme="dark"] .admin-account-loading-row td { background: rgba(35, 35,
   .admin-service-group-grid { grid-template-columns: 1fr; }
   .admin-account-toolbar { grid-template-columns: 1fr; }
   .admin-account-toolbar select { width: 100%; }
+  .admin-account-section { min-width: 0; overflow: hidden; }
+  .admin-account-table-wrap { overflow-x: scroll; scrollbar-width: thin; }
+  .admin-account-table { min-width: 760px; }
   .admin-heading-actions { width: 100%; justify-content: space-between; }
   .admin-editor-grid { grid-template-columns: 1fr; }
   .admin-editor-actions { align-items: stretch; flex-direction: column-reverse; }

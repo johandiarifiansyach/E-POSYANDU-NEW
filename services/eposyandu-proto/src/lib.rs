@@ -1,10 +1,17 @@
 pub mod proto {
-    tonic::include_proto!("eposyandu.nutrition.v1");
     pub mod platform {
         pub mod v1 {
             tonic::include_proto!("eposyandu.platform.v1");
         }
     }
+}
+
+pub mod data_processing {
+    tonic::include_proto!("eposyandu.data_processing.v1");
+}
+
+pub mod analysis {
+    tonic::include_proto!("eposyandu.analysis.v1");
 }
 
 pub mod transport {

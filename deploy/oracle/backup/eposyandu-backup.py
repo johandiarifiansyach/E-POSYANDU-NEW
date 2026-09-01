@@ -32,6 +32,8 @@ SENSITIVE_ENV_NAME = re.compile(
     re.IGNORECASE,
 )
 SENSITIVE_FILE_NAMES = {
+    "data-processing-worker-vault.env",
+    "data-processing-worker.env",
     "nutrition-grpc-vault.env",
     "nutrition-grpc.env",
 }
@@ -109,11 +111,11 @@ def copy_selected_files(staging: Path) -> list[str]:
             shutil.copy2(source, destination)
         copied.append(archive_path)
 
-    copy_file(
+    for env_path in (
+        Path("/etc/e-posyandu/data-processing-worker.env"),
         Path("/etc/e-posyandu/nutrition-grpc.env"),
-        "etc/e-posyandu/nutrition-grpc.env",
-        redact_env=True,
-    )
+    ):
+        copy_file(env_path, f"etc/e-posyandu/{env_path.name}", redact_env=True)
     copy_file(Path("/etc/e-posyandu/vault.env"), "etc/e-posyandu/vault.env", redact_env=True)
     copy_file(Path("/etc/e-posyandu/backup.env"), "etc/e-posyandu/backup.env", redact_env=True)
 
