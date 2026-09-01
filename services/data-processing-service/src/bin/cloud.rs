@@ -1,18 +1,11 @@
 use axum::{Router, routing::get};
 use e_posyandu_data_processing_service::proto::data_processing_worker_server::DataProcessingWorkerServer;
-use e_posyandu_data_processing_service::queue_consumer::{self, QueueConfig, QueueConfigInput};
+use e_posyandu_data_processing_service::queue_consumer;
 use e_posyandu_data_processing_service::{DataProcessingWorkerService, service_auth_interceptor};
 use e_posyandu_proto::transport::{ListenAddress, bind_unix, parse_listen_address};
 use std::{env, io, net::SocketAddr};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
-
-fn required_env(name: &str) -> Result<String, io::Error> {
-    env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| io::Error::other(format!("Environment {name} belum diatur.")))
-}
 
 fn optional_number<T>(name: &str, fallback: T) -> Result<T, io::Error>
 where
@@ -91,23 +84,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     });
 
-    let queue_config = QueueConfig::new(QueueConfigInput {
-        account_id: required_env("CLOUDFLARE_ACCOUNT_ID")?,
-        queue_id: required_env("CLOUDFLARE_QUEUE_ID")?,
-        api_token: required_env("CLOUDFLARE_QUEUES_API_TOKEN")?,
-        api_url: required_env("EPOSYANDU_API_URL")?,
-        shared_secret: required_env("RUST_WORKER_SHARED_SECRET")?,
-        grpc_url: if grpc_target.trim().is_empty() {
-            "unix:///run/e-posyandu/data-processing.sock".to_owned()
-        } else {
-            grpc_target
-        },
-        batch_size: optional_number("QUEUE_BATCH_SIZE", 2_u8)?,
-        poll_interval_ms: optional_number("QUEUE_POLL_INTERVAL_MS", 15_000_u64)?,
-    })
-    .map_err(io::Error::other)?;
-
-    let mut queue_task = tokio::spawn(queue_consumer::run(queue_config));
+    // Render and other health-check deployments may intentionally run this
+    // binary without a Queue consumer.  Reuse the same opt-in configuration
+    // as the standalone worker so missing Queue secrets do not terminate the
+    // HTTP health endpoint. Oracle enables the consumer explicitly through
+    // QUEUE_CONSUMER_ENABLED=true.
+    let queue_task = tokio::spawn(async {
+        match queue_consumer::run_if_configured().await {
+            Ok(()) => std::future::pending::<Result<(), String>>().await,
+            Err(error) => Err(error),
+        }
+    });
+    tokio::pin!(queue_task);
 
     let port = optional_number("PORT", 8_080_u16)?;
     let address = SocketAddr::from(([0, 0, 0, 0], port));
