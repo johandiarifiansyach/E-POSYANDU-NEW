@@ -245,7 +245,7 @@ test.describe('measurement feature', () => {
     ], completeChild);
 
     for (const model of Object.values(models)) {
-      expect(model.childPoints.map((point) => point.breakBefore)).toEqual([false, false, true, false]);
+      expect(model.childPoints.map((point) => point.breakBefore)).toEqual([false, false, true, true]);
     }
   });
 

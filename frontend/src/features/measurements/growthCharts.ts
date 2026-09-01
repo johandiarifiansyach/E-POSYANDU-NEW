@@ -61,12 +61,17 @@ function chronologicalMeasurements(history, child) {
     const currentMonth = calendarMonthIndex(item.tglUkur);
     const previousMonth = calendarMonthIndex(previous.tglUkur);
     const missedPreviousMonth = currentMonth !== null && previousMonth !== null && currentMonth - previousMonth > 1;
+    const previousNotWeighed = String(previous.statusNaik || '').toUpperCase() === 'O';
     const currentHeight = numeric(item.tb);
     const previousHeight = numeric(previous.tb);
     const heightDecreased = currentHeight !== null && previousHeight !== null && currentHeight < previousHeight - 0.1;
     return {
       ...item,
-      breakBefore: missedPreviousMonth || String(item.statusNaik || '').toUpperCase() === 'O',
+      // Do not imply a continuous trajectory across an unmeasured month or a
+      // record explicitly marked O (tidak ditimbang).  Break before the O
+      // record as well as before the next record after it, so neither side is
+      // rendered as a connecting segment.
+      breakBefore: missedPreviousMonth || previousNotWeighed || String(item.statusNaik || '').toUpperCase() === 'O',
       anomaly: heightDecreased ? {
         code: 'height_decreased',
         message: 'Tinggi/panjang badan lebih rendah dari pengukuran sebelumnya',
