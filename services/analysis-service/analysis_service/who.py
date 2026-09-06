@@ -179,12 +179,14 @@ def nutrition_status(score: float | None, growth_type: str) -> str:
         return "Tinggi"
     if growth_type == "LILA":
         if score < -3:
-            return "LILA Sangat Rendah"
+            return "Gizi Buruk"
         if score < -2:
-            return "LILA Rendah"
+            return "Gizi Kurang"
         if score <= 2:
-            return "LILA Normal"
-        return "LILA Tinggi"
+            return "Gizi Baik"
+        if score <= 3:
+            return "Gizi Lebih"
+        return "Obesitas"
     if growth_type == "LK":
         if score < -3:
             return "Mikrosefali Berat"

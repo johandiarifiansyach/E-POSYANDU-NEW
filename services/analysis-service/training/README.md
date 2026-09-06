@@ -38,6 +38,14 @@ python services/analysis-service/training/train_growth_trend_models.py \
 
 PDF tatalaksana dan peraturan diindeks per halaman menggunakan TF-IDF. Indeks ini hanya untuk mengambil kutipan dari materi yang disetujui; ia bukan model generatif dan setiap rekomendasi tetap memerlukan telaah ahli gizi. Pedoman gizi buruk yang berupa scan dapat dimasukkan melalui hasil OCR dengan marker `===== PAGE N =====`.
 
+Korpus terstruktur `services/analysis-service/data/kia_2024_feeding_guidance.json` merangkum Buku KIA 2024 untuk bayi dan balita. Korpus tersebut berisi batas usia, tekstur, frekuensi, jumlah contoh MPASI, prinsip keamanan/responsif, serta edukasi berdasarkan tingkat sinyal skrining. Empat poster Isi Piringku Kemenkes (6–8, 9–11, 12–23, dan 24–59 bulan) disimpan sebagai aset frontend dan poin kuncinya ikut diindeks. Setiap bagian menyimpan nomor halaman atau penanda poster dan otomatis ikut diindeks oleh `train_growth_models.py`; isinya adalah materi edukasi/provenance, bukan label target.
+Kelompok 0–5 bulan juga memuat rujukan web resmi Ayo Sehat Kemenkes tentang ASI eksklusif 6 bulan; URL, tanggal terbit, dan tanggal akses disimpan agar dapat diaudit.
+Korpus yang sama memiliki bagian `problemGuidance` untuk memetakan status WHO
+yang sudah bermasalah ke edukasi khusus gizi kurang/berat kurang, stunting,
+gizi buruk, dan gizi lebih. Sumber PDF yang Anda berikan dicatat sebagai
+provenance; materi ini diambil sebagai panduan terstruktur dan tidak dipakai
+sebagai label klinis atau resep otomatis.
+
 ## Sinyal riwayat pada analisis aplikasi
 
 Analisis aplikasi memakai status WHO terbaru sebagai patokan deterministik.
@@ -64,3 +72,22 @@ python services/analysis-service/training/train_growth_models.py \
 Output utama adalah `growth_status_models.joblib`, `metrics.json`, dan
 `metadata.json`. Pelatihan tren menghasilkan `growth_trend_models.joblib`,
 `trend_metrics.json`, dan `trend_metadata.json`.
+
+## Persiapan pelatihan dari website (belum online-learning otomatis)
+
+Website tetap menjalankan analisis Python setiap kali ada pengukuran. Untuk
+menyiapkan pelatihan kandidat dari data yang sudah dianonimkan, lakukan ekspor
+terjadwal dari E-Posyandu lalu jalankan trainer ke direktori artefak baru.
+
+```bash
+python services/analysis-service/training/train_growth_models.py \
+  --xlsx /data/ekspor-e-posyandu-anonim.xlsx \
+  --output-dir /data/model-candidate-$(date +%Y%m%d) \
+  --guidance-corpus services/analysis-service/data/kia_2024_feeding_guidance.json
+```
+
+Pelatihan tidak menimpa model production dan tidak boleh memakai nama/NIK
+sebagai fitur. Promosi artefak ke production harus melalui telaah ahli gizi,
+validasi split per anak, metrik, dan persetujuan eksplisit. Dengan demikian
+analisis dan pengumpulan batch latihan dapat berjalan bersamaan tanpa model
+belajar otomatis dari data klinis yang belum ditinjau.

@@ -371,6 +371,23 @@ services:
       ANALYSIS_GRPC_ADDR: ${ANALYSIS_GRPC_ADDR:-unix:///run/e-posyandu/analysis.sock}
       ANALYSIS_HTTP_PORT: "8082"
       LOG_LEVEL: ${ANALYSIS_LOG_LEVEL:-INFO}
+      # Bounded Python aggregation runtime.  Keep these tunable per host
+      # without rebuilding the image as the child population grows.
+      ANALYSIS_DATASET_WORKERS: ${ANALYSIS_DATASET_WORKERS:-2}
+      ANALYSIS_DATASET_QUEUE_SIZE: ${ANALYSIS_DATASET_QUEUE_SIZE:-16}
+      ANALYSIS_DATASET_QUEUE_TIMEOUT_SECONDS: ${ANALYSIS_DATASET_QUEUE_TIMEOUT_SECONDS:-1}
+      ANALYSIS_DASHBOARD_CACHE_SIZE: ${ANALYSIS_DASHBOARD_CACHE_SIZE:-128}
+      ANALYSIS_DASHBOARD_CACHE_TTL_SECONDS: ${ANALYSIS_DASHBOARD_CACHE_TTL_SECONDS:-15}
+      ANALYSIS_ASSESSMENT_CACHE_SIZE: ${ANALYSIS_ASSESSMENT_CACHE_SIZE:-20000}
+      ANALYSIS_ASSESSMENT_CACHE_TTL_SECONDS: ${ANALYSIS_ASSESSMENT_CACHE_TTL_SECONDS:-300}
+      # Raw writes commit in PostgreSQL first; this worker consumes the
+      # migration-037 outbox and persists Python's derived results.
+      ANALYSIS_PERSISTENCE_ENABLED: ${ANALYSIS_PERSISTENCE_ENABLED:-true}
+      # A child projection is rebuilt atomically; a small bounded pool lets
+      # independent children finish concurrently during backfills while
+      # keeping PostgreSQL/CPU usage predictable.
+      ANALYSIS_PERSISTENCE_WORKERS: ${ANALYSIS_PERSISTENCE_WORKERS:-2}
+      ANALYSIS_PERSISTENCE_INTERVAL_SECONDS: ${ANALYSIS_PERSISTENCE_INTERVAL_SECONDS:-1}
     expose:
       - "8082"
     volumes:

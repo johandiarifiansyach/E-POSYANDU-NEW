@@ -194,12 +194,24 @@ export function mountApp(container: HTMLElement): Cleanup {
   let viewCleanup: Cleanup | undefined;
 
   const replaceView = (mount: () => Cleanup | void) => {
-    viewCleanup?.();
+    const cleanup = viewCleanup;
+    viewCleanup = undefined;
+    cleanup?.();
     viewCleanup = mount() || undefined;
+  };
+
+  // A loading shell replaces the current DOM immediately, so dispose the
+  // previous view first. This prevents auth listeners, Turnstile callbacks,
+  // or an old dashboard root from racing the login transition.
+  const clearView = () => {
+    const cleanup = viewCleanup;
+    viewCleanup = undefined;
+    cleanup?.();
   };
 
   const renderLogin = async () => {
     if (disposed) return;
+    clearView();
     window.localStorage.removeItem(IDLE_ACTIVITY_KEY);
     showLoginLoading(container);
     const { mountLoginPage } = await import('./pages/LoginPage');

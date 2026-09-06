@@ -11,6 +11,11 @@ interface Env {
 
 type Payload = Record<string, unknown>;
 
+const AGE_GROUPS = new Set([
+  '0-59', 'newborn', 'newborn_premature', '0-5', '6', '0-11', '0-23',
+  '6-11', '6-23', '12-23', '6-59', '12-59', '24-59'
+]);
+
 const READ_OPERATIONS = new Set([
   "eposyandu_replica_children_page",
   "eposyandu_problem_children_page",
@@ -89,6 +94,15 @@ function integer(payload: Payload, key: string, minimum: number, maximum: number
   return Number(value);
 }
 
+function ageGroup(payload: Payload): string {
+  // MPASI is always scoped to 6–23 months; keep the invariant in the read
+  // replica even when an older caller still sends a generic age filter.
+  if (optionalText(payload, 'p_view', 30) === 'mpasi') return '6-23';
+  const value = optionalText(payload, 'p_age_group', 24) || '0-59';
+  if (!AGE_GROUPS.has(value)) throw new Error('Parameter p_age_group tidak valid.');
+  return value;
+}
+
 async function executeOperation(databaseUrl: string, operation: string, payload: Payload): Promise<unknown> {
   const sql = neon(databaseUrl);
   const scope = {
@@ -111,7 +125,8 @@ async function executeOperation(databaseUrl: string, operation: string, payload:
       ${optionalText(payload, "p_posyandu", 120)}::text,
       ${scope.role}::text,
       ${scope.village}::text,
-      ${scope.posyandu}::text
+      ${scope.posyandu}::text,
+      ${ageGroup(payload)}::text
     ) as result`;
     return rows[0]?.result ?? null;
   }
@@ -129,7 +144,8 @@ async function executeOperation(databaseUrl: string, operation: string, payload:
       ${optionalText(payload, "p_posyandu", 120)}::text,
       ${scope.role}::text,
       ${scope.village}::text,
-      ${scope.posyandu}::text
+      ${scope.posyandu}::text,
+      ${ageGroup(payload)}::text
     ) as result`;
     return rows[0]?.result ?? null;
   }
@@ -138,7 +154,7 @@ async function executeOperation(databaseUrl: string, operation: string, payload:
     const rows = await sql`select public.eposyandu_exclusive_breastfeeding_page(
       ${requiredDate(payload, "p_measurement_start")}::date,
       ${requiredDate(payload, "p_measurement_end")}::date,
-      ${requiredText(payload, "p_age_group", 8)}::text,
+      ${ageGroup(payload)}::text,
       ${integer(payload, "p_page", 1, 1_000_000)}::integer,
       ${integer(payload, "p_size", 1, 50)}::integer,
       ${optionalText(payload, "p_village", 120)}::text,
@@ -169,6 +185,7 @@ async function executeOperation(databaseUrl: string, operation: string, payload:
     const rows = await sql`select public.eposyandu_sigizi_measurement_export(
       ${requiredDate(payload, "p_month_start")}::date,
       ${requiredDate(payload, "p_month_end")}::date,
+      ${ageGroup(payload)}::text,
       ${optionalText(payload, "p_village", 120)}::text,
       ${optionalText(payload, "p_posyandu", 120)}::text,
       ${scope.role}::text,

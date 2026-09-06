@@ -6,13 +6,32 @@ import { Baby, CalendarDays, CheckCircle2 } from '../ui/icons';
 import { ExclusiveBreastfeedingTableSkeleton } from '../ui/skeleton';
 import { Card, formatIndoDate, MONTHS } from './DashboardApp';
 import type { PageState } from '../shared/pageState';
+import { ageGroupLabel, DEFAULT_AGE_GROUP, normalizeAgeGroupForTab } from '../config/ageFilters';
 
 const ITEMS_PER_PAGE = 10;
 
-export default function ExclusiveBreastfeedingPage({ filterMonth, filterYear, refreshKey, viewDesa, viewPosyandu, pageState: externalPageState }) {
-    const [ageFilter, setAgeFilter] = useState('0-5');
+export default function ExclusiveBreastfeedingPage({ ageGroup, filterMonth, filterYear, refreshKey, viewDesa, viewPosyandu, pageState: externalPageState }) {
+    const [ageFilter, setAgeFilter] = useState(() => normalizeAgeGroupForTab(ageGroup ?? window.__ePosyanduAgeGroup ?? DEFAULT_AGE_GROUP, 'asi_eksklusif'));
     const [currentPage, setCurrentPage] = useState(1);
     const [dataState, setDataState] = useState<PageState<{ items: any[]; total: number }>>({ status: 'idle' });
+
+    useEffect(() => {
+        if (ageGroup !== undefined) {
+            setAgeFilter(normalizeAgeGroupForTab(ageGroup, 'asi_eksklusif'));
+            setCurrentPage(1);
+        }
+    }, [ageGroup]);
+
+    useEffect(() => {
+        const handleAgeGroupChange = (event) => {
+            if (event.detail !== undefined) {
+                setAgeFilter(normalizeAgeGroupForTab(event.detail, 'asi_eksklusif'));
+                setCurrentPage(1);
+            }
+        };
+        window.addEventListener('e-posyandu-age-group-change', handleAgeGroupChange);
+        return () => window.removeEventListener('e-posyandu-age-group-change', handleAgeGroupChange);
+    }, []);
 
     useEffect(() => {
         setCurrentPage(1);
@@ -24,6 +43,7 @@ export default function ExclusiveBreastfeedingPage({ filterMonth, filterYear, re
         const lastDay = String(new Date(filterYear, filterMonth, 0).getDate()).padStart(2, '0');
         const request = {
             ageGroup: ageFilter,
+            historyStart: '1900-01-01',
             measurementEnd: `${filterYear}-${month}-${lastDay}`,
             measurementStart: `${filterYear}-${month}-01`,
             page: currentPage,
@@ -81,17 +101,15 @@ export default function ExclusiveBreastfeedingPage({ filterMonth, filterYear, re
     const setAgeGroup = (value) => {
         setAgeFilter(value);
         setCurrentPage(1);
+        window.dispatchEvent(new CustomEvent('e-posyandu-age-group-change', { detail: value }));
     };
-
     return (Native.createElement("div", { className: "apple-page space-y-6" },
         Native.createElement("div", { className: "flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between" },
             Native.createElement("div", null,
                 Native.createElement("h2", { className: "text-2xl font-bold text-slate-800" }, "Daftar ASI Eksklusif"),
                 Native.createElement("p", { className: "text-sm text-slate-500" },
                     "Pengukuran ", MONTHS[filterMonth - 1], " ", filterYear)),
-            Native.createElement("div", { className: "apple-segmented-control inline-flex w-full p-1 sm:w-auto", role: "group", "aria-label": "Filter usia bayi" },
-                Native.createElement("button", { type: "button", onClick: () => setAgeGroup('0-5'), "aria-pressed": ageFilter === '0-5', className: `min-h-9 flex-1 px-4 text-sm font-semibold transition-colors sm:flex-none ${ageFilter === '0-5' ? 'is-selected' : ''}` }, "0-5 Bulan"),
-                Native.createElement("button", { type: "button", onClick: () => setAgeGroup('6'), "aria-pressed": ageFilter === '6', className: `min-h-9 flex-1 px-4 text-sm font-semibold transition-colors sm:flex-none ${ageFilter === '6' ? 'is-selected' : ''}` }, "6 Bulan"))),
+            Native.createElement("p", { className: "text-xs text-slate-500" }, "Kelompok umur mengikuti filter umur bersama di bagian atas halaman.")),
         Native.createElement("div", { className: "grid grid-cols-1 gap-4 sm:grid-cols-2" },
             Native.createElement("div", { className: "apple-summary-card apple-summary-blue p-4" },
                 Native.createElement("div", { className: "flex items-center justify-between gap-3" },
@@ -104,7 +122,7 @@ export default function ExclusiveBreastfeedingPage({ filterMonth, filterYear, re
                 Native.createElement("div", { className: "flex items-center justify-between gap-3" },
                     Native.createElement("div", null,
                         Native.createElement("p", { className: "text-xs font-bold uppercase tracking-wider text-slate-400" }, "Kelompok Usia"),
-                        Native.createElement("p", { className: "mt-1 text-2xl font-bold text-slate-800" }, ageFilter === '0-5' ? '0-5' : '6', " ", Native.createElement("span", { className: "text-base font-medium text-slate-500" }, "bulan"))),
+                        Native.createElement("p", { className: "mt-1 text-2xl font-bold text-slate-800" }, ageGroupLabel(ageFilter))),
                     Native.createElement("span", { className: "apple-symbol-tile apple-symbol-tile-green" },
                         Native.createElement(CalendarDays, { className: "h-5 w-5" }))))),
         error && Native.createElement("div", { role: "alert", className: "ios-inline-notification ios-inline-notification-error" }, `Gagal memuat data ASI eksklusif: ${error}`),

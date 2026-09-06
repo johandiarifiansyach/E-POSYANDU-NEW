@@ -1,3 +1,4 @@
 grpcio==1.76.0
 grpcio-health-checking==1.76.0
 grpcio-tools==1.76.0
+psycopg[binary]==3.2.9

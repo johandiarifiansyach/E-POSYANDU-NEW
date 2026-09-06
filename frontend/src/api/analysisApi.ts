@@ -1,7 +1,6 @@
 /** Python growth-risk, anomaly, and screening analysis via the private Queue. */
 // @ts-nocheck
 import { apiRequest, createBackgroundJob, waitForBackgroundJob } from './legacyClient';
-import { getAgeInMonths } from '../shared/dashboardUtils';
 
 function numberOrNull(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -22,6 +21,15 @@ function exclusiveBreastfeedingValue(measurement) {
 
 function weightGainStatusValue(measurement) {
   return measurement?.statusNaik ?? measurement?.weightGainStatus ?? measurement?.weight_gain_status ?? null;
+}
+
+/** Read the status calculated by the Python service, never a browser rule. */
+export function pythonWeightGainStatus(assessment) {
+  return assessment?.analysis?.weightGainStatus
+    ?? assessment?.analysis?.historySignals?.weightGain?.current
+    ?? assessment?.weightGainStatus
+    ?? assessment?.weight_gain_status
+    ?? null;
 }
 
 function analysisItem(child, measurement, history) {
@@ -105,7 +113,10 @@ export async function requestMeasurementAnalysis(child, measurement, history) {
     anomaly: item.analysis.anomaly || { detected: false, count: 0, severity: 'none', items: [] },
     risk: item.analysis.risk || { predictions: {}, overall: { level: 'rendah', probability: 0 } },
     nutritionConcern: item.analysis.nutritionConcern || null,
+    nutritionEducation: item.analysis.nutritionEducation || null,
     graphAnalysis: item.analysis.graphAnalysis || null,
+    weightGainStatus: pythonWeightGainStatus(item),
+    exclusiveBreastfeeding: item.analysis.exclusiveBreastfeeding || null,
     calculator: result.calculator || 'python-deterministic-lms',
     standardsVersion: result.standardsVersion || null,
   };
@@ -113,8 +124,8 @@ export async function requestMeasurementAnalysis(child, measurement, history) {
 
 /**
  * Ask Python to interpret the same chronological points used by the growth
- * charts.  The chart is intentionally rendered in the browser, while its
- * explanation and trend signals come from the private analysis service.
+ * charts. Both the explanation and the chart rendering are owned by the
+ * private analysis service.
  */
 export async function requestGrowthAnalysis(child, history) {
   const measurements = (history || [])
@@ -127,6 +138,7 @@ export async function requestGrowthAnalysis(child, history) {
       item: null,
       anomaly: { detected: false, count: 0, severity: 'none', items: [] },
       risk: { predictions: {}, overall: { level: 'rendah', probability: 0 } },
+      nutritionEducation: null,
       graphAnalysis: {
         model: 'growth-trend-logistic-v1',
         summary: 'Belum ada riwayat pengukuran untuk dianalisis.',
@@ -158,7 +170,9 @@ export async function requestPythonGrowthChart(child, history, chartType) {
       const date = String(item.tglUkur).slice(0, 10);
       const parsedAge = Number(item.ageInMonths);
       return {
-        ageMonths: Number.isFinite(parsedAge) ? parsedAge : getAgeInMonths(child?.tglLahir, new Date(`${date}T00:00:00`)),
+        // Age is persisted/derived at the authenticated Python boundary. Do
+        // not rederive it in the browser when an imported row is incomplete.
+        ageMonths: Number.isFinite(parsedAge) ? parsedAge : null,
         weightKg: numberOrNull(item.bb),
         heightCm: numberOrNull(item.tb),
         lilaCm: numberOrNull(item.lila),
@@ -167,7 +181,8 @@ export async function requestPythonGrowthChart(child, history, chartType) {
         measurementDate: date,
         weightGainStatus: weightGainStatusValue(item),
       };
-    });
+    })
+    .filter((item) => Number.isFinite(item.ageMonths));
   return apiRequest('/analysis/growth-chart', {
     method: 'POST',
     body: JSON.stringify({

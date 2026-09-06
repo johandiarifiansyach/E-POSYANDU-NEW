@@ -3461,8 +3461,8 @@ impl NativeAuth {
         // an already verified session remains verified.
         let authenticated = session.mfa_verified && session.mfa_method.is_some();
         session.mfa_verified = authenticated;
-        session.mfa_pending_expires_at = (!authenticated)
-            .then(|| unix_seconds() + ADMIN_MFA_PENDING_TTL_SECONDS);
+        session.mfa_pending_expires_at =
+            (!authenticated).then(|| unix_seconds() + ADMIN_MFA_PENDING_TTL_SECONDS);
         if authenticated {
             session.mfa_method = Some("webauthn".into());
         } else {

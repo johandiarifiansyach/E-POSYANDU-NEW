@@ -1,6 +1,4 @@
 // @ts-nocheck
-import { calculateGiziStatus, getAgeInMonths } from '../../shared/dashboardUtils';
-
 export const CATEGORY_OPTIONS = [
   { value: 'Semua', label: 'Semua PMT', shortLabel: 'Semua' },
   { value: 'Underweight', label: 'Underweight (BB Kurang/Sangat Kurang)', shortLabel: 'Underweight' },
@@ -50,34 +48,11 @@ export function baselineForProgram(program, child) {
 }
 
 export function monitoringStatus(program, child, monitoring, week, baseline) {
-  const category = program?.category ?? program?.kategori;
-  if (category === 'TidakNaik') {
-    if (week === 0 && !monitoring) return 'T';
-    if (!monitoring) return '-';
-    if (monitoring.statusNaik === 'N' || monitoring.statusNaik === 'T') return monitoring.statusNaik;
-    const monitorings = Array.isArray(program?.monitorings) ? program.monitorings : [];
-    const previousMonitoring = week > 1
-      ? monitorings.find((item) => Number(item?.week ?? item?.minggu) === week - 1) || monitorings[week - 1]
-      : null;
-    const previousWeight = numericValue(previousMonitoring?.bb) ?? baseline?.weight;
-    const currentWeight = numericValue(monitoring.bb);
-    if (currentWeight === null || previousWeight === null) return '-';
-    return currentWeight > previousWeight ? 'N' : 'T';
-  }
-
-  const currentWeight = week === 0 ? baseline.weight : numericValue(monitoring?.bb);
-  const currentHeight = week === 0 ? baseline.height : numericValue(monitoring?.tb);
-  if (!currentWeight || !child?.tglLahir || !child?.jk) return '-';
-
-  const date = week === 0 ? new Date(baseline.date || program.tglPemberian) : new Date(monitoring?.tgl);
-  const age = getAgeInMonths(child.tglLahir, date);
-  if (category === 'Wasting' && !currentHeight) return '-';
-  return calculateGiziStatus(
-    currentWeight,
-    category === 'Wasting' ? 'BBTB' : 'BBU',
-    age,
-    child.jk,
-    category === 'Wasting' ? currentHeight : null,
-    monitoring?.caraUkur,
-  ) || '-';
+  // PMT monitoring classifications are produced by Python together with the
+  // measurement analysis.  Do not infer N/T or WHO status from raw values in
+  // this synchronous presentation helper.
+  return monitoring?.pythonStatus
+    ?? monitoring?.python?.status
+    ?? monitoring?.analysis?.status
+    ?? '-';
 }

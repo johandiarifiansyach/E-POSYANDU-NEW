@@ -1,5 +1,5 @@
 // @ts-nocheck
-import Native, { useMemo, useState } from '../runtime/dom';
+import Native, { useEffect, useMemo, useState } from '../runtime/dom';
 import { Button, DataTable, KenaikanBadge, StatusBadge, actionTooltipProps } from '../components';
 import { AlertCircle, Calendar, FileDown, Gift, Loader2, Minus, Trash2, TrendingDown } from '../ui/icons';
 import {
@@ -15,6 +15,7 @@ import {
 import { formatIndoDate } from './DashboardApp';
 import { TableLoadingSkeleton } from '../ui/skeleton';
 import type { PageState } from '../shared/pageState';
+import { DEFAULT_AGE_GROUP, matchesAgeGroup } from '../config/ageFilters';
 
 function categoryIcon(category) {
   if (category === 'Wasting') return AlertCircle;
@@ -56,7 +57,31 @@ function PmtTableHeader({ weeks }) {
       Native.createElement('th', { className: 'pmt-col-action' }, 'Aksi')));
 }
 
-export default function PmtProgramPage({ childrenData, pmtPrograms, onExportPmt, onDeleteProgram, onOpenMonitoring, pageState: externalPageState }) {
+export default function PmtProgramPage({ childrenData, pmtPrograms, ageGroup, currentFilterDate, onExportPmt, onDeleteProgram, onOpenMonitoring, pageState: externalPageState }) {
+  const [selectedAgeGroup, setSelectedAgeGroup] = useState(() => ageGroup || window.__ePosyanduAgeGroup || DEFAULT_AGE_GROUP);
+  const [selectedFilterDate, setSelectedFilterDate] = useState(() => currentFilterDate || new Date(window.__ePosyanduFilterDate || Date.now()));
+  useEffect(() => {
+    if (ageGroup) setSelectedAgeGroup(ageGroup);
+    if (currentFilterDate) setSelectedFilterDate(currentFilterDate);
+  }, [ageGroup, currentFilterDate]);
+  useEffect(() => {
+    const handleAgeGroupChange = (event) => {
+      setSelectedAgeGroup(event.detail || DEFAULT_AGE_GROUP);
+      setSelectedFilterDate(new Date(window.__ePosyanduFilterDate || Date.now()));
+    };
+    const handleFilterContextChange = (event) => {
+      const nextAgeGroup = event.detail?.ageGroup || DEFAULT_AGE_GROUP;
+      const nextDate = event.detail?.filterDate || window.__ePosyanduFilterDate;
+      setSelectedAgeGroup(nextAgeGroup);
+      if (nextDate) setSelectedFilterDate(new Date(nextDate));
+    };
+    window.addEventListener('e-posyandu-age-group-change', handleAgeGroupChange);
+    window.addEventListener('e-posyandu-filter-context-change', handleFilterContextChange);
+    return () => {
+      window.removeEventListener('e-posyandu-age-group-change', handleAgeGroupChange);
+      window.removeEventListener('e-posyandu-filter-context-change', handleFilterContextChange);
+    };
+  }, []);
   const [categoryFilter, setCategoryFilter] = useState('Semua');
   const [openingProgramId, setOpeningProgramId] = useState(null);
   const fallbackState = { status: 'success', data: pmtPrograms };
@@ -66,11 +91,18 @@ export default function PmtProgramPage({ childrenData, pmtPrograms, onExportPmt,
   const pageError = effectiveState.status === 'error' ? effectiveState.message : null;
   const childById = useMemo(() => new Map(childrenData.filter((child) => child.id).map((child) => [child.id, child])), [childrenData]);
   const filteredPrograms = useMemo(() => {
+    const ageFiltered = displayedPrograms.filter((program) => {
+      const child = childById.get(program.childId);
+      // Age cohorts are strict across every table, including the default
+      // 0–60-month view.  A PMT record without a linked child cannot be
+      // classified by age, so it must not leak into a filtered result.
+      return Boolean(child && matchesAgeGroup(child, selectedAgeGroup, selectedFilterDate));
+    });
     const programs = categoryFilter === 'Semua'
-      ? displayedPrograms
-      : displayedPrograms.filter((program) => program.category === categoryFilter);
+      ? ageFiltered
+      : ageFiltered.filter((program) => program.category === categoryFilter);
     return [...programs].sort((left, right) => String(left.childName || '').localeCompare(String(right.childName || ''), 'id'));
-  }, [categoryFilter, displayedPrograms]);
+  }, [categoryFilter, childById, displayedPrograms, selectedAgeGroup, selectedFilterDate]);
   const visibleWeekCount = categoryFilter === 'Semua'
     ? Math.max(2, ...filteredPrograms.map((program) => maxWeeksForCategory(program.category)))
     : maxWeeksForCategory(categoryFilter);

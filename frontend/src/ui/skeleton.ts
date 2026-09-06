@@ -175,6 +175,7 @@ export function LoginLoadingSkeleton({ includeTurnstile = false }: { includeTurn
       className: 'login-shell login-loading-shell',
       role: 'status',
       'aria-live': 'polite',
+      'aria-busy': 'true',
       'aria-label': 'Memuat halaman login'
     },
     Native.createElement('div', { className: 'login-batik-background', 'aria-hidden': 'true' }),
@@ -205,7 +206,9 @@ export function LoginLoadingSkeleton({ includeTurnstile = false }: { includeTurn
             Native.createElement(
               'div',
               { className: 'login-brand-rule', 'aria-hidden': 'true' },
-              SkeletonBlock({ className: 'login-loading-rule' })
+              SkeletonBlock({ className: 'login-loading-rule login-loading-rule-blue' }),
+              SkeletonBlock({ className: 'login-loading-rule login-loading-rule-indigo' }),
+              SkeletonBlock({ className: 'login-loading-rule login-loading-rule-cyan' })
             )
           ),
           Native.createElement(
@@ -411,5 +414,96 @@ export function ExclusiveBreastfeedingTableSkeleton({ rowCount = 6 }: ExclusiveB
         )
       )
     )
+  );
+}
+
+/**
+ * Placeholder for Python-owned derived values.  The raw measurement can be
+ * displayed immediately while WHO/z-score, N/T/O/B, risk, and education are
+ * being materialized by the analysis worker.
+ */
+export function MeasurementAnalysisSkeleton() {
+  const whoLabels = ['BB/U', 'PB/TB/U', 'BB/PB atau BB/TB', 'IMT/U', 'LILA/U', 'LK/U'];
+  return Native.createElement(
+    'div',
+    { className: 'measurement-analysis-skeleton', role: 'status', 'aria-live': 'polite', 'aria-label': 'Menunggu hasil analisis' },
+    Native.createElement(
+      'div',
+      { className: 'measurement-analysis-skeleton-banner' },
+      SkeletonBlock({ className: 'measurement-analysis-skeleton-icon' }),
+      Native.createElement('div', { className: 'measurement-analysis-skeleton-copy' },
+        SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-wide' }),
+        SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-medium' }))
+    ),
+    Native.createElement(
+      'section',
+      { className: 'measurement-analysis-card measurement-analysis-skeleton-card' },
+      Native.createElement('div', { className: 'measurement-analysis-skeleton-heading' },
+        SkeletonBlock({ className: 'measurement-analysis-skeleton-heading-icon' }),
+        Native.createElement('div', { className: 'measurement-analysis-skeleton-copy' },
+          SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-medium' }),
+          SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-wide' }))),
+      Native.createElement('div', { className: 'measurement-analysis-who-grid' },
+        whoLabels.map((label) => Native.createElement('div', { className: 'measurement-analysis-who-item measurement-analysis-skeleton-item', key: `analysis-who-${label}` },
+          Native.createElement('span', null, label),
+          SkeletonBlock({ className: 'measurement-analysis-skeleton-value' }),
+          SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-short' })))
+      ),
+    ),
+    Native.createElement(
+      'section',
+      { className: 'measurement-analysis-card measurement-analysis-skeleton-card' },
+      Native.createElement('div', { className: 'measurement-analysis-skeleton-heading' },
+        SkeletonBlock({ className: 'measurement-analysis-skeleton-heading-icon' }),
+        Native.createElement('div', { className: 'measurement-analysis-skeleton-copy' },
+          SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-medium' }),
+          SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-wide' }))),
+      Native.createElement('div', { className: 'measurement-analysis-risk-grid' },
+        ['Risiko underweight', 'Risiko stunting', 'Risiko wasting'].map((label) => Native.createElement('div', { className: 'measurement-analysis-risk measurement-analysis-skeleton-risk', key: `analysis-risk-${label}` },
+          Native.createElement('span', null, label),
+          SkeletonBlock({ className: 'measurement-analysis-skeleton-risk-value' }),
+          SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-wide' }),
+          SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-medium' })))
+      ),
+    ),
+    Native.createElement(
+      'section',
+      { className: 'measurement-analysis-card measurement-analysis-skeleton-card measurement-analysis-skeleton-guidance' },
+      SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-medium' }),
+      SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-wide' }),
+      SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-wide' }),
+      SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-medium' })
+    )
+  );
+}
+
+export function GrowthAnalysisSkeleton() {
+  return Native.createElement(
+    'section',
+    { className: 'growth-chart-analysis growth-chart-analysis-skeleton', role: 'status', 'aria-live': 'polite', 'aria-label': 'Menunggu analisis pertumbuhan' },
+    Native.createElement('div', { className: 'growth-chart-analysis-skeleton-header' },
+      Native.createElement('div', { className: 'measurement-analysis-skeleton-copy' },
+        SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-medium' }),
+        SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-short' })),
+      SkeletonBlock({ className: 'growth-chart-analysis-skeleton-confidence' })),
+    SkeletonBlock({ className: 'growth-chart-analysis-skeleton-summary' }),
+    Native.createElement('div', { className: 'growth-chart-analysis-grid' },
+      ...Array.from({ length: 4 }, (_, index) => Native.createElement('article', { className: 'growth-chart-analysis-indicator growth-chart-analysis-skeleton-indicator', key: `growth-indicator-${index}` },
+        SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-medium' }),
+        SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-short' }),
+        SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-wide' }),
+        SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-medium' })))
+    )
+  );
+}
+
+export function GrowthChartSkeleton() {
+  return Native.createElement(
+    'div',
+    { className: 'growth-chart-python-loading growth-chart-python-skeleton', role: 'status', 'aria-live': 'polite', 'aria-label': 'Memuat grafik pertumbuhan' },
+    SkeletonBlock({ className: 'growth-chart-python-skeleton-plot' }),
+    Native.createElement('div', { className: 'growth-chart-python-skeleton-caption' },
+      SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-medium' }),
+      SkeletonBlock({ className: 'measurement-analysis-skeleton-line measurement-analysis-skeleton-line-short' }))
   );
 }

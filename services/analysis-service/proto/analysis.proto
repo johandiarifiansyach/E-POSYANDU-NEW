@@ -6,6 +6,10 @@ package eposyandu.analysis.v1;
 // screening/anomaly analysis. Risk output is advisory and never a diagnosis.
 service AnalysisService {
   rpc CalculateBatch(CalculateBatchRequest) returns (CalculateBatchResponse);
+  // Analyze raw child/measurement rows for dashboard and future dataset
+  // operations.  JSON keeps this contract extensible while Python remains
+  // the only owner of classification and aggregation logic.
+  rpc AnalyzeDataset(AnalyzeDatasetRequest) returns (AnalyzeDatasetResponse);
   // Render a WHO growth chart from the same LMS tables used by CalculateBatch.
   // The response is SVG so the browser can display/download it without
   // reimplementing the reference curves in JavaScript.
@@ -64,6 +68,15 @@ message CalculateBatchResponse {
   repeated NutritionAssessment items = 5;
   string standards_version = 6;
   string calculator = 7;
+}
+
+message AnalyzeDatasetRequest {
+  string dataset_json = 1;
+}
+
+message AnalyzeDatasetResponse {
+  string result_json = 1;
+  string analytics_version = 2;
 }
 
 message GrowthChartPoint {

@@ -1044,21 +1044,18 @@ fn complete_monitoring_payload(
 }
 
 async fn admin_monitoring_stream(State(state): State<Arc<AppState>>, request: Request) -> Response {
-    let mut headers = request.headers().clone();
+    let headers = request.headers().clone();
     drop(request);
     if let Some(platform) = state.microservices.as_ref() {
-        // The monitoring service authenticates every snapshot independently.
-        // Convert the gateway's secure browser session to a short-lived
-        // bearer header once so the session remains valid across the gRPC/UDS
-        // boundary. The original cookie is retained for compatibility with
-        // older service images and is never exposed to the browser.
+        // Validate the administrator at the gateway before opening a long-lived
+        // stream. Keep the encrypted browser-session cookie when forwarding
+        // the request to monitoring-service: a successfully verified TOTP
+        // session is authoritative locally even when the provider JWT omits
+        // the optional `aal2` claim. Forwarding that JWT would make the
+        // monitoring service reject a valid local MFA session.
         if let Some(auth) = state.native_auth.as_ref() {
-            match auth.legacy_authorization(headers.clone()).await {
-                Ok(Some(value)) => {
-                    headers.insert(header::AUTHORIZATION, value);
-                }
-                Ok(None) => {}
-                Err(response) => return response,
+            if let Err(response) = auth.require_verified_admin(headers.clone()).await {
+                return response;
             }
         }
         let Some(connection) = acquire_monitoring_connection(state.monitoring_connections.clone())
@@ -1677,8 +1674,12 @@ async fn main() {
 
     if let Some(database) = state.native_database.clone() {
         let hub = realtime.clone();
+        let cache = state
+            .native_api
+            .as_ref()
+            .and_then(|api| api.cache_handle());
         tokio::spawn(async move {
-            database.listen_realtime(hub).await;
+            database.listen_realtime(hub, cache).await;
         });
     }
 

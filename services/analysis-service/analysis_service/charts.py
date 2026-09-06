@@ -15,7 +15,7 @@ import math
 import re
 from typing import Any
 
-from . import who
+from . import ml, who
 
 
 WIDTH = 1200
@@ -25,12 +25,20 @@ MARGIN_RIGHT = 34
 MARGIN_TOP = 92
 MARGIN_BOTTOM = 82
 CURVE_Z = (-3, -2, 0, 2, 3)
+CURVE_Z_WITH_INNER = (-3, -2, -1, 0, 1, 2, 3)
+INNER_CURVE_TYPES = {"bbtb", "imtu", "lilau", "lku"}
+SEX_COLORS = {
+    "L": "#2563eb",
+    "P": "#d45f97",
+}
 CURVE_COLORS = {
-    -3: "#c62828",
-    -2: "#ef8c00",
-    0: "#14804a",
-    2: "#ef8c00",
-    3: "#c62828",
+    -3: "#262626",
+    -2: "#e3343d",
+    -1: "#f2c94c",
+    0: "#198754",
+    1: "#f2c94c",
+    2: "#e3343d",
+    3: "#262626",
 }
 CHART_TYPES = ("bbu", "tbu", "bbtb", "imtu", "lilau", "lku")
 
@@ -63,6 +71,30 @@ def _nice_step(span: float, ticks: int = 8) -> float:
     power = 10 ** math.floor(math.log10(rough))
     fraction = rough / power
     return power * (1 if fraction <= 1 else 2 if fraction <= 2 else 5 if fraction <= 5 else 10)
+
+
+def _grid_step(span: float, target_lines: int = 16) -> float:
+    """Pick the dense major grid interval used by the WHO-style chart."""
+
+    if span <= 0 or not math.isfinite(span):
+        return 1.0
+    rough = span / max(1, target_lines)
+    power = 10 ** math.floor(math.log10(rough))
+    fraction = rough / power
+    # WHO reference sheets normally label every second unit and draw a
+    # lighter half-step between labels.  Keeping 2 as a candidate prevents a
+    # 0–30 kg chart from becoming a sparse 5 kg grid.
+    if fraction <= 1.25:
+        multiplier = 1
+    elif fraction <= 2.75:
+        multiplier = 2
+    elif fraction <= 4.0:
+        multiplier = 2.5
+    elif fraction <= 7.5:
+        multiplier = 5
+    else:
+        multiplier = 10
+    return multiplier * power
 
 
 def _bounds(values: list[float], minimum: float | None = None, maximum: float | None = None) -> tuple[float, float, float]:
@@ -106,10 +138,41 @@ def _measurement_date(point: dict[str, Any]) -> str:
 
 
 def _weight_gain_status(point: dict[str, Any]) -> str:
+    computed = point.get("_python_weight_gain_status")
+    if computed:
+        return str(computed).strip().upper()
     value = point.get("weight_gain_status")
     if value is None:
         value = point.get("weightGainStatus", point.get("statusNaik", point.get("status_naik", "")))
     return str(value or "").strip().upper()
+
+
+def _with_python_weight_status(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Annotate chart points with Python's chronological N/T/O/B result."""
+
+    ordered = sorted(
+        (point for point in points if isinstance(point, dict)),
+        key=lambda point: (_measurement_date(point), _age_months(point) or 0),
+    )
+    enriched: list[dict[str, Any]] = []
+    previous: dict[str, Any] | None = None
+    for point in ordered:
+        copy = dict(point)
+        age = _age_months(point)
+        weight = _positive_value(point, "weight")
+        if weight is not None:
+            # O explicitly marks a non-measured month in imported chart data;
+            # retain that marker so the renderer can intentionally break the
+            # trajectory. N/T/B are always recomputed from raw weights below.
+            supplied = _weight_gain_status(point)
+            copy["_python_weight_gain_status"] = (
+                "O" if supplied == "O" else ml.calculate_weight_gain_status(point, previous, age)
+            )
+            previous = point
+        else:
+            copy["_python_weight_gain_status"] = None
+        enriched.append(copy)
+    return enriched
 
 
 def _month_index(value: Any) -> int | None:
@@ -149,6 +212,7 @@ def _child_segments(ordered: list[tuple[float, float, str, str]]) -> list[list[t
 
 
 def _chart_spec(chart_type: str, sex: str, points: list[dict[str, Any]]) -> tuple[str, str, str, str, list[tuple[float, list[float]]], list[tuple[float, float, str, str]]]:
+    points = _with_python_weight_status(points)
     reference = who.standards()
     normalized_sex = "P" if str(sex).upper() == "P" else "L"
     if chart_type == "bbu":
@@ -197,20 +261,46 @@ def _chart_spec(chart_type: str, sex: str, points: list[dict[str, Any]]) -> tupl
 
 
 def render_growth_chart(chart_type: str, sex: str, points: list[dict[str, Any]], child_name: str = "", language: str = "id") -> str:
-    """Return a self-contained Indonesian SVG for one WHO indicator."""
+    """Return an Indonesian WHO-style chart with a dense reference grid.
+
+    The LMS values are exactly the same values used by ``who.py``.  The
+    presentation follows the supplied WHO sheets: a sex-coloured frame and
+    title, fine horizontal/vertical grid lines, darker year/major lines, solid
+    curves at -3/-2/0/+2/+3 SD (with -1/+1 added for BB/PB, BB/TB, IMT/U,
+    LILA/U, and LK/U), and a sex-coloured child trajectory.
+    """
 
     if chart_type not in CHART_TYPES:
         raise ValueError("Jenis grafik pertumbuhan tidak didukung.")
     if language and language.lower() not in ("id", "id-id", "indonesian"):
         raise ValueError("Bahasa grafik yang tersedia saat ini adalah Indonesia.")
-    title, x_label, y_label, unit, reference, child_points = _chart_spec(chart_type, sex, points)
-    curve_values = [_inverse_lms(z, lms) for _, lms in reference for z in CURVE_Z]
+    normalized_sex = "P" if str(sex).upper() == "P" else "L"
+    sex_label = "Perempuan" if normalized_sex == "P" else "Laki-laki"
+    sex_color = SEX_COLORS[normalized_sex]
+    title, x_label, y_label, unit, reference, child_points = _chart_spec(chart_type, normalized_sex, points)
+    curve_z = CURVE_Z_WITH_INNER if chart_type in INNER_CURVE_TYPES else CURVE_Z
+    curve_values = [_inverse_lms(z, lms) for _, lms in reference for z in curve_z]
     point_values = [value for _, value, _, _ in child_points]
-    y_min, y_max, y_step = _bounds(curve_values + point_values)
-    x_min, x_max = reference[0][0], reference[-1][0]
-    plot_left, plot_top = MARGIN_LEFT, MARGIN_TOP
-    plot_width = WIDTH - MARGIN_LEFT - MARGIN_RIGHT
-    plot_height = HEIGHT - MARGIN_TOP - MARGIN_BOTTOM
+    all_y_values = [value for value in curve_values + point_values if math.isfinite(value)]
+    if not all_y_values:
+        all_y_values = [0.0, 1.0]
+    raw_y_min, raw_y_max = min(all_y_values), max(all_y_values)
+    y_step = _grid_step(raw_y_max - raw_y_min)
+    y_min = math.floor(raw_y_min / y_step) * y_step
+    y_max = math.ceil(raw_y_max / y_step) * y_step
+    age_axis = chart_type in {"bbu", "tbu", "imtu", "lilau", "lku"}
+    # Keep every age-based chart on the common birth–60 month axis.  LILA/U
+    # reference values start at month 3, but the chart still needs to show the
+    # birth origin and the same monthly grid as the other WHO sheets.
+    x_min, x_max = (0.0, 60.0) if age_axis else (reference[0][0], reference[-1][0])
+
+    # The coloured frame leaves the plot white, like the supplied WHO sheets.
+    panel_left, panel_top = 72.0, 96.0
+    panel_right, panel_bottom = WIDTH - 72.0, 704.0
+    plot_left, plot_top = 132.0, 120.0
+    plot_right, plot_bottom = WIDTH - 132.0, 650.0
+    plot_width = plot_right - plot_left
+    plot_height = plot_bottom - plot_top
 
     def sx(value: float) -> float:
         return plot_left + (value - x_min) / max(1e-9, x_max - x_min) * plot_width
@@ -218,49 +308,100 @@ def render_growth_chart(chart_type: str, sex: str, points: list[dict[str, Any]],
     def sy(value: float) -> float:
         return plot_top + (y_max - value) / max(1e-9, y_max - y_min) * plot_height
 
+    curve_description = ", ".join("0" if z == 0 else f"{z:+d}" for z in curve_z)
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="title desc">',
+        # Explicit dimensions preserve the viewBox aspect ratio in Safari and
+        # other browsers when CSS sets the responsive width and height:auto.
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="title desc">',
         f'<title id="title">{_escape(title)}</title>',
-        f'<desc id="desc">Grafik standar pertumbuhan anak WHO 0 sampai 60 bulan dengan titik pengukuran balita.</desc>',
-        '<rect width="1200" height="760" fill="#ffffff"/>',
-        f'<text x="{WIDTH / 2:.0f}" y="34" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="700">{_escape(title)}</text>',
-        f'<text x="{WIDTH / 2:.0f}" y="62" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#475569">Standar Pertumbuhan Anak WHO 0–5 tahun • {"Perempuan" if str(sex).upper() == "P" else "Laki-laki"}{(" • " + _escape(child_name)) if child_name else ""}</text>',
+        f'<desc id="desc">Grafik standar pertumbuhan WHO 0 sampai 60 bulan untuk {sex_label}, dengan kurva {curve_description} SD dan titik pengukuran balita.</desc>',
+        f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#ffffff"/>',
+        f'<rect x="{panel_left:.0f}" y="{panel_top:.0f}" width="{panel_right - panel_left:.0f}" height="{panel_bottom - panel_top:.0f}" rx="2" fill="{sex_color}"/>',
+        f'<rect x="{plot_left:.0f}" y="{plot_top:.0f}" width="{plot_width:.0f}" height="{plot_height:.0f}" fill="#ffffff" stroke="#4b4b4b" stroke-width="1.4"/>',
+        f'<text x="{WIDTH / 2:.0f}" y="44" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" font-weight="700" fill="{sex_color}">{_escape(title)}</text>',
+        f'<text x="{WIDTH / 2:.0f}" y="70" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" fill="#252525">{_escape(sex_label)} • Standar Pertumbuhan Anak WHO 0–5 tahun{(" • " + _escape(child_name)) if child_name else ""}</text>',
+        f'<text x="{panel_left + 26:.0f}" y="{plot_top - 10:.0f}" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#ffffff">{_escape(y_label)}</text>',
     ]
-    # Grid and y-axis labels.
-    value = y_min
-    while value <= y_max + y_step * 0.01:
-        y = sy(value)
-        parts.append(f'<line x1="{plot_left:.2f}" y1="{y:.2f}" x2="{plot_left + plot_width:.2f}" y2="{y:.2f}" stroke="#e2e8f0" stroke-width="1"/>')
-        parts.append(f'<text x="{plot_left - 12:.2f}" y="{y + 5:.2f}" text-anchor="end" font-family="Arial,sans-serif" font-size="12" fill="#475569">{value:g}</text>')
-        value += y_step
-    x_step = 6 if x_max - x_min > 30 else 2
-    x = x_min
-    while x <= x_max + 0.01:
-        px = sx(x)
-        parts.append(f'<line x1="{px:.2f}" y1="{plot_top:.2f}" x2="{px:.2f}" y2="{plot_top + plot_height:.2f}" stroke="#f1f5f9" stroke-width="1"/>')
-        parts.append(f'<text x="{px:.2f}" y="{plot_top + plot_height + 24:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#475569">{x:g}</text>')
-        x += x_step
-    # WHO SD curves.
-    for z in CURVE_Z:
+
+    # Dense horizontal grid: lighter half-step lines and darker labelled
+    # major lines.  Labels are placed in both coloured side bands as in WHO.
+    y_minor = y_step / 2
+    y_value = y_min
+    y_count = 0
+    while y_value <= y_max + y_minor * 0.01 and y_count < 500:
+        y = sy(y_value)
+        major = abs((y_value / y_step) - round(y_value / y_step)) < 1e-6
+        parts.append(f'<line x1="{plot_left:.2f}" y1="{y:.2f}" x2="{plot_right:.2f}" y2="{y:.2f}" stroke="{("#666666" if major else "#a7a7a7")}" stroke-width="{("1.35" if major else "0.72")}"/>')
+        if major:
+            label = f"{y_value:g}"
+            parts.append(f'<text x="{panel_left + 43:.2f}" y="{y + 4:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#ffffff">{label}</text>')
+            parts.append(f'<text x="{panel_right - 43:.2f}" y="{y + 4:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#ffffff">{label}</text>')
+        y_value += y_minor
+        y_count += 1
+
+    # Dense vertical grid.  Age charts use monthly lines and darker yearly
+    # boundaries; size-based BB/PB and BB/TB use centimetres with 5-unit major
+    # intervals.
+    x_minor = 1.0 if age_axis else 1.0
+    x_major = 12.0 if age_axis else (5.0 if x_max - x_min <= 40 else 10.0)
+    x_value = x_min
+    x_count = 0
+    while x_value <= x_max + x_minor * 0.01 and x_count < 500:
+        x = sx(x_value)
+        major = abs(((x_value - x_min) / x_major) - round((x_value - x_min) / x_major)) < 1e-6
+        parts.append(f'<line x1="{x:.2f}" y1="{plot_top:.2f}" x2="{x:.2f}" y2="{plot_bottom:.2f}" stroke="{("#666666" if major else "#a7a7a7")}" stroke-width="{("1.35" if major else "0.72")}"/>')
+        if age_axis:
+            month = int(round(x_value - x_min))
+            if month == 0 and not major:
+                label = "Lahir"
+            elif month % 2 == 0 and not major:
+                label = str(month)
+            else:
+                label = ""
+            if label:
+                parts.append(f'<text x="{x:.2f}" y="{plot_bottom + 18:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#ffffff">{label}</text>')
+            if major:
+                year = int(round((x_value - x_min) / 12))
+                year_label = "Lahir" if year == 0 else f"{year} tahun"
+                parts.append(f'<text x="{x:.2f}" y="{plot_bottom + 39:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#ffffff">{year_label}</text>')
+        elif abs(((x_value - x_min) / x_major) - round((x_value - x_min) / x_major)) < 1e-6:
+            parts.append(f'<text x="{x:.2f}" y="{plot_bottom + 24:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#ffffff">{x_value:g}</text>')
+        x_value += x_minor
+        x_count += 1
+
+    parts.append(f'<clipPath id="plot-clip"><rect x="{plot_left:.0f}" y="{plot_top:.0f}" width="{plot_width:.0f}" height="{plot_height:.0f}"/></clipPath>')
+    parts.append('<g clip-path="url(#plot-clip)">')
+    # WHO curves are solid and use black at ±3 SD, red at ±2 SD, yellow at
+    # ±1 SD, and green at the median (0 SD), matching the requested reference.
+    for z in curve_z:
         curve = [(sx(x_value), sy(_inverse_lms(z, lms))) for x_value, lms in reference]
-        parts.append(f'<path d="{_path(curve)}" fill="none" stroke="{CURVE_COLORS[z]}" stroke-width="{2.8 if z == 0 else 2}" stroke-linejoin="round"/>')
-        label_x, label_lms = reference[-1]
-        label_y = sy(_inverse_lms(z, label_lms))
-        parts.append(f'<text x="{sx(label_x) - 4:.2f}" y="{label_y - 5:.2f}" text-anchor="end" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="{CURVE_COLORS[z]}">{"median" if z == 0 else f"{z:+d} SD"}</text>')
-    # Child observations are joined chronologically for the growth trajectory.
+        parts.append(f'<path d="{_path(curve)}" fill="none" stroke="{CURVE_COLORS[z]}" stroke-width="{2.8 if z == 0 else 1.9}" stroke-linejoin="round"><title>{"median (0 SD)" if z == 0 else f"{z:+d} SD"}</title></path>')
+    # Child observations are joined chronologically per contiguous segment.
     ordered = sorted(child_points, key=lambda item: (item[0], str(item[2])))
     if ordered:
         for segment in _child_segments(ordered):
-            parts.append(f'<path d="{_path([(sx(x_value), sy(value)) for x_value, value, _, _ in segment])}" fill="none" stroke="#2563eb" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>')
+            parts.append(f'<path d="{_path([(sx(x_value), sy(value)) for x_value, value, _, _ in segment])}" fill="none" stroke="{sex_color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>')
         for x_value, value, date, _ in ordered:
-            parts.append(f'<circle cx="{sx(x_value):.2f}" cy="{sy(value):.2f}" r="5" fill="#2563eb" stroke="#ffffff" stroke-width="2"><title>{_escape(date)}: {value:.2f} {unit}</title></circle>')
+            parts.append(f'<circle cx="{sx(x_value):.2f}" cy="{sy(value):.2f}" r="5" fill="{sex_color}" stroke="#ffffff" stroke-width="2"><title>{_escape(date)}: {value:.2f} {unit}</title></circle>')
     else:
-        parts.append(f'<text x="{plot_left + plot_width / 2:.2f}" y="{plot_top + plot_height / 2:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#64748b">Belum ada titik pengukuran yang dapat diplot</text>')
+        parts.append(f'<text x="{plot_left + plot_width / 2:.2f}" y="{plot_top + plot_height / 2:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#4b4b4b">Belum ada titik pengukuran yang dapat diplot</text>')
+    parts.append('</g>')
+
+    # SD labels sit just outside the plot on the coloured right band.  Keep
+    # them in their own right-hand column: the band also contains the
+    # mirrored y-axis tick labels, so placing both at ``plot_right + 16``
+    # makes values such as ``28 +3`` render on top of each other at the edge
+    # of the chart.  Right-aligning the SD labels against the panel edge
+    # leaves a small, stable gap between the two columns at every width.
+    label_x, label_lms = reference[-1]
+    sd_label_x = panel_right - 10.0
+    for z in curve_z:
+        label_y = sy(_inverse_lms(z, label_lms))
+        label = "0" if z == 0 else f"{z:+d}"
+        parts.append(f'<text x="{sd_label_x:.2f}" y="{label_y + 5:.2f}" text-anchor="end" font-family="Arial,sans-serif" font-size="15" font-weight="700" fill="{CURVE_COLORS[z]}">{label}</text>')
     parts.extend([
-        f'<line x1="{plot_left}" y1="{plot_top + plot_height}" x2="{plot_left + plot_width}" y2="{plot_top + plot_height}" stroke="#334155" stroke-width="2"/>',
-        f'<line x1="{plot_left}" y1="{plot_top}" x2="{plot_left}" y2="{plot_top + plot_height}" stroke="#334155" stroke-width="2"/>',
-        f'<text x="{plot_left + plot_width / 2:.2f}" y="{HEIGHT - 22}" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="700" fill="#334155">{_escape(x_label)}</text>',
-        f'<text x="20" y="{plot_top + plot_height / 2:.2f}" transform="rotate(-90 20 {plot_top + plot_height / 2:.2f})" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="700" fill="#334155">{_escape(y_label)}</text>',
+        f'<text x="{plot_left + plot_width / 2:.2f}" y="{HEIGHT - 24}" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" font-weight="700" fill="#252525">{_escape(x_label)}</text>',
+        f'<text x="{panel_left + 13:.2f}" y="{plot_top + plot_height / 2:.2f}" transform="rotate(-90 {panel_left + 13:.2f} {plot_top + plot_height / 2:.2f})" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="700" fill="#ffffff">{_escape(y_label)}</text>',
         '<text x="1160" y="742" text-anchor="end" font-family="Arial,sans-serif" font-size="11" fill="#64748b">Perhitungan LMS deterministik • grafik untuk pemantauan, bukan diagnosis</text>',
         '</svg>',
     ])

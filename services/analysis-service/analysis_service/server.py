@@ -14,17 +14,29 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 from . import charts, who
 from .generated import analysis_pb2, analysis_pb2_grpc
+from .persistence import start_persistence_worker
+from .runtime import AnalysisRuntime, QueueFullError
 
 
 LOGGER = logging.getLogger("eposyandu.analysis")
 TOKEN_HEADER = "x-eposyandu-service-token"
 
 
+# grpcio's default message limit is only a few MiB. The table/dashboard
+# analysis sends scoped child and measurement rows as one private request;
+# keep the limit explicit so registry growth does not surface as a Cloudflare
+# 502 response.
+MAX_GRPC_MESSAGE_BYTES = 64 * 1024 * 1024
+
 def _optional(request, name: str):
     return getattr(request, name) if request.HasField(name) else None
 
 
 class AnalysisServicer(analysis_pb2_grpc.AnalysisServiceServicer):
+    def __init__(self, runtime: AnalysisRuntime | None = None) -> None:
+        self.runtime = runtime or AnalysisRuntime.from_env()
+        self.persistence = start_persistence_worker()
+
     def _authorize(self, context) -> None:
         expected = os.environ.get("RUST_WORKER_SHARED_SECRET", "").strip()
         supplied = next(
@@ -109,12 +121,55 @@ class AnalysisServicer(analysis_pb2_grpc.AnalysisServiceServicer):
                     "anomaly": item.get("anomaly", {}),
                     "risk": item.get("risk", {}),
                     "nutritionConcern": item.get("nutrition_concern"),
+                    "nutritionEducation": item.get("nutrition_education"),
+                    "weightGainStatus": item.get("weight_gain_status"),
+                    "weightGainMinimumGrams": item.get("weight_gain_minimum_grams"),
+                    "exclusiveBreastfeedingStatus": item.get("exclusive_breastfeeding_status"),
+                    "exclusiveBreastfeeding": item.get("exclusive_breastfeeding_context"),
                     "graphAnalysis": item.get("graph_analysis", {}),
                 },
                 separators=(",", ":"),
                 ensure_ascii=False,
             )
         return response
+
+    def AnalyzeDataset(self, request, context):  # noqa: N802 (protobuf API name)
+        """Run dataset-level statistics in Python, never in the gateway/DB."""
+
+        self._authorize(context)
+        payload = request.dataset_json or "{}"
+        try:
+            dataset = json.loads(payload)
+        except json.JSONDecodeError:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Dataset analisis tidak valid.")
+        if not isinstance(dataset, dict):
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Dataset analisis harus berupa objek JSON.")
+        try:
+            result, cache_hit = self.runtime.analyze_dataset(dataset, payload_json=payload)
+            if dataset.get("operation", "dashboard_stats") == "dashboard_stats" and self.persistence is not None:
+                try:
+                    self.persistence.persist_dashboard(dataset, result)
+                except Exception:
+                    # A dashboard response remains available even if the
+                    # optional materialized write is temporarily unavailable.
+                    LOGGER.exception("snapshot dashboard Python tidak dapat disimpan")
+            LOGGER.debug(
+                "dataset analysis operation=%s cache_hit=%s cache=%s",
+                dataset.get("operation", "dashboard_stats"),
+                cache_hit,
+                self.runtime.stats()["dashboard"],
+            )
+        except QueueFullError as error:
+            context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, str(error))
+        except ValueError as error:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(error))
+        except (OSError, json.JSONDecodeError, KeyError, IndexError, TypeError) as error:
+            LOGGER.exception("Analisis dataset Python gagal")
+            context.abort(grpc.StatusCode.INTERNAL, str(error))
+        return analysis_pb2.AnalyzeDatasetResponse(
+            result_json=json.dumps(result, separators=(",", ":"), ensure_ascii=False),
+            analytics_version=result.get("analytics", "python-dashboard-analytics-v1"),
+        )
 
     def RenderGrowthChart(self, request, context):  # noqa: N802 (protobuf API name)
         """Render one chart using the same private WHO LMS tables as status calculation."""
@@ -178,8 +233,15 @@ def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     grpc_address = os.environ.get("ANALYSIS_GRPC_ADDR", "unix:///run/e-posyandu/analysis.sock").strip()
     health_port = int(os.environ.get("ANALYSIS_HTTP_PORT", "8082"))
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
-    analysis_pb2_grpc.add_AnalysisServiceServicer_to_server(AnalysisServicer(), server)
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=4),
+        options=(
+            ("grpc.max_receive_message_length", MAX_GRPC_MESSAGE_BYTES),
+            ("grpc.max_send_message_length", MAX_GRPC_MESSAGE_BYTES),
+        ),
+    )
+    servicer = AnalysisServicer()
+    analysis_pb2_grpc.add_AnalysisServiceServicer_to_server(servicer, server)
     health_servicer = health.HealthServicer()
     health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
     health_servicer.set("eposyandu.analysis.v1.AnalysisService", health_pb2.HealthCheckResponse.SERVING)
@@ -199,7 +261,12 @@ def main() -> None:
     try:
         server.wait_for_termination()
     except KeyboardInterrupt:
+        pass
+    finally:
         server.stop(grace=5)
+        servicer.runtime.shutdown()
+        if servicer.persistence is not None:
+            servicer.persistence.stop()
 
 
 if __name__ == "__main__":

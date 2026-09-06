@@ -20,6 +20,7 @@ import {
   subscribeToOfflineStore,
   updatePendingMutation
 } from '../services/offlineStore';
+import type { AgeGroup } from '../config/ageFilters';
 
 export type AuthUser = {
   uid: string;
@@ -133,8 +134,12 @@ type SyncResponse = {
 
 export type ChildrenPageRequest = {
   asOf: string;
+  ageGroup?: AgeGroup;
+  historyStart?: string;
   measurementEnd: string;
   measurementStart: string;
+  previousMonthEnd?: string;
+  previousMonthStart?: string;
   page: number;
   posyandu?: string;
   search?: string;
@@ -157,6 +162,8 @@ export type ChildrenPageResponse = {
   measurements: ApiDocument[];
   mpasiLogs?: ApiDocument[];
   total: number;
+  /** True when Rust already selected this page before Python analysis. */
+  pageLimited?: boolean;
 };
 
 // Keep the most recently resolved page in memory so switching tabs can paint
@@ -168,9 +175,13 @@ const exclusiveBreastfeedingMemoryCache = new Map<string, ExclusiveBreastfeeding
 function childrenPageCacheKey(request: ChildrenPageRequest): string {
   return JSON.stringify({
     account: authState.currentUser?.uid || 'anonymous',
+    ageGroup: request.ageGroup || '0-59',
     asOf: request.asOf,
+    historyStart: request.historyStart || '',
     measurementEnd: request.measurementEnd,
     measurementStart: request.measurementStart,
+    previousMonthEnd: request.previousMonthEnd || '',
+    previousMonthStart: request.previousMonthStart || '',
     page: request.page,
     posyandu: request.posyandu || '',
     search: request.search || '',
@@ -189,6 +200,7 @@ function exclusiveBreastfeedingCacheKey(request: ExclusiveBreastfeedingPageReque
   return JSON.stringify({
     account: authState.currentUser?.uid || 'anonymous',
     ageGroup: request.ageGroup,
+    historyStart: request.historyStart || '',
     measurementEnd: request.measurementEnd,
     measurementStart: request.measurementStart,
     page: request.page,
@@ -203,7 +215,8 @@ export function peekCachedExclusiveBreastfeedingPage(request: ExclusiveBreastfee
 }
 
 export type ExclusiveBreastfeedingPageRequest = {
-  ageGroup: '0-5' | '6';
+  ageGroup: AgeGroup;
+  historyStart?: string;
   measurementEnd: string;
   measurementStart: string;
   page: number;
@@ -218,6 +231,7 @@ export type ExclusiveBreastfeedingPageResponse = {
 };
 
 export type DashboardStatsRequest = {
+  ageGroup?: AgeGroup;
   monthEnd: string;
   monthStart: string;
   posyandu?: string;
@@ -372,6 +386,7 @@ export type AdminMonitoringSample = {
 };
 
 export type SigiziMeasurementExportRequest = {
+  ageGroup?: AgeGroup;
   monthStart: string;
   monthEnd: string;
   village?: string;
@@ -437,7 +452,11 @@ const API_BASE_URL = (
 const FULL_SYNC_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const API_REQUEST_TIMEOUT_MS = 20_000;
 const DASHBOARD_RETRY_DELAY_MS = 250;
-const API_RETRY_DELAY_MS = 10 * 60 * 1000;
+// A transient restart or mobile network handoff must not strand the page on
+// an empty offline cache for ten minutes.  Calls that hit this breaker also
+// retry explicitly (see getChildrenPage), so this is only a short backoff.
+const API_RETRY_DELAY_MS = 30_000;
+const CHILDREN_PAGE_RETRY_DELAYS_MS = [350, 1_000, 2_500] as const;
 const SYNC_STATE_PREFIX = 'e-posyandu:sync-state:';
 const AUTH_SESSION_KEY = 'e-posyandu:auth-session';
 const API_UNAVAILABLE_UNTIL_KEY = 'e-posyandu:api-unavailable-until';
@@ -1000,12 +1019,26 @@ export async function getBackendReadiness(): Promise<BackendReadiness> {
 
 export async function getChangeHistory(
   page = 1,
-  size = 10
+  size = 10,
+  ageGroup: AgeGroup = '0-59',
+  asOf?: string,
+  village?: string,
+  posyandu?: string,
+  search?: string
 ): Promise<{ items: ApiDocument[]; total: number }> {
   const currentPage = Math.max(1, Math.trunc(page));
   const pageSize = Math.min(50, Math.max(1, Math.trunc(size)));
+  const parameters = new URLSearchParams({
+    ageGroup,
+    page: String(currentPage),
+    size: String(pageSize)
+  });
+  if (asOf?.trim()) parameters.set('asOf', asOf.trim());
+  if (village?.trim()) parameters.set('village', village.trim());
+  if (posyandu?.trim()) parameters.set('posyandu', posyandu.trim());
+  if (search?.trim()) parameters.set('search', search.trim());
   const response = await apiRequest<SyncChangeSet & { total?: number }>(
-    `/collections/change_logs?order=timestamp%7Cdesc&page=${currentPage}&size=${pageSize}`
+    `/collections/change_logs?${parameters.toString()}&order=timestamp%7Cdesc`
   );
   return {
     items: response.items,
@@ -1106,10 +1139,10 @@ export async function reportClientError(
 
 export async function getChildrenPage(request: ChildrenPageRequest): Promise<ChildrenPageResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-  let response: ChildrenPageResponse;
-  try {
+  const requestChildrenPage = () => {
     const parameters = new URLSearchParams({
       asOf: request.asOf,
+      ageGroup: request.ageGroup || '0-59',
       measurementEnd: request.measurementEnd,
       measurementStart: request.measurementStart,
       page: String(request.page),
@@ -1117,14 +1150,48 @@ export async function getChildrenPage(request: ChildrenPageRequest): Promise<Chi
       sort: request.sort,
       view: request.view || 'data'
     });
+    if (request.historyStart?.trim()) parameters.set('historyStart', request.historyStart.trim());
     if (request.search?.trim()) parameters.set('search', request.search.trim());
     if (request.village?.trim()) parameters.set('village', request.village.trim());
     if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
-    response = await apiRequest<ChildrenPageResponse>(`/children/page?${parameters.toString()}`);
+    if (request.previousMonthStart?.trim()) parameters.set('previousMonthStart', request.previousMonthStart.trim());
+    if (request.previousMonthEnd?.trim()) parameters.set('previousMonthEnd', request.previousMonthEnd.trim());
+    return apiRequest<ChildrenPageResponse>(`/children/page?${parameters.toString()}`);
+  };
+  let response: ChildrenPageResponse | undefined;
+  try {
+    response = await requestChildrenPage();
   } catch (error) {
     if (!isNetworkError(error)) throw error;
-    response = await getCachedChildrenPage(request);
+    // The first failure can be caused by a service restart or a stale
+    // sessionStorage circuit-breaker marker. Retry the same page a few times
+    // before falling back to the encrypted local cache. Clearing the marker
+    // here is deliberate: the page itself is the user-visible recovery path.
+    let lastError: unknown = error;
+    let recovered = false;
+    for (const delayMs of CHILDREN_PAGE_RETRY_DELAYS_MS) {
+      clearApiUnavailable();
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+      try {
+        response = await requestChildrenPage();
+        recovered = true;
+        break;
+      } catch (retryError) {
+        if (!isNetworkError(retryError)) throw retryError;
+        lastError = retryError;
+      }
+    }
+    if (!recovered) {
+      try {
+        response = await getCachedChildrenPage(request);
+      } catch {
+        // Preserve the useful API failure when this is the first visit and
+        // there is no locally cached page to show.
+        throw lastError;
+      }
+    }
   }
+  if (!response) throw new Error('Data balita belum tersedia. Silakan coba lagi.');
   const now = new Date().toISOString();
   await Promise.all([
     cacheRemoteDocuments('children', response.items.map((item) => ({
@@ -1183,6 +1250,7 @@ export async function getExclusiveBreastfeedingPage(
     page: String(request.page),
     size: String(request.size || 10)
   });
+  if (request.historyStart?.trim()) parameters.set('historyStart', request.historyStart.trim());
   if (request.village?.trim()) parameters.set('village', request.village.trim());
   if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
   const response = await apiRequest<ExclusiveBreastfeedingPageResponse>(
@@ -1208,16 +1276,13 @@ export async function getChildDetail(id: string): Promise<ApiDocument> {
 
 export async function getDashboardStats(request: DashboardStatsRequest): Promise<DashboardStatsResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-  const parameters = new URLSearchParams({
-    monthEnd: request.monthEnd,
-    monthStart: request.monthStart,
-    previousMonthEnd: request.previousMonthEnd,
-    previousMonthStart: request.previousMonthStart
+  // Dashboard classification and aggregation are owned by Python.  The
+  // authenticated operations gateway reads the raw rows and forwards them to
+  // the private analysis service; the browser only receives the final stats.
+  const requestDashboard = () => apiRequest<DashboardStatsResponse>('/analysis/dashboard-stats', {
+    method: 'POST',
+    body: JSON.stringify(request),
   });
-  if (request.village?.trim()) parameters.set('village', request.village.trim());
-  if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
-  const requestDashboard = () =>
-    apiRequest<DashboardStatsResponse>(`/dashboard/stats?${parameters.toString()}`);
   try {
     return await requestDashboard();
   } catch (error) {
@@ -1238,6 +1303,7 @@ export async function getSigiziMeasurementExport(
 ): Promise<SigiziMeasurementExportResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
   const parameters = new URLSearchParams({
+    ageGroup: request.ageGroup || '0-59',
     monthEnd: request.monthEnd,
     monthStart: request.monthStart
   });
@@ -1246,88 +1312,13 @@ export async function getSigiziMeasurementExport(
   return apiRequest<SigiziMeasurementExportResponse>(`/exports/sigizi-measurements?${parameters.toString()}`);
 }
 
-function compareCachedChildren(left: ApiDocument, right: ApiDocument, sort: string) {
-  const leftData = left.data;
-  const rightData = right.data;
-  const comparable = (value: unknown) => {
-    if (value && typeof (value as { toDate?: unknown }).toDate === 'function') {
-      return ((value as { toDate: () => Date }).toDate()).toISOString();
-    }
-    return String(value || '');
-  };
-  const byText = (a: unknown, b: unknown) => comparable(a).localeCompare(comparable(b), 'id');
-
-  switch (sort) {
-    case 'oldest_input': return byText(leftData.createdAt, rightData.createdAt) || byText(left.id, right.id);
-    case 'name_asc': return byText(leftData.nama, rightData.nama) || byText(left.id, right.id);
-    case 'name_desc': return byText(rightData.nama, leftData.nama) || byText(left.id, right.id);
-    case 'age_oldest': return byText(leftData.tglLahir, rightData.tglLahir) || byText(left.id, right.id);
-    case 'age_youngest': return byText(rightData.tglLahir, leftData.tglLahir) || byText(left.id, right.id);
-    default: return byText(rightData.createdAt, leftData.createdAt) || byText(right.id, left.id);
-  }
-}
-
 export async function getCachedChildrenPage(request: ChildrenPageRequest): Promise<ChildrenPageResponse> {
   const memoryCached = childrenPageMemoryCache.get(childrenPageCacheKey(request));
   if (memoryCached) return memoryCached;
-
-  const asOf = request.asOf;
-  const parsedAsOf = new Date(`${asOf}T00:00:00Z`);
-  if (Number.isNaN(parsedAsOf.getTime())) throw new Error('Periode data balita tidak valid.');
-  parsedAsOf.setUTCMonth(parsedAsOf.getUTCMonth() - 60);
-  const cutoff = parsedAsOf.toISOString().slice(0, 10);
-  const search = request.search?.trim().toLocaleLowerCase('id') || '';
-  const cacheDateValue = (value: unknown) => value && typeof (value as { toDate?: unknown }).toDate === 'function'
-    ? (value as { toDate: () => Date }).toDate().toISOString()
-    : String(value || '');
-  const children = (await getCachedDocuments('children'))
-    .filter((document) => {
-      const data = document.data;
-      const birthDate = String(data.tglLahir || '');
-      const deleted = document.deleted || Boolean(data.deletedAt);
-      if (request.view === 'recycle' ? !deleted : deleted) return false;
-      if (request.view !== 'recycle' && request.view !== 'recent' && (birthDate <= cutoff || birthDate > asOf)) return false;
-      if (request.view === 'recent') {
-        const createdAt = cacheDateValue(data.createdAt);
-        const nextMonth = new Date(`${asOf}T00:00:00Z`);
-        nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
-        if (!createdAt || createdAt < `${asOf}T00:00:00Z` || createdAt >= nextMonth.toISOString()) return false;
-      }
-      if (request.village && data.desa !== request.village) return false;
-      if (request.posyandu && data.posyandu !== request.posyandu) return false;
-      if (!search) return true;
-      return String(data.nama || '').toLocaleLowerCase('id').includes(search) || String(data.nik || '').includes(search);
-    })
-    .map((document) => ({ id: document.id, data: hydrateForRead(document.data) }));
-  children.sort((left, right) => compareCachedChildren(left, right, request.sort));
-
-  const total = children.length;
-  const size = Math.min(Math.max(request.size || 10, 1), 50);
-  const offset = (Math.max(request.page, 1) - 1) * size;
-  const items = children.slice(offset, offset + size);
-  const childIds = new Set(items.map((item) => item.id));
-  const measurements = (await getCachedDocuments('measurements'))
-    .filter((document) => {
-      const data = document.data;
-      return !document.deleted && childIds.has(String(data.childId || '')) && data.tglUkur >= request.measurementStart && data.tglUkur <= request.measurementEnd;
-    })
-    .map((document) => ({ id: document.id, data: hydrateForRead(document.data) }))
-    .sort((left, right) => {
-      const dateCompare = String(right.data.tglUkur || '').localeCompare(String(left.data.tglUkur || ''));
-      const createdAt = (value: unknown) => value && typeof (value as { toDate?: unknown }).toDate === 'function'
-        ? (value as { toDate: () => Date }).toDate().toISOString()
-        : String(value || '');
-      return dateCompare || createdAt(right.data.createdAt).localeCompare(createdAt(left.data.createdAt));
-    });
-  const latestMeasurements = new Map<string, ApiDocument>();
-  measurements.forEach((measurement) => {
-    const childId = String(measurement.data.childId || '');
-    if (childId && !latestMeasurements.has(childId)) latestMeasurements.set(childId, measurement);
-  });
-
-  const cachedResponse = { items, measurements: Array.from(latestMeasurements.values()), total };
-  childrenPageMemoryCache.set(childrenPageCacheKey(request), cachedResponse);
-  return cachedResponse;
+  // Offline reads may only reuse a complete page previously produced by
+  // Python. Re-filtering raw encrypted documents here would create a second
+  // source of truth for scope, age, sorting, and status classification.
+  throw new Error('Cache halaman Python belum tersedia. Sambungkan kembali untuk memuat data.');
 }
 
 function matchesQuery(data: DocumentData, ref: QueryRef) {

@@ -5,6 +5,7 @@ import { Activity, AlertTriangle, Baby, CircleOff, Minus, Scale, TrendingUp, Use
 import { Card } from '../ui/dashboardPrimitives';
 import { SkeletonBlock } from '../ui/skeleton';
 import { MONTHS } from './DashboardApp';
+import { ageGroupLabel, DEFAULT_AGE_GROUP } from '../config/ageFilters';
 
 type DashboardOverviewPageProps = {
     stats: DashboardStatsResponse;
@@ -13,11 +14,12 @@ type DashboardOverviewPageProps = {
     monitoringStatus?: MonitoringStatus | null;
     filterMonth: number;
     filterYear: number;
+    ageGroup?: string;
     viewDesa?: string | null;
     viewPosyandu?: string | null;
 };
 
-export default function DashboardOverviewPage({ stats: providedStats, pageState, loading = false, monitoringStatus, filterMonth, filterYear, viewDesa, viewPosyandu }: DashboardOverviewPageProps) {
+export default function DashboardOverviewPage({ stats: providedStats, pageState, loading = false, monitoringStatus, filterMonth, filterYear, ageGroup = DEFAULT_AGE_GROUP, viewDesa, viewPosyandu }: DashboardOverviewPageProps) {
     const resolvedState: PageState<DashboardStatsResponse> = pageState ?? (loading
         ? { status: 'loading' }
         : { status: 'success', data: providedStats });
@@ -73,7 +75,8 @@ export default function DashboardOverviewPage({ stats: providedStats, pageState,
                         filterYear),
                     viewDesa && ` - ${viewDesa}`,
                     " ",
-                    viewPosyandu && ` - ${viewPosyandu}`)),
+                    viewPosyandu && ` - ${viewPosyandu}`,
+                    Native.createElement("span", { className: "ml-2 text-slate-400" }, ` · ${ageGroupLabel(ageGroup)}`))),
             pageLoading && Native.createElement(Activity, { className: "w-5 h-5 animate-spin text-emerald-600", "aria-label": "Memuat ringkasan" })),
         pageError && Native.createElement("div", { role: "alert", className: "ios-inline-notification ios-inline-notification-error system-health-notice" },
             pageError),
@@ -139,12 +142,12 @@ export default function DashboardOverviewPage({ stats: providedStats, pageState,
         Native.createElement("h2", { className: "apple-section-title mt-6" }, "Capaian ASI Eksklusif"),
         Native.createElement(Card, { className: "apple-feature-card p-5" },
             Native.createElement("div", { className: "flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4" },
-                Native.createElement("div", { className: "flex items-center gap-3" },
-                    Native.createElement("div", { className: "apple-symbol-tile apple-symbol-tile-cyan" },
-                        Native.createElement(Baby, { className: "w-5 h-5" })),
-                    Native.createElement("div", null,
-                        Native.createElement("p", { className: "font-bold text-slate-700" }, "Bayi usia 6 bulan"),
-                        Native.createElement("p", { className: "text-xs text-slate-500" }, "Tercatat ASI eksklusif pada bulan laporan"))),
+                    Native.createElement("div", { className: "flex items-center gap-3" },
+                        Native.createElement("div", { className: "apple-symbol-tile apple-symbol-tile-cyan" },
+                            Native.createElement(Baby, { className: "w-5 h-5" })),
+                        Native.createElement("div", null,
+                            Native.createElement("p", { className: "font-bold text-slate-700" }, "Bayi usia 6 bulan"),
+                            Native.createElement("p", { className: "text-xs text-slate-500" }, "Pembanding (S): seluruh balita usia 6 bulan"))),
                 Native.createElement("div", { className: "sm:text-right" },
                     Native.createElement("p", { className: "text-2xl font-bold text-slate-800" },
                         asiSummary),

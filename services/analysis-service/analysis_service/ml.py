@@ -22,6 +22,23 @@ MODEL_VERSION = "growth-risk-logistic-v1"
 ANOMALY_VERSION = "growth-quality-rules-v1"
 GRAPH_MODEL_VERSION = "growth-trend-logistic-v1"
 
+# Minimum monthly weight gain (gram) used by the Indonesian N/T monitoring
+# convention.  The calculation belongs to this service so every client (the
+# measurement table, exports, and growth charts) receives the same result.
+WEIGHT_GAIN_THRESHOLDS_GRAMS = (
+    (1, 800),
+    (2, 900),
+    (3, 800),
+    (4, 600),
+    (5, 500),
+    (6, 400),
+    (7, 400),
+    (8, 300),
+    (11, 300),
+    (60, 200),
+)
+ASI_EXCLUSIVE_AGES = tuple(range(0, 7))
+
 
 # A child who already meets a WHO problem classification needs an actionable
 # care message, not another probability label.  "Risiko" classifications are
@@ -48,6 +65,16 @@ _SEVERE_NUTRITION_STATUSES = {
     "LILA Sangat Rendah",
     "Mikrosefali Berat",
 }
+
+
+def _append_unique(target: list[Any], values: Any) -> None:
+    """Append non-empty values while keeping education readable."""
+
+    if not isinstance(values, (list, tuple)):
+        return
+    for value in values:
+        if value and value not in target:
+            target.append(value)
 
 
 def _number(value: Any) -> float | None:
@@ -94,6 +121,24 @@ def _normalized_asi(value: Any) -> str | None:
     return None
 
 
+def minimum_weight_gain_grams(age_months: Any) -> int | None:
+    """Return the minimum gain for the child's completed age in months."""
+
+    age = _number(age_months)
+    if age is None:
+        return None
+    age = int(round(age))
+    if age < 0 or age > 60:
+        return None
+    # A comparison at month zero is unusual (the first record is normally B),
+    # but using the one-month threshold keeps the rule deterministic if it is
+    # encountered in imported data.
+    for upper_age, grams in WEIGHT_GAIN_THRESHOLDS_GRAMS:
+        if age <= upper_age:
+            return grams
+    return None
+
+
 def _age_months(item: dict[str, Any]) -> float | None:
     value = item.get("age_months", item.get("ageMonths"))
     if isinstance(value, str):
@@ -105,10 +150,14 @@ def _age_months(item: dict[str, Any]) -> float | None:
 
 
 def _asi_context(item: dict[str, Any], history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Summarize only recorded ASI answers from the 0–6 month period.
+    """Summarize ASI answers for the 0–6 month period.
 
-    A missing answer remains missing.  A ``Tidak konsisten`` result is kept
-    explicit so the caregiver is not given a false binary conclusion.
+    The monthly form is progressive: a ``Ya`` answer at a later age confirms
+    the preceding months (for example, ``Ya`` at month three implies months
+    zero, one, and two were also exclusive).  We keep those inferred slots in
+    the derived context, while still requiring the future slots to be filled
+    before reporting a complete 0–6 month series.  Month zero is automatically
+    affirmative when no answer was recorded yet.
     """
 
     observations: list[dict[str, Any]] = []
@@ -118,23 +167,65 @@ def _asi_context(item: dict[str, Any], history: list[dict[str, Any]] | None = No
         if value is None:
             continue
         age = _age_months(record)
-        if age is not None and age > 6:
+        if age is None:
+            age = _history_age(record, item, _date_key(item))
+        if age is None:
             continue
-        observations.append({"value": value, "date": _date_key(record), "order": index})
+        age = int(round(age))
+        if age not in ASI_EXCLUSIVE_AGES:
+            continue
+        observations.append({"age": age, "value": value, "date": _date_key(record), "order": index})
 
     observations.sort(key=lambda value: (value["date"], value["order"]))
-    values = {value["value"] for value in observations}
-    if values == {"Ya"}:
+    # A duplicate entry for the same month is resolved by the latest dated
+    # answer.  This prevents an old correction from making a complete series
+    # appear inconsistent.
+    latest_by_age = {observation["age"]: observation for observation in observations}
+    inferred_ages: list[int] = []
+    current_age = _age_months(item)
+    if current_age is not None:
+        current_age = max(0, min(6, int(round(current_age))))
+
+    # A newborn is considered exclusively breastfed by default.  This is a
+    # derived default only; an explicit ``Tidak`` answer remains authoritative.
+    if current_age == 0 and 0 not in latest_by_age:
+        latest_by_age[0] = {"age": 0, "value": "Ya", "date": _date_key(item), "order": len(records), "inferred": True}
+        inferred_ages.append(0)
+
+    # A later affirmative answer implies all earlier months.  Do not infer
+    # anything from a negative answer, and do not overwrite explicit answers.
+    current_observation = latest_by_age.get(current_age) if current_age is not None else None
+    if current_observation and current_observation.get("value") == "Ya" and current_age is not None:
+        for age in range(current_age):
+            if age not in latest_by_age:
+                latest_by_age[age] = {
+                    "age": age,
+                    "value": "Ya",
+                    "date": current_observation.get("date", ""),
+                    "order": current_observation.get("order", 0),
+                    "inferred": True,
+                }
+                inferred_ages.append(age)
+
+    observed_ages = sorted(latest_by_age)
+    missing_ages = [age for age in ASI_EXCLUSIVE_AGES if age not in latest_by_age]
+    values = {value["value"] for value in latest_by_age.values()}
+    if not missing_ages and values == {"Ya"}:
         status = "Ya"
-    elif values == {"Tidak"}:
+    elif "Tidak" in values:
         status = "Tidak"
-    elif values == {"Ya", "Tidak"}:
-        status = "Tidak konsisten"
+    elif observations or inferred_ages:
+        status = "Belum lengkap"
     else:
         status = "Belum tercatat"
     return {
         "status": status,
-        "observations": len(observations),
+        "observations": len(latest_by_age),
+        "expectedObservations": len(ASI_EXCLUSIVE_AGES),
+        "observedAges": observed_ages,
+        "missingAges": missing_ages,
+        "inferredAges": sorted(set(inferred_ages)),
+        "complete": not missing_ages,
         "period": "0-6 bulan",
     }
 
@@ -277,28 +368,59 @@ def _risk_prediction(name: str, score: float, explanation: str) -> dict[str, Any
     }
 
 
-def _weight_gain_status(item: dict[str, Any]) -> str | None:
-    """Read a recorded N/T label without treating unknown values as T.
+def calculate_weight_gain_status(
+    item: dict[str, Any],
+    previous: dict[str, Any] | None = None,
+    age_months: Any | None = None,
+) -> str | None:
+    """Calculate the N/T/O/B status from raw weights and chronological data.
 
-    Older records use ``statusNaik`` while the analysis payload uses
-    ``weightGainStatus``.  ``B`` (first/baseline), ``O`` (out of sequence),
-    and empty values are deliberately left unknown; they must not be counted
-    as a failed weight gain.
+    Persisted browser labels are intentionally ignored.  ``B`` is the first
+    valid measurement, ``O`` is a gap longer than 45 days, and otherwise the
+    current weight must meet the age-specific minimum gain in
+    :data:`WEIGHT_GAIN_THRESHOLDS_GRAMS` to be ``N``.
     """
 
-    value = (
-        item.get("weight_gain_status")
-        if "weight_gain_status" in item
-        else item.get("weightGainStatus", item.get("statusNaik", item.get("status_naik")))
-    )
-    if value is None:
+    current_weight = _number(_field(item, "weight_kg"))
+    if current_weight is None or not 0.1 <= current_weight <= 60:
         return None
-    normalized = str(value).strip().casefold()
-    if normalized in {"n", "naik", "increasing", "increase"}:
-        return "N"
-    if normalized in {"t", "tidak naik", "tidak_naik", "not increasing", "not_increasing"}:
-        return "T"
-    return None
+    if previous is None:
+        return "B"
+    previous_weight = _number(_field(previous, "weight_kg"))
+    if previous_weight is None or not 0.1 <= previous_weight <= 60:
+        return "B"
+
+    current_date = _date_key(item)
+    previous_date = _date_key(previous)
+    if current_date and previous_date:
+        try:
+            from datetime import date
+
+            gap_days = abs((date.fromisoformat(current_date) - date.fromisoformat(previous_date)).days)
+        except ValueError:
+            gap_days = 0
+        if gap_days > 45:
+            return "O"
+
+    minimum = minimum_weight_gain_grams(_age_months(item) if age_months is None else age_months)
+    if minimum is None:
+        return None
+    gain_grams = (current_weight - previous_weight) * 1000
+    return "N" if gain_grams >= minimum else "T"
+
+
+def _weight_gain_status(item: dict[str, Any]) -> str | None:
+    """Normalize an externally supplied status for backwards compatibility.
+
+    The value is retained only for old chart payloads; table and chart status
+    generation now call :func:`calculate_weight_gain_status` instead.
+    """
+
+    value = item.get("weight_gain_status") if "weight_gain_status" in item else item.get(
+        "weightGainStatus", item.get("statusNaik", item.get("status_naik"))
+    )
+    normalized = str(value or "").strip().upper()
+    return normalized if normalized in {"N", "T", "O", "B"} else None
 
 
 def _history_age(record: dict[str, Any], current: dict[str, Any], current_date: str) -> int | None:
@@ -337,7 +459,7 @@ def _history_context(
     records = [record for record in (history or []) if isinstance(record, dict)] + [item]
     ordered = sorted(enumerate(records), key=lambda pair: (_date_key(pair[1]), pair[0]))
     points: list[dict[str, Any]] = []
-    previous_weight: float | None = None
+    previous_record: dict[str, Any] | None = None
     for order, record in ordered:
         weight = _number(_field(record, "weight_kg"))
         if weight is None or not 0.1 <= weight <= 60:
@@ -368,12 +490,8 @@ def _history_context(
             row_assessment = assessment if record is item and assessment is not None else assess_item(who_item)
         except (TypeError, ValueError, KeyError, IndexError, OverflowError):
             continue
-        explicit_gain = _weight_gain_status(record)
-        inferred_gain = None
-        if explicit_gain is not None:
-            inferred_gain = explicit_gain
-        elif previous_weight is not None:
-            inferred_gain = "N" if weight > previous_weight else "T"
+        inferred_gain = calculate_weight_gain_status(record, previous_record, age)
+        minimum_gain = minimum_weight_gain_grams(age)
         points.append(
             {
                 "date": _date_key(record),
@@ -382,9 +500,10 @@ def _history_context(
                 "weight": weight,
                 "assessment": row_assessment,
                 "weightGainStatus": inferred_gain,
+                "weightGainMinimumGrams": minimum_gain,
             }
         )
-        previous_weight = weight
+        previous_record = record
 
     points.sort(key=lambda point: (point["date"], point["order"]))
     current_point = next((point for point in reversed(points) if point["isCurrent"]), None)
@@ -447,6 +566,8 @@ def _history_context(
             "statuses": gain_statuses,
             "recent": recent_gain_statuses,
             "trailingNotRising": trailing_not_rising,
+            "current": current_point.get("weightGainStatus") if current_point else None,
+            "currentMinimumGrams": current_point.get("weightGainMinimumGrams") if current_point else None,
         },
     }
 
@@ -554,14 +675,25 @@ def nutrition_concern(
         follow_up.append("Tinjau riwayat ASI, PMBA, dan asupan saat ini bersama bidan atau Ahli Gizi untuk menyusun tindak lanjut yang sesuai.")
     elif asi["status"] == "Ya":
         education.append("Pertahankan pemberian ASI sesuai usia dan lanjutkan PMBA yang beragam setelah usia 6 bulan.")
-    elif asi["status"] == "Tidak konsisten":
-        follow_up.append("Riwayat ASI memiliki jawaban yang berbeda; verifikasi kembali catatan 0–6 bulan bersama tenaga kesehatan.")
+    elif asi["status"] == "Belum lengkap":
+        follow_up.append("Riwayat ASI 0–6 bulan belum lengkap; verifikasi kembali bulan yang belum tercatat bersama tenaga kesehatan.")
     else:
         follow_up.append("Lengkapi riwayat ASI eksklusif 0–6 bulan; status yang kosong tidak boleh disimpulkan sebagai Ya atau Tidak.")
 
+    # Add the reviewed Buku KIA feeding guidance to the problem-specific
+    # message.  The existing status-specific actions remain first so the
+    # material supports, rather than replaces, professional follow-up.
+    from . import guidance
+
+    feeding = guidance.feeding_guidance_for_problem(item)
+    problem_material = guidance.problem_guidance_for_statuses(statuses)
+    _append_unique(education, feeding.get("education", []))
+    _append_unique(follow_up, feeding.get("followUp", []))
+    _append_unique(education, problem_material.get("education", []))
+    _append_unique(follow_up, problem_material.get("followUp", []))
     history_education, history_follow_up = _history_summary_for_education(context)
-    education.extend(history_education)
-    follow_up.extend(history_follow_up)
+    _append_unique(education, history_education)
+    _append_unique(follow_up, history_follow_up)
     if severe:
         follow_up.insert(0, "Temuan berat memerlukan kunjungan segera ke Puskesmas; bila anak tampak sangat lemas, sulit bernapas, atau tidak mau minum, cari pertolongan darurat.")
     if not education:
@@ -581,6 +713,13 @@ def nutrition_concern(
             "weightGain": context.get("weightGain", {}),
             "historicalProblems": context.get("historicalProblems", {}),
         },
+        "ageGroup": feeding.get("ageGroup"),
+        "posterGuidance": feeding.get("posterGuidance"),
+        "matchedGuidance": problem_material.get("matched", []),
+        "sources": [
+            *feeding.get("sources", []),
+            *[source for source in problem_material.get("sources", []) if source not in feeding.get("sources", [])],
+        ],
         "exclusiveBreastfeeding": asi,
         "education": education,
         "followUp": follow_up,
@@ -859,6 +998,13 @@ def analyze_growth_graph(
     confidence = round(min(0.95, 0.3 + (0.1 * len(points)) + (0.05 * len(usable))), 4)
     context = _history_context(item, history, assessment)
     concern = nutrition_concern(assessment, item, history, context)
+    risk = predict_risks(assessment, anomaly_result, context) if concern is None else None
+    from . import guidance
+
+    graph_asi = _asi_context(item, history)
+    education = guidance.build_normal_education(
+        {**item, "_exclusive_breastfeeding_context": graph_asi}, risk, context
+    ) if risk is not None else None
     if len(points) < 2:
         summary = "Belum cukup riwayat untuk menyimpulkan arah grafik pertumbuhan."
     elif height_anomaly or any(value.get("trend") == "decreasing" for value in usable):
@@ -875,6 +1021,7 @@ def analyze_growth_graph(
         "recommendations": recommendations,
         "anomalies": anomaly_items,
         "nutritionConcern": concern,
+        "nutritionEducation": education,
         "historySignals": {
             "previousPoints": context.get("previousPoints", 0),
             "zScores": context.get("zScores", {}),
@@ -891,15 +1038,31 @@ def analyze_item(item: dict[str, Any], history: list[dict[str, Any]] | None = No
     assessment = assess_item(item)
     anomaly_result = detect_anomalies(item, history)
     context = _history_context(item, history, assessment)
+    asi = _asi_context(item, history)
+    current_point = context.get("currentPoint") or {}
     concern = nutrition_concern(assessment, item, history, context)
+    risk = predict_risks(assessment, anomaly_result, context) if concern is None else {
+        "suppressed": True,
+        "reason": "Status gizi sudah menunjukkan masalah; fokus dialihkan ke edukasi dan tindak lanjut.",
+    }
+    from . import guidance
+
+    education = guidance.build_normal_education(
+        {**item, "_exclusive_breastfeeding_context": asi}, risk, context
+    ) if concern is None else None
     return {
         **assessment,
         "anomaly": anomaly_result,
-        "risk": predict_risks(assessment, anomaly_result, context) if concern is None else {
-            "suppressed": True,
-            "reason": "Status gizi sudah menunjukkan masalah; fokus dialihkan ke edukasi dan tindak lanjut.",
-        },
+        "risk": risk,
         "nutrition_concern": concern,
+        "nutrition_education": education,
+        # These are computed from raw chronological records in Python.  The
+        # browser may retain legacy statusNaik/ASI fields, but they are not
+        # used as the source of truth.
+        "weight_gain_status": current_point.get("weightGainStatus"),
+        "weight_gain_minimum_grams": current_point.get("weightGainMinimumGrams"),
+        "exclusive_breastfeeding_status": asi.get("status"),
+        "exclusive_breastfeeding_context": asi,
         "history_signals": {
             "previousPoints": context.get("previousPoints", 0),
             "zScores": context.get("zScores", {}),

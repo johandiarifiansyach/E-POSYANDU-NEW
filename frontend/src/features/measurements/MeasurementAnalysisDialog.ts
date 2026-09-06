@@ -1,7 +1,8 @@
 // @ts-nocheck
 import Native from '../../runtime/dom';
-import { AlertTriangle, CheckCircle2, Loader2, TrendingUp, X } from '../../ui/icons';
+import { AlertTriangle, CheckCircle2, TrendingUp, X } from '../../ui/icons';
 import { Button } from '../../components';
+import { MeasurementAnalysisSkeleton } from '../../ui/skeleton';
 
 const RISK_LABELS = { underweight: 'Risiko underweight', stunting: 'Risiko stunting', wasting: 'Risiko wasting' };
 const RISK_COLORS = { tinggi: 'measurement-analysis-risk-high', sedang: 'measurement-analysis-risk-medium', rendah: 'measurement-analysis-risk-low' };
@@ -24,6 +25,30 @@ function score(value) {
   return Number.isFinite(number) ? number.toFixed(2).replace('.', ',') : '—';
 }
 
+function posterGuidanceBlock(poster, keyPrefix) {
+  if (!poster) return null;
+  const keyPoints = Array.isArray(poster.keyPoints) ? poster.keyPoints : [];
+  const portions = Array.isArray(poster.portionExamples) ? poster.portionExamples : [];
+  return Native.createElement('div', { className: 'measurement-analysis-poster' },
+    poster.asset && Native.createElement('img', {
+      className: 'measurement-analysis-poster-image',
+      src: poster.asset,
+      alt: poster.title || 'Poster Isi Piringku sesuai usia',
+      loading: 'lazy',
+      decoding: 'async',
+    }),
+    Native.createElement('div', { className: 'measurement-analysis-poster-copy' },
+      Native.createElement('strong', null, poster.title || 'Isi Piringku sesuai usia'),
+      keyPoints.length > 0 && Native.createElement('ul', null, keyPoints.map((value, index) => Native.createElement('li', { key: `${keyPrefix}-point-${index}` }, value))),
+      portions.length > 0 && Native.createElement('div', { className: 'measurement-analysis-poster-portions' },
+        Native.createElement('span', null, 'Contoh porsi dari poster'),
+        Native.createElement('ul', null, portions.map((value, index) => Native.createElement('li', { key: `${keyPrefix}-portion-${index}` }, value)))
+      ),
+      poster.sourceFile && Native.createElement('small', null, `Sumber: ${poster.sourceFile}`)
+    )
+  );
+}
+
 export default function MeasurementAnalysisDialog({ child, measurement, state, onClose, onOpenChart }) {
   const analysis = state?.result || {};
   const whoItem = analysis.item || {};
@@ -31,6 +56,7 @@ export default function MeasurementAnalysisDialog({ child, measurement, state, o
   const risk = analysis.risk || {};
   const predictions = risk.predictions || {};
   const concern = analysis.nutritionConcern || null;
+  const education = analysis.nutritionEducation || null;
   const pending = state?.status === 'loading';
   const failed = state?.status === 'error';
   return Native.createElement('div', {
@@ -54,14 +80,12 @@ export default function MeasurementAnalysisDialog({ child, measurement, state, o
         Native.createElement('button', { type: 'button', className: 'growth-chart-close', onClick: onClose, 'aria-label': 'Tutup analisis' }, Native.createElement(X, { className: 'h-5 w-5' }))
       ),
       Native.createElement('div', { className: 'growth-chart-body measurement-analysis-body' },
-        pending && Native.createElement('div', { className: 'measurement-analysis-pending', role: 'status' },
-          Native.createElement(Loader2, { className: 'h-5 w-5 animate-spin' }),
-          Native.createElement('span', null, 'Analisis pertumbuhan sedang diproses… hasil akan diperbarui otomatis.')
-        ),
+        pending && Native.createElement(MeasurementAnalysisSkeleton, null),
         failed && Native.createElement('div', { className: 'measurement-analysis-warning', role: 'status' },
           Native.createElement(AlertTriangle, { className: 'h-5 w-5' }),
           Native.createElement('span', null, state.error || 'Analisis pertumbuhan belum tersedia. Deteksi cepat tetap ditampilkan.')
         ),
+        !pending && Native.createElement(Native.Fragment, null,
         Native.createElement('section', { className: anomaly.detected ? 'measurement-analysis-card measurement-analysis-card-alert' : 'measurement-analysis-card measurement-analysis-card-ok' },
           Native.createElement('div', { className: 'measurement-analysis-card-heading' },
             anomaly.detected ? Native.createElement(AlertTriangle, { className: 'h-5 w-5' }) : Native.createElement(CheckCircle2, { className: 'h-5 w-5' }),
@@ -90,7 +114,7 @@ export default function MeasurementAnalysisDialog({ child, measurement, state, o
           Native.createElement('div', { className: 'measurement-analysis-who-grid' }, WHO_STATUS_FIELDS.map(([statusKey, label, scoreKey]) =>
             Native.createElement('div', { key: statusKey, className: 'measurement-analysis-who-item' },
               Native.createElement('span', null, label),
-              Native.createElement('strong', null, whoItem[statusKey] || (pending ? 'Menunggu…' : '—')),
+              Native.createElement('strong', null, whoItem[statusKey] || '—'),
               Native.createElement('small', null, `Skor-z: ${score(whoItem[scoreKey])}`)
             )
           ))
@@ -107,6 +131,13 @@ export default function MeasurementAnalysisDialog({ child, measurement, state, o
             concern.findings?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-findings' },
               concern.findings.map((finding, index) => Native.createElement('span', { key: `finding-${index}` }, `${finding.indicator}: ${finding.status}`))
             ),
+            concern.matchedGuidance?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list measurement-analysis-guidance-sources' },
+              Native.createElement('strong', null, 'Materi tatalaksana yang digunakan'),
+              Native.createElement('ul', null, concern.matchedGuidance.map((material, index) => Native.createElement('li', { key: `material-${index}` },
+                material.title || material.id || 'Panduan status gizi'
+              )))
+            ),
+            posterGuidanceBlock(concern.posterGuidance, 'problem-poster'),
             concern.education?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
               Native.createElement('strong', null, 'Edukasi singkat'),
               Native.createElement('ul', null, concern.education.map((value, index) => Native.createElement('li', { key: `education-${index}` }, value)))
@@ -130,10 +161,30 @@ export default function MeasurementAnalysisDialog({ child, measurement, state, o
             const level = String(prediction.level || 'menunggu').toLowerCase();
             return Native.createElement('div', { key, className: `measurement-analysis-risk ${RISK_COLORS[level] || ''}` },
               Native.createElement('span', null, label),
-              Native.createElement('strong', null, pending && !prediction.probability ? 'Menunggu…' : percent(prediction.probability)),
+              Native.createElement('strong', null, percent(prediction.probability)),
               Native.createElement('small', null, prediction.explanation || 'Model analisis pertumbuhan belum mengembalikan prediksi.')
             );
           }))
+        ),
+        !concern && education && Native.createElement('section', { className: 'measurement-analysis-card measurement-analysis-guidance' },
+          Native.createElement('div', { className: 'measurement-analysis-card-heading' },
+            Native.createElement(CheckCircle2, { className: 'h-5 w-5' }),
+            Native.createElement('div', null,
+              Native.createElement('h3', null, education.title || 'Edukasi mempertahankan pertumbuhan'),
+              Native.createElement('p', null, `${education.ageGroup || 'Sesuai usia'} • Sinyal skrining tertinggi ${Number.isFinite(Number(education.riskPercentage)) ? `${education.riskPercentage}%` : 'belum tersedia'} (${education.riskLevel || 'rendah'})`)
+            )
+          ),
+          posterGuidanceBlock(education.posterGuidance, 'normal-poster'),
+          education.education?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
+            Native.createElement('strong', null, 'Edukasi sesuai usia dan persentase skrining'),
+            Native.createElement('ul', null, education.education.map((value, index) => Native.createElement('li', { key: `normal-education-${index}` }, value)))
+          ),
+          education.followUp?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
+            Native.createElement('strong', null, 'Pemantauan'),
+            Native.createElement('ul', null, education.followUp.map((value, index) => Native.createElement('li', { key: `normal-follow-up-${index}` }, value)))
+          ),
+          education.disclaimer && Native.createElement('small', { className: 'measurement-analysis-guidance-disclaimer' }, education.disclaimer)
+        )
         )
       ),
       Native.createElement('footer', { className: 'growth-chart-actions' },

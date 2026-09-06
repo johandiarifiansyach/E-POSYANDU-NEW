@@ -12,6 +12,9 @@ documents are recorded as provenance only; they are not treated as labels.
 Exclusive breastfeeding is intentionally excluded from this baseline.  The
 model is kept generic for anthropometry-first Sigizi exports; ASI can be
 reintroduced later only after a validated, consistently keyed dataset exists.
+
+The bundled Buku KIA feeding corpus is added to the optional retrieval index.
+It is guidance provenance, not a training label or a generative model.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 
+TRAINING_DIR = Path(__file__).resolve().parent
 RANDOM_STATE = 20260831
 MODEL_VERSION = "growth-status-hgb-v1-candidate"
 
@@ -306,6 +310,73 @@ def extract_guideline_text_chunks(paths: list[Path]) -> list[dict[str, Any]]:
     return chunks
 
 
+def extract_guidance_corpus_chunks(paths: list[Path]) -> list[dict[str, Any]]:
+    """Flatten the reviewed JSON feeding corpus into auditable passages."""
+
+    chunks: list[dict[str, Any]] = []
+    for path in paths:
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        source_title = str(document.get("source", {}).get("title") or path.name)
+        for principle in document.get("universalPrinciples", []) or []:
+            text = str(principle.get("text") or "").strip()
+            if text:
+                chunks.append({
+                    "source": str(path),
+                    "page": ",".join(str(page) for page in principle.get("sourcePages", []) or []),
+                    "section": f"{source_title}: prinsip {principle.get('id', 'umum')}",
+                    "text": text,
+                })
+        for band in document.get("ageBands", []) or []:
+            band_label = str(band.get("label") or band.get("id") or "usia")
+            for kind in ("education", "followUp"):
+                for index, text_value in enumerate(band.get(kind, []) or [], 1):
+                    text = str(text_value or "").strip()
+                    if text:
+                        chunks.append({
+                            "source": str(path),
+                            "page": ",".join(str(page) for page in band.get("sourcePages", []) or []),
+                            "section": f"{source_title}: {band_label} {kind} {index}",
+                            "text": text,
+                        })
+            poster = band.get("poster") if isinstance(band.get("poster"), dict) else {}
+            for kind in ("keyPoints", "portionExamples"):
+                for index, text_value in enumerate(poster.get(kind, []) or [], 1):
+                    text = str(text_value or "").strip()
+                    if text:
+                        chunks.append({
+                            "source": str(path),
+                            "page": "poster",
+                            "section": f"{source_title}: {band_label} Isi Piringku {kind} {index}",
+                            "text": text,
+                        })
+        for problem in document.get("problemGuidance", []) or []:
+            problem_label = str(problem.get("title") or problem.get("id") or "status gizi")
+            matched_statuses = ", ".join(str(value) for value in problem.get("statusMatches", []) or [])
+            for kind in ("education", "followUp"):
+                for index, text_value in enumerate(problem.get(kind, []) or [], 1):
+                    text = str(text_value or "").strip()
+                    if text:
+                        chunks.append({
+                            "source": str(path),
+                            "page": "",
+                            "section": f"{source_title}: {problem_label} [{matched_statuses}] {kind} {index}",
+                            "text": text,
+                        })
+        for tier in document.get("riskTiers", []) or []:
+            text = str(tier.get("education") or "").strip()
+            if text:
+                chunks.append({
+                    "source": str(path),
+                    "page": "",
+                    "section": f"{source_title}: risiko {tier.get('label', tier.get('id', ''))}",
+                    "text": text,
+                })
+    return chunks
+
+
 def safe_metrics(y_true: np.ndarray, probabilities: np.ndarray, threshold: float = 0.5) -> dict[str, Any]:
     predictions = (probabilities >= threshold).astype(int)
     metrics: dict[str, Any] = {
@@ -393,7 +464,15 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
 
     guideline_paths = [Path(item).expanduser().resolve() for item in args.guideline]
     guideline_text_paths = [Path(item).expanduser().resolve() for item in args.guideline_text]
-    guidance_chunks = extract_guideline_chunks(guideline_paths) + extract_guideline_text_chunks(guideline_text_paths)
+    default_corpus = TRAINING_DIR.parent / "data" / "kia_2024_feeding_guidance.json"
+    corpus_paths = [Path(item).expanduser().resolve() for item in args.guidance_corpus]
+    if not corpus_paths and default_corpus.exists():
+        corpus_paths = [default_corpus]
+    guidance_chunks = (
+        extract_guideline_chunks(guideline_paths)
+        + extract_guideline_text_chunks(guideline_text_paths)
+        + extract_guidance_corpus_chunks(corpus_paths)
+    )
 
     artifact = {
         "modelVersion": MODEL_VERSION,
@@ -405,6 +484,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             "dataset": {"file": str(source), "sha256": sha256_file(source), "rows": int(len(frame)), "columns": list(frame.columns)},
             "guidelines": guideline_manifest(guideline_paths),
             "guidelineTextSources": [{"file": str(path), "sha256": sha256_file(path)} for path in guideline_text_paths],
+            "guidanceCorpora": [{"file": str(path), "sha256": sha256_file(path)} for path in corpus_paths],
             "split": {"strategy": "GroupShuffleSplit", "testSize": args.test_size, "randomState": RANDOM_STATE, "groupKey": "birthDate|sex (NIK/name anonymised)"},
             "targetsAreCurrentClassifications": True,
             "notForDiagnosis": True,
@@ -450,6 +530,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--guideline", action="append", default=[], help="Guideline PDF to record as provenance; may be repeated")
     parser.add_argument("--guideline-text", action="append", default=[], help="OCR text file with page markers; may be repeated")
+    parser.add_argument("--guidance-corpus", action="append", default=[], help="Reviewed JSON education corpus; bundled Buku KIA corpus is used by default")
     return parser.parse_args()
 
 

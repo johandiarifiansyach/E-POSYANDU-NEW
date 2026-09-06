@@ -4,8 +4,10 @@ export { ensureXlsx } from './xlsx';
 export { getDocsForExport } from '../api/exportApi';
 export { getSigiziMeasurementExport } from '../api/measurementApi';
 
-import { calculateGiziStatus, getAgeInMonths } from '../shared/dashboardUtils';
+import { getAgeInMonths } from '../shared/dashboardUtils';
+import { DEFAULT_AGE_GROUP, matchesAgeGroup } from '../config/ageFilters';
 import { maxWeeksForCategory } from '../features/pmt/pmtRules';
+import { pythonWeightGainStatus } from '../api/analysisApi';
 
 export function getSelectedMonthRange(month, year) {
   const numericMonth = Number(month);
@@ -14,6 +16,26 @@ export function getSelectedMonthRange(month, year) {
   const lastDay = new Date(Number(year), numericMonth, 0).getDate();
   const end = `${year}-${monthValue}-${String(lastDay).padStart(2, '0')}`;
   return { start, end };
+}
+
+/**
+ * Build a predictable, filesystem-safe export name using the active location
+ * scope.  A selected posyandu is more specific than a desa, while an empty
+ * scope represents all locations.
+ */
+export function getScopedExportFilename({ prefix, month, year, desa, posyandu }) {
+  const sanitizePart = (value) => String(value ?? '')
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const parts = [sanitizePart(prefix) || 'Export'];
+  const safePosyandu = sanitizePart(posyandu);
+  const safeDesa = sanitizePart(desa);
+
+  if (safePosyandu) parts.push(safePosyandu);
+  if (safeDesa) parts.push(safeDesa);
+  parts.push(sanitizePart(month) || 'Bulan', sanitizePart(year) || 'Tahun');
+  return `${parts.join('_')}.xls`;
 }
 
 export function toDateValue(value) {
@@ -65,6 +87,11 @@ export function filterChildrenByAgeRange(children, minimumAge, maximumAge, refer
   });
 }
 
+/** Apply the same named age cohort used by the table/dashboard filter. */
+export function filterChildrenByAgeGroup(children, ageGroup = DEFAULT_AGE_GROUP, referenceDate = new Date()) {
+  return (children || []).filter((child) => !child?.deletedAt && matchesAgeGroup(child, ageGroup, referenceDate));
+}
+
 export async function fetchExportDocuments({
   resource,
   dateField,
@@ -98,14 +125,13 @@ export async function fetchExportDocuments({
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
-export async function fetchExportChildren({ currentFilterDate, options = {}, ...context }) {
+export async function fetchExportChildren({ currentFilterDate, ageGroup = DEFAULT_AGE_GROUP, options = {}, ...context }) {
   const children = await fetchExportDocuments({ resource: 'children', options, ...context });
-  return filterChildrenByAgeRange(children, 0, 59, currentFilterDate);
+  return filterChildrenByAgeGroup(children, ageGroup, currentFilterDate);
 }
 
 export function getMeasurementStatusesForExport(child, measurement, referenceDate, pythonStatus = null) {
-  const date = measurement?.tglUkur ? new Date(measurement.tglUkur) : referenceDate;
-  const age = getAgeInMonths(child?.tglLahir, date);
+  const age = pythonStatus?.ageInMonths ?? measurement?.ageInMonths ?? child?.ageInMonths ?? '-';
   if (pythonStatus) {
     return {
       age,
@@ -115,17 +141,23 @@ export function getMeasurementStatusesForExport(child, measurement, referenceDat
       statusImtu: pythonStatus.imtuStatus,
     };
   }
+  // Never recreate WHO rules in the browser.  A missing Python result is
+  // represented explicitly so exports cannot silently mix two calculators.
   return {
     age,
-    statusBbu: calculateGiziStatus(measurement?.bb, 'BBU', age, child?.jk),
-    statusTbu: calculateGiziStatus(measurement?.tb, 'TBU', age, child?.jk, null, measurement?.caraUkur),
-    statusBbtb: calculateGiziStatus(measurement?.bb, 'BBTB', age, child?.jk, measurement?.tb, measurement?.caraUkur),
-    statusImtu: calculateGiziStatus(measurement?.bb, 'IMTU', age, child?.jk, measurement?.tb, measurement?.caraUkur),
+    statusBbu: '-',
+    statusTbu: '-',
+    statusBbtb: '-',
+    statusImtu: '-',
+    pythonRequired: true,
   };
 }
 
 export function filterChildrenForExportTab(activeTab, children, measurementsByChild, referenceDate, pythonStatuses = {}) {
-  if (activeTab === 'problem_tidak_naik') return (children || []).filter((child) => measurementsByChild[child.id]?.statusNaik === 'T');
+  if (activeTab === 'problem_tidak_naik') return (children || []).filter((child) => {
+    const measurement = measurementsByChild[child.id];
+    return pythonWeightGainStatus(pythonStatuses[String(child.id)]) === 'T';
+  });
   const criteria = {
     problem_underweight: ['BBU', ['Berat Sangat Kurang', 'Berat Kurang']],
     problem_stunting: ['TBU', ['Sangat Pendek', 'Pendek']],
@@ -288,8 +320,13 @@ export const TABLE_EXPORT_HEADERS = [
   'Status PB/TB-U', 'Status BB/PB atau BB/TB', 'Status IMT/U',
 ];
 
-export function getTableExportRows({ activeTab, children, measurementsByChild, referenceDate, sortData = (items) => items, pythonStatuses = {} }) {
-  const exportChildren = filterChildrenForExportTab(activeTab, children, measurementsByChild, referenceDate, pythonStatuses);
+export function getTableExportRows({ activeTab, children, measurementsByChild, referenceDate, sortData = (items) => items, pythonStatuses = {}, pythonFiltered = false }) {
+  // Problem/data tabs are already filtered and paginated by the Python
+  // dataset operation. Keep the legacy helper for callers with raw data, but
+  // never re-run a browser-side status filter for a Python response.
+  const exportChildren = pythonFiltered
+    ? (children || [])
+    : filterChildrenForExportTab(activeTab, children, measurementsByChild, referenceDate, pythonStatuses);
   return sortData(exportChildren).map((child, index) => {
     if (!child?.id) return [];
     const measurement = measurementsByChild[child.id];
@@ -308,7 +345,7 @@ export function getTableExportRows({ activeTab, children, measurementsByChild, r
       measurement?.tb || '-',
       measurement?.lila || '-',
       measurement?.lk || '-',
-      measurement?.statusNaik || '-',
+      pythonWeightGainStatus(pythonStatuses[String(child.id)]) || '-',
       statuses.statusBbu,
       statuses.statusTbu,
       statuses.statusBbtb,

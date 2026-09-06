@@ -1182,6 +1182,8 @@
 
 .growth-chart-python-svg {
   width: 100%;
+  aspect-ratio: 1200 / 760;
+  min-height: 240px;
   margin-top: 14px;
   overflow: hidden;
   border: 1px solid #e4e7ec;
@@ -1193,6 +1195,7 @@
   display: block;
   width: 100%;
   height: auto;
+  aspect-ratio: 1200 / 760;
 }
 
 .growth-chart-python-loading,
@@ -1406,6 +1409,138 @@
   background: #eff8ff;
 }
 
+/* Python-owned analysis is loaded progressively. Keep the raw measurement
+ * and dialog layout stable while derived values are materialized. */
+.measurement-analysis-skeleton {
+  display: grid;
+  gap: 12px;
+}
+
+.measurement-analysis-skeleton-banner,
+.measurement-analysis-skeleton-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.measurement-analysis-skeleton-banner {
+  min-height: 49px;
+  padding: 11px 13px;
+  border: 1px solid #b2ddff;
+  border-radius: 12px;
+  background: #eff8ff;
+}
+
+.measurement-analysis-skeleton-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  border-radius: 50%;
+}
+
+.measurement-analysis-skeleton-copy {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+}
+
+.measurement-analysis-skeleton-line {
+  height: 10px;
+  border-radius: 5px;
+}
+
+.measurement-analysis-skeleton-line-wide { width: min(100%, 360px); }
+.measurement-analysis-skeleton-line-medium { width: min(100%, 220px); }
+.measurement-analysis-skeleton-line-short { width: min(100%, 110px); }
+
+.measurement-analysis-skeleton-card {
+  background: #fbfdff;
+}
+
+.measurement-analysis-skeleton-heading-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  border-radius: 50%;
+}
+
+.measurement-analysis-skeleton-item {
+  min-height: 85px;
+}
+
+.measurement-analysis-skeleton-value {
+  width: min(100%, 90px);
+  height: 16px;
+  border-radius: 6px;
+}
+
+.measurement-analysis-skeleton-risk-value {
+  width: 54px;
+  height: 20px;
+  border-radius: 7px;
+}
+
+.measurement-analysis-skeleton-guidance {
+  display: grid;
+  gap: 10px;
+  min-height: 110px;
+}
+
+.growth-chart-analysis-skeleton {
+  display: grid;
+  gap: 12px;
+}
+
+.growth-chart-analysis-skeleton-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.growth-chart-analysis-skeleton-confidence {
+  width: 88px;
+  height: 25px;
+  flex: 0 0 88px;
+  border-radius: 999px;
+}
+
+.growth-chart-analysis-skeleton-summary {
+  width: min(100%, 520px);
+  height: 12px;
+  border-radius: 6px;
+}
+
+.growth-chart-analysis-skeleton-indicator {
+  display: grid;
+  gap: 9px;
+}
+
+.growth-chart-python-skeleton {
+  display: grid;
+  gap: 12px;
+  align-content: center;
+  min-height: 360px;
+  padding: 20px;
+}
+
+.growth-chart-python-skeleton-plot {
+  width: 100%;
+  height: 300px;
+  border-radius: 14px;
+}
+
+.growth-chart-python-skeleton-caption {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+}
+
+.growth-chart-python-skeleton-caption .measurement-analysis-skeleton-line {
+  height: 9px;
+}
+
 .measurement-analysis-warning {
   color: #b54708;
   background: #fffaeb;
@@ -1431,6 +1566,63 @@
 .measurement-analysis-guidance {
   display: grid;
   gap: 12px;
+}
+
+.measurement-analysis-poster {
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  margin-left: 30px;
+  padding: 10px;
+  border: 1px solid #d0d5dd;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.measurement-analysis-poster-image {
+  display: block;
+  width: 100%;
+  max-height: 270px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.measurement-analysis-poster-copy {
+  display: grid;
+  gap: 6px;
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.measurement-analysis-poster-copy > strong {
+  color: #1d2939;
+  font-size: 13px;
+}
+
+.measurement-analysis-poster-copy ul {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 0 17px;
+  padding: 0;
+}
+
+.measurement-analysis-poster-portions {
+  display: grid;
+  gap: 3px;
+}
+
+.measurement-analysis-poster-portions > span {
+  color: #344054;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.measurement-analysis-poster-copy small {
+  color: #667085;
+  font-size: 10px;
 }
 
 .measurement-analysis-guidance-findings {
@@ -1647,8 +1839,26 @@
     margin-left: 0;
   }
 
+  .measurement-analysis-poster {
+    grid-template-columns: minmax(0, 1fr);
+    margin-left: 0;
+  }
+
+  .measurement-analysis-poster-image {
+    max-height: 360px;
+  }
+
   .measurement-analysis-who-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .growth-chart-python-skeleton {
+    min-height: 260px;
+    padding: 12px;
+  }
+
+  .growth-chart-python-skeleton-plot {
+    height: 210px;
   }
 
   .measurement-live-status-heading {

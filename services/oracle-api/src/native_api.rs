@@ -360,6 +360,44 @@ fn scoped_value(scope: &AccessScope, selected: Option<&str>, village: bool) -> O
     }
 }
 
+// Keep native fallback reads on the same versioned Python materialization as
+// the operations service. The gateway must not calculate clinical values on
+// the request path when the materialized projection is unavailable.
+fn dashboard_scope_key(village: Option<&str>, posyandu: Option<&str>) -> String {
+    match (
+        village.map(str::trim).filter(|value| !value.is_empty()),
+        posyandu.map(str::trim).filter(|value| !value.is_empty()),
+    ) {
+        (None, None) => "global".to_owned(),
+        (village, posyandu) => format!("{}/{}", village.unwrap_or("-"), posyandu.unwrap_or("-")),
+    }
+}
+
+fn dashboard_cache_key(
+    scope_key: &str,
+    month_start: &str,
+    month_end: &str,
+    previous_month_start: &str,
+    previous_month_end: &str,
+    age_group: &str,
+) -> String {
+    format!(
+        "dashboard:v3|{scope_key}|{month_start}|{month_end}|{previous_month_start}|{previous_month_end}|age:{age_group}"
+    )
+}
+
+fn valid_age_group(value: &str) -> bool {
+    matches!(
+        value,
+        "0-59" | "newborn" | "newborn_premature" | "0-5" | "6" | "0-11"
+            | "0-23" | "6-11" | "6-23" | "12-23" | "6-59" | "12-59" | "24-59"
+    )
+}
+
+fn valid_exclusive_breastfeeding_age_group(value: &str) -> bool {
+    matches!(value, "0-5" | "6")
+}
+
 fn text(value: Option<&Value>) -> String {
     match value {
         Some(Value::String(value)) => value.clone(),
@@ -1360,6 +1398,10 @@ impl NativeApi {
         self.cache.is_some()
     }
 
+    pub(crate) fn cache_handle(&self) -> Option<NativeCache> {
+        self.cache.clone()
+    }
+
     pub(crate) async fn cache_ready(&self) -> bool {
         match self.cache.as_ref() {
             Some(cache) => cache.ready().await,
@@ -1412,8 +1454,7 @@ impl NativeApi {
                     | "/api/v1/exports/sigizi-measurements"
                     | "/api/v1/children/page"
                     | "/api/v1/exclusive-breastfeeding/page"
-            )
-                || path.starts_with("/api/v1/collections/")
+            ) || path.starts_with("/api/v1/collections/")
                 || (path.starts_with("/api/v1/jobs/") && !path.ends_with("/file")));
         let write = self.writes_enabled
             && ((path == "/api/v1/sync" && request.method() == Method::POST)
@@ -1462,7 +1503,10 @@ impl NativeApi {
                 let (code, message) = if status == StatusCode::UNAUTHORIZED {
                     ("unauthorized", "Sesi masuk diperlukan.")
                 } else {
-                    ("auth_unavailable", "Sesi belum dapat diverifikasi. Silakan coba lagi.")
+                    (
+                        "auth_unavailable",
+                        "Sesi belum dapat diverifikasi. Silakan coba lagi.",
+                    )
                 };
                 ApiError::new(status, code, message)
             })?;
@@ -1543,17 +1587,24 @@ impl NativeApi {
             ));
         }
         let (request_id, idempotency_key) = mutation_metadata(&headers)?;
-        let session = self.auth.authorize(headers.clone()).await.map_err(|response| {
-            // Keep service/database failures distinguishable from an expired
-            // cookie so one busy request cannot force a logout in the UI.
-            let status = response.status();
-            let (code, message) = if status == StatusCode::UNAUTHORIZED {
-                ("unauthorized", "Sesi masuk diperlukan.")
-            } else {
-                ("auth_unavailable", "Sesi belum dapat diverifikasi. Silakan coba lagi.")
-            };
-            ApiError::new(status, code, message)
-        })?;
+        let session = self
+            .auth
+            .authorize(headers.clone())
+            .await
+            .map_err(|response| {
+                // Keep service/database failures distinguishable from an expired
+                // cookie so one busy request cannot force a logout in the UI.
+                let status = response.status();
+                let (code, message) = if status == StatusCode::UNAUTHORIZED {
+                    ("unauthorized", "Sesi masuk diperlukan.")
+                } else {
+                    (
+                        "auth_unavailable",
+                        "Sesi belum dapat diverifikasi. Silakan coba lagi.",
+                    )
+                };
+                ApiError::new(status, code, message)
+            })?;
         if session.scope.access_mode != "write" {
             return Err(ApiError::new(
                 StatusCode::FORBIDDEN,
@@ -1776,32 +1827,40 @@ impl NativeApi {
             .next()
             .and_then(|value| Uuid::parse_str(value).ok())
             .map(|value| value.to_string())
-            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "Job tidak ditemukan."))?;
+            .ok_or_else(|| {
+                ApiError::new(StatusCode::NOT_FOUND, "not_found", "Job tidak ditemukan.")
+            })?;
         let file_upload = parts.next() == Some("file");
         if parts.next().is_some() {
-            return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "Job tidak ditemukan."));
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "Job tidak ditemukan.",
+            ));
         }
 
         let job_id = id.clone();
         let fetch = |include_payload: bool| {
             let job_id = job_id.clone();
             async move {
-            let select = if include_payload {
-                "id,kind,status,progress,owner_user_id,actor_role,village,posyandu,idempotency_key,request_id,payload,result,error,object_key,file_name,content_type,size_bytes,created_at,updated_at,started_at,completed_at,expires_at"
-            } else {
-                "id,kind,status,progress,owner_user_id,result,error,object_key,file_name,content_type,size_bytes,created_at,updated_at,started_at,completed_at,expires_at"
-            };
-            let parameters = vec![
-                ("select".into(), select.into()),
-                ("id".into(), format!("eq.{job_id}")),
-                ("limit".into(), "1".into()),
-            ];
-            let (payload, _) = self.rest_get("background_jobs", &parameters, false).await?;
-            payload
-                .as_array()
-                .and_then(|rows| rows.first())
-                .cloned()
-                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "Job tidak ditemukan."))
+                let select = if include_payload {
+                    "id,kind,status,progress,owner_user_id,actor_role,village,posyandu,idempotency_key,request_id,payload,result,error,object_key,file_name,content_type,size_bytes,created_at,updated_at,started_at,completed_at,expires_at"
+                } else {
+                    "id,kind,status,progress,owner_user_id,result,error,object_key,file_name,content_type,size_bytes,created_at,updated_at,started_at,completed_at,expires_at"
+                };
+                let parameters = vec![
+                    ("select".into(), select.into()),
+                    ("id".into(), format!("eq.{job_id}")),
+                    ("limit".into(), "1".into()),
+                ];
+                let (payload, _) = self.rest_get("background_jobs", &parameters, false).await?;
+                payload
+                    .as_array()
+                    .and_then(|rows| rows.first())
+                    .cloned()
+                    .ok_or_else(|| {
+                        ApiError::new(StatusCode::NOT_FOUND, "not_found", "Job tidak ditemukan.")
+                    })
             }
         };
 
@@ -1863,7 +1922,9 @@ impl NativeApi {
                 .as_array()
                 .and_then(|rows| rows.first())
                 .cloned()
-                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "Job tidak ditemukan."))?;
+                .ok_or_else(|| {
+                    ApiError::new(StatusCode::NOT_FOUND, "not_found", "Job tidak ditemukan.")
+                })?;
             // Keep the transition visible to realtime subscribers even though
             // this request has no browser session context.
             if previous_status != status {
@@ -3010,10 +3071,63 @@ impl NativeApi {
                 "Koleksi data tidak ditemukan.",
             )
         })?;
+        if resource == Resource::ChangeLogs && parts.len() == 1 && query.contains_key("ageGroup") {
+            return self.change_history_page(scope, query, pairs).await;
+        }
         if parts.len() == 2 {
             return self.collection_get(scope, resource, parts[1]).await;
         }
         self.collection_list(scope, resource, query, pairs).await
+    }
+
+    async fn change_history_page(
+        &self,
+        scope: &AccessScope,
+        query: &BTreeMap<String, String>,
+        pairs: &[(String, String)],
+    ) -> Result<Value, ApiError> {
+        let age_group = value(query, "ageGroup").unwrap_or("0-59");
+        if !valid_age_group(age_group) {
+            return Err(ApiError::validation("Kelompok umur tidak valid."));
+        }
+        let as_of = value(query, "asOf").map(ToOwned::to_owned).unwrap_or_else(|| {
+            // A missing report date is only a rolling-migration safeguard;
+            // the frontend always sends the selected month end.
+            time::OffsetDateTime::now_utc().date().to_string()
+        });
+        if !is_date(&as_of) {
+            return Err(ApiError::validation("Periode riwayat perubahan tidak valid."));
+        }
+        let page = positive_integer(query, "page", 1, 1_000_000)?;
+        let size = positive_integer(query, "size", 10, 50)?;
+        if value(query, "search").is_some_and(|search| search.chars().count() > 80) {
+            return Err(ApiError::validation("Pencarian terlalu panjang."));
+        }
+        let result = self
+            .database
+            .rpc(
+                "eposyandu_change_history_page",
+                json!({
+                    "p_as_of": as_of,
+                    "p_page": page,
+                    "p_size": size,
+                    "p_age_group": age_group,
+                    "p_search": value(query, "search"),
+                    "p_village": scoped_value(scope, value(query, "village"), true),
+                    "p_posyandu": scoped_value(scope, value(query, "posyandu"), false),
+                    "p_role": database_scope_role(&scope.role),
+                    "p_scope_village": scope.desa,
+                    "p_scope_posyandu": scope.posyandu,
+                }),
+            )
+            .await;
+        match result {
+            Ok(value) => Ok(value),
+            // Keep rolling deployments readable until migration 039 reaches
+            // this instance. The legacy collection path is still scoped by
+            // PostgreSQL RLS; it simply cannot apply the new age cohort.
+            Err(_) => self.collection_list(scope, Resource::ChangeLogs, query, pairs).await,
+        }
     }
 
     async fn collection_get(
@@ -3204,9 +3318,14 @@ impl NativeApi {
             "Periode data balita tidak valid.",
         )?;
         let end = date_value(query, "measurementEnd", "Periode data balita tidak valid.")?;
+        let requested_age_group = value(query, "ageGroup").unwrap_or("0-59");
+        if !valid_age_group(requested_age_group) {
+            return Err(ApiError::validation("Kelompok umur tidak valid."));
+        }
         let page = positive_integer(query, "page", 1, 1_000_000)?;
         let size = positive_integer(query, "size", 10, 50)?;
         let view = value(query, "view").unwrap_or("data");
+        let age_group = if view == "mpasi" { "6-23" } else { requested_age_group };
         let sort = value(query, "sort").unwrap_or("recent");
         if !matches!(
             sort,
@@ -3219,12 +3338,39 @@ impl NativeApi {
         }
         let village = scoped_value(scope, value(query, "village"), true);
         let posyandu = scoped_value(scope, value(query, "posyandu"), false);
+        // Python persists the authoritative status/NTOB/ASI projection. Use
+        // it directly for every child view; the old SQL page remains only as
+        // a rolling-migration fallback when function 037 is not installed.
+        if let Ok(value) = self
+            .rpc(
+                "eposyandu_materialized_children_page",
+                json!({
+                    "p_as_of": as_of,
+                    "p_measurement_start": start,
+                    "p_measurement_end": end,
+                    "p_page": page,
+                    "p_size": size,
+                    "p_sort": sort,
+                    "p_view": view,
+                    "p_age_group": age_group,
+                    "p_search": value(query, "search"),
+                    "p_village": village,
+                    "p_posyandu": posyandu,
+                    "p_role": database_scope_role(&scope.role),
+                    "p_scope_village": scope.desa,
+                    "p_scope_posyandu": scope.posyandu
+                }),
+            )
+            .await
+        {
+            return Ok(value);
+        }
         let (rpc, payload) = if matches!(
             view,
             "problem_underweight" | "problem_stunting" | "problem_wasting" | "problem_tidak_naik"
         ) {
             (
-                "eposyandu_problem_children_page",
+            "eposyandu_problem_children_page_legacy",
                 json!({
                     "p_month_start": start,
                     "p_month_end": end,
@@ -3254,6 +3400,7 @@ impl NativeApi {
                     "p_size": size,
                     "p_sort": sort,
                     "p_view": view,
+                    "p_age_group": age_group,
                     "p_search": value(query, "search"),
                     "p_village": village,
                     "p_posyandu": posyandu,
@@ -3282,8 +3429,28 @@ impl NativeApi {
             "Parameter ASI eksklusif tidak valid.",
         )?;
         let age_group = required_value(query, "ageGroup", "Parameter ASI eksklusif tidak valid.")?;
-        if !matches!(age_group, "0-5" | "6") {
+        if !valid_exclusive_breastfeeding_age_group(age_group) {
             return Err(ApiError::validation("Parameter ASI eksklusif tidak valid."));
+        }
+        if let Ok(value) = self
+            .rpc(
+                "eposyandu_materialized_exclusive_breastfeeding_page",
+                json!({
+                    "p_measurement_start": start,
+                    "p_measurement_end": end,
+                    "p_age_group": age_group,
+                    "p_page": positive_integer(query, "page", 1, 1_000_000)?,
+                    "p_size": positive_integer(query, "size", 10, 50)?,
+                    "p_village": scoped_value(scope, value(query, "village"), true),
+                    "p_posyandu": scoped_value(scope, value(query, "posyandu"), false),
+                    "p_role": database_scope_role(&scope.role),
+                    "p_scope_village": scope.desa,
+                    "p_scope_posyandu": scope.posyandu
+                }),
+            )
+            .await
+        {
+            return Ok(value);
         }
         self.rpc(
             "eposyandu_exclusive_breastfeeding_page",
@@ -3309,21 +3476,57 @@ impl NativeApi {
         query: &BTreeMap<String, String>,
     ) -> Result<Value, ApiError> {
         let invalid = "Periode dashboard tidak valid.";
-        self.rpc(
-            "eposyandu_dashboard_stats",
-            json!({
-                "p_month_start": date_value(query, "monthStart", invalid)?,
-                "p_month_end": date_value(query, "monthEnd", invalid)?,
-                "p_previous_month_start": date_value(query, "previousMonthStart", invalid)?,
-                "p_previous_month_end": date_value(query, "previousMonthEnd", invalid)?,
-                "p_village": scoped_value(scope, value(query, "village"), true),
-                "p_posyandu": scoped_value(scope, value(query, "posyandu"), false),
-                "p_role": database_scope_role(&scope.role),
-                "p_scope_village": scope.desa,
-                "p_scope_posyandu": scope.posyandu
-            }),
-        )
-        .await
+        let month_start = date_value(query, "monthStart", invalid)?;
+        let month_end = date_value(query, "monthEnd", invalid)?;
+        let previous_month_start = date_value(query, "previousMonthStart", invalid)?;
+        let previous_month_end = date_value(query, "previousMonthEnd", invalid)?;
+        let age_group = value(query, "ageGroup").unwrap_or("0-59");
+        if !valid_age_group(age_group) {
+            return Err(ApiError::validation("Kelompok umur tidak valid."));
+        }
+        let village = scoped_value(scope, value(query, "village"), true);
+        let posyandu = scoped_value(scope, value(query, "posyandu"), false);
+        let scope_key = dashboard_scope_key(village.as_deref(), posyandu.as_deref());
+        let snapshot = self
+            .rpc(
+                "eposyandu_dashboard_snapshot",
+                json!({
+                    "p_cache_key": dashboard_cache_key(
+                        &scope_key,
+                        &month_start,
+                        &month_end,
+                        &previous_month_start,
+                        &previous_month_end,
+                        age_group,
+                    ),
+                    "p_scope_key": scope_key,
+                    "p_month_start": month_start,
+                    "p_month_end": month_end,
+                    "p_previous_month_start": previous_month_start,
+                    "p_previous_month_end": previous_month_end,
+                    "p_age_group": age_group,
+                    "p_village": village,
+                    "p_posyandu": posyandu,
+                }),
+            )
+            .await
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "analysis_pending",
+                    "Analisis dashboard Python belum tersedia.",
+                )
+            })?;
+        if snapshot.get("hit").and_then(Value::as_bool) == Some(true)
+            && let Some(result) = snapshot.get("result").cloned()
+        {
+            return Ok(result);
+        }
+        Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "analysis_pending",
+            "Analisis dashboard Python sedang diproses. Silakan coba lagi.",
+        ))
     }
 
     async fn sigizi_export(
@@ -3332,6 +3535,10 @@ impl NativeApi {
         query: &BTreeMap<String, String>,
     ) -> Result<Value, ApiError> {
         let invalid = "Periode ekspor pengukuran tidak valid.";
+        let age_group = value(query, "ageGroup").unwrap_or("0-59");
+        if !valid_age_group(age_group) {
+            return Err(ApiError::validation("Kelompok umur ekspor tidak valid."));
+        }
         self.rpc(
             "eposyandu_sigizi_measurement_export",
             json!({
@@ -3341,7 +3548,8 @@ impl NativeApi {
                 "p_posyandu": scoped_value(scope, value(query, "posyandu"), false),
                 "p_role": database_scope_role(&scope.role),
                 "p_scope_village": scope.desa,
-                "p_scope_posyandu": scope.posyandu
+                "p_scope_posyandu": scope.posyandu,
+                "p_age_group": age_group
             }),
         )
         .await

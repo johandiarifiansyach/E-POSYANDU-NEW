@@ -1,5 +1,6 @@
-// Child measurement reads that remain available through the authenticated
-// Supabase fallback when the edge API is temporarily unavailable.
+// Child measurement history is read through the authenticated Python-backed
+// page API. This helper only assembles returned records for the UI; it does
+// not calculate WHO, N/T/O/B, ASI, risk, or trend values locally.
 // @ts-nocheck
 import { getChildrenPage } from '../api/childrenApi';
 
@@ -22,7 +23,12 @@ function previousDate(value) {
   return dateOnly(date);
 }
 
-export async function fetchChildMeasurementHistory(child, referenceDate = new Date(), readPage = getChildrenPage) {
+export async function fetchChildMeasurementHistory(
+  child,
+  referenceDate = new Date(),
+  readPage = getChildrenPage,
+  options = {},
+) {
   const birthDate = String(child?.tglLahir || '').slice(0, 10);
   const asOf = dateOnly(referenceDate);
   if (!child?.id || !birthDate || !asOf) return [];
@@ -34,7 +40,10 @@ export async function fetchChildMeasurementHistory(child, referenceDate = new Da
   // Each page request returns the latest measurement inside the requested
   // range. Moving the end date backwards retrieves the complete chronology
   // with one request per recorded weighing, instead of one request per month.
-  for (let attempt = 0; attempt < 72 && measurementEnd >= birthDate; attempt += 1) {
+  const maxRecords = Number.isFinite(Number(options?.maxRecords))
+    ? Math.max(1, Math.floor(Number(options.maxRecords)))
+    : 72;
+  for (let attempt = 0; attempt < 72 && history.length < maxRecords && measurementEnd >= birthDate; attempt += 1) {
     const response = await readPage({
       asOf,
       measurementStart: birthDate,

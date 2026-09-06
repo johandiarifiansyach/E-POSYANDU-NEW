@@ -2,6 +2,7 @@
 import Native from '../runtime/dom';
 import { Clock, ChevronDown, Filter, MapPin, RotateCcw } from './icons';
 import { DATA_WILAYAH, isFullAccessRole, MONTHS, ROLES, YEARS } from '../config/dashboard';
+import { AGE_GROUP_OPTIONS, DEFAULT_AGE_GROUP } from '../config/ageFilters';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
 import { Badge, KenaikanBadge, StatusBadge } from '../components/Badge';
@@ -17,7 +18,24 @@ export const InputGroup = ({ label, children, error }) => Native.createElement("
     children,
     error && Native.createElement("p", { className: "text-xs text-rose-500" }, error));
 
-export const LocationFilterPanel = ({ draftDesa, draftPosyandu, filterMonth, filterYear, onApply, onReset, role, setDraftDesa, setDraftPosyandu, setFilterMonth, setFilterYear, user }) => {
+export const LocationFilterPanel = ({ draftDesa, draftPosyandu, filterMonth, filterYear, ageGroup = DEFAULT_AGE_GROUP, ageGroupOptions = AGE_GROUP_OPTIONS, onApply, onReset, role, setAgeGroup, setDraftDesa, setDraftPosyandu, setFilterMonth, setFilterYear, user, showAgeGroupFilter = true }) => {
+    const availableAgeGroupOptions = ageGroupOptions?.length ? ageGroupOptions : AGE_GROUP_OPTIONS;
+    const selectedAgeGroup = availableAgeGroupOptions.some((option) => option.value === ageGroup)
+        ? ageGroup
+        : availableAgeGroupOptions[0].value;
+    const notifyFilterContext = (nextAgeGroup = selectedAgeGroup, nextMonth = filterMonth, nextYear = filterYear) => {
+        if (typeof window === 'undefined') return;
+        const filterDate = new Date(nextYear, nextMonth, 0);
+        window.__ePosyanduAgeGroup = nextAgeGroup;
+        window.__ePosyanduFilterDate = filterDate.toISOString();
+        window.dispatchEvent(new CustomEvent('e-posyandu-filter-context-change', {
+            detail: { ageGroup: nextAgeGroup, filterDate: filterDate.toISOString() }
+        }));
+    };
+    if (typeof window !== 'undefined') {
+        window.__ePosyanduAgeGroup = ageGroup;
+        window.__ePosyanduFilterDate = new Date(filterYear, filterMonth, 0).toISOString();
+    }
     const isGizi = isFullAccessRole(role);
     const hasLocationFilter = role !== ROLES.KADER;
     const activeDesa = isGizi ? draftDesa : (user.desa || '');
@@ -28,9 +46,12 @@ export const LocationFilterPanel = ({ draftDesa, draftPosyandu, filterMonth, fil
                 Native.createElement("span", { className: "apple-symbol-tile apple-symbol-tile-blue", "aria-hidden": "true" }, Native.createElement(Clock, { className: "h-4 w-4" })),
                 Native.createElement("span", null, "Periode Data")),
             Native.createElement("div", { className: "ios-scope-period-control glass-control" },
-                Native.createElement("select", { value: filterMonth, onChange: (event) => setFilterMonth(parseInt(event.target.value)), className: "period-select", "aria-label": "Pilih bulan" }, MONTHS.map((month, index) => Native.createElement("option", { key: month, value: index + 1 }, month))),
+                Native.createElement("select", { value: filterMonth, onChange: (event) => { const value = parseInt(event.target.value); setFilterMonth(value); notifyFilterContext(ageGroup, value, filterYear); }, className: "period-select", "aria-label": "Pilih bulan" }, MONTHS.map((month, index) => Native.createElement("option", { key: month, value: index + 1 }, month))),
                 Native.createElement("span", { className: "ios-scope-period-divider", "aria-hidden": "true" }),
-                Native.createElement("select", { value: filterYear, onChange: (event) => setFilterYear(parseInt(event.target.value)), className: "period-select period-year", "aria-label": "Pilih tahun" }, YEARS.map((year) => Native.createElement("option", { key: year, value: year }, year)))),
+                Native.createElement("select", { value: filterYear, onChange: (event) => { const value = parseInt(event.target.value); setFilterYear(value); notifyFilterContext(ageGroup, filterMonth, value); }, className: "period-select period-year", "aria-label": "Pilih tahun" }, YEARS.map((year) => Native.createElement("option", { key: year, value: year }, year)))),
+            showAgeGroupFilter && Native.createElement("label", { className: "ios-scope-age-control glass-control" },
+                Native.createElement("span", { className: "sr-only" }, "Kelompok umur"),
+                Native.createElement("select", { value: selectedAgeGroup, onChange: (event) => { const value = event.target.value; setAgeGroup?.(value); notifyFilterContext(value, filterMonth, filterYear); window.dispatchEvent(new CustomEvent('e-posyandu-age-group-change', { detail: value })); }, className: "period-select", "aria-label": "Pilih kelompok umur" }, availableAgeGroupOptions.map((option) => Native.createElement("option", { key: option.value, value: option.value }, option.label)))),
             hasLocationFilter && Native.createElement("button", { type: "button", onClick: onReset, title: "Atur ulang pilihan wilayah", "aria-label": "Atur ulang pilihan wilayah", className: "ios-symbol-button ios-scope-reset" }, Native.createElement(RotateCcw, { className: "h-4 w-4", "aria-hidden": "true" }))),
         hasLocationFilter && Native.createElement("div", { className: isGizi ? "ios-scope-location-grid is-gizi" : "ios-scope-location-grid" },
             isGizi && Native.createElement("label", { className: "block min-w-0" },

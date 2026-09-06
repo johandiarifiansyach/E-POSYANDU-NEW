@@ -70,6 +70,53 @@ metadata faktor yang dikembalikan Supabase; secret TOTP, credential passkey,
 dan kunci publik tidak dicatat pada tahap ini. Verifier Supabase tetap aktif
 sampai implementasi verifier native lulus uji perangkat dan uji pemulihan.
 
+Migration `036_python_dashboard_input_projection.sql` menambahkan snapshot
+input dashboard yang terproyeksi dan ter-scope di PostgreSQL. Fungsi ini hanya
+menghasilkan baris mentah yang dibutuhkan Python serta hitungan teknis
+(jumlah balita/baris pengukuran); status WHO, N/T/O/B, ASI, risiko, edukasi,
+dan agregasi klinis tetap dihitung oleh Python.
+
+Migration `037_python_analysis_materialized_results.sql` menambahkan antrean
+outbox dan tabel `measurement_analysis`. Trigger pada seluruh tabel balita,
+pengukuran, ASI/MPASI, PMT, riwayat perubahan, dan tombstone memasukkan child
+yang berubah ke antrean tanpa menahan transaksi utama. Worker Python mengambil
+riwayat pengukuran yang sudah tersimpan, menghitung WHO, skor-z, N/T/O/B, ASI,
+risiko, edukasi, dan sinyal pertumbuhan, kemudian menyimpan hasil beserta
+versi cakupan ke PostgreSQL. Pembacaan halaman Rust memakai proyeksi
+`eposyandu_materialized_children_page`/`eposyandu_materialized_exclusive_breastfeeding_page`;
+baris yang belum selesai ditandai `analysisPending` dan tidak diberi nilai
+turunan palsu. Grafik tetap selalu dirender oleh Python melalui gRPC.
+
+Migration `039_age_group_filters.sql` menyatukan filter kelompok umur di
+PostgreSQL, Rust, Python, dashboard, seluruh tabel balita, ASI, MPASI, PMT,
+masalah gizi, riwayat perubahan, recycle bin, dan ekspor SigiZI. Pilihan meliputi bayi baru lahir
+(termasuk prematur), 0--5, 6, 0--11, 0--23, 6--11, 6--23, 12--23, 6--59,
+12--59, 24--59, serta 0--59 bulan. Filter diterapkan sebelum paginasi agar
+total dan isi halaman konsisten; umur dihitung terhadap tanggal akhir periode
+laporan. Overload ekspor SigiZI menjaga cohort yang dipilih tanpa mengubah
+fungsi ekspor lama selama rolling migration.
+
+Migration `040_dashboard_asi_cohort.sql` menambahkan cohort ASI enam bulan
+yang independen dari filter umur dashboard. Dengan demikian pembanding `S`
+ASI selalu seluruh balita aktif berusia tepat 6 bulan dalam wilayah yang
+diizinkan, sementara Python menentukan numerator `Ya` dari riwayat jawaban
+ASI yang tersedia (termasuk balita tanpa penimbangan antropometri). Proyeksi
+juga mengirim riwayat ASI ringkas agar klasifikasi progresif 0--6 bulan tetap
+akurat tanpa memuat seluruh riwayat ke browser.
+
+Migration `041_age_group_59_and_mpasi_fixed_cohort.sql` mengganti seluruh
+cohort umum yang sebelumnya berakhir pada 60 bulan menjadi berakhir pada 59
+bulan. WHO tetap memakai referensi pertumbuhan 0--60 bulan untuk perhitungan
+dan grafik. Filter umur pada halaman MPASI dihapus dari UI dan API memaksa
+cohort program 6--23 bulan; halaman ASI hanya menerima cohort 0--5 bulan atau
+tepat 6 bulan.
+
+ASI eksklusif diproses Python sebagai konteks progresif: usia 0 bulan tanpa
+jawaban dicatat sebagai `Ya`, jawaban `Ya` pada bulan berikutnya mengisi
+bulan-bulan sebelumnya secara turunan, sedangkan jawaban `Tidak` eksplisit
+tetap menang. Status lengkap tetap memerlukan seluruh rentang 0--6 bulan
+terisi `Ya`; usia dan konteks turunannya disimpan pada `measurement_analysis`.
+
 ## Supabase primary dan Neon read replica
 
 Neon dipakai sebagai replika baca asinkron untuk dashboard, daftar balita, masalah gizi, ASI eksklusif, dan ekspor pengukuran. Semua perubahan tetap masuk ke Supabase. Aplikasi otomatis kembali membaca Supabase bila Neon belum aktif atau gagal merespons. Keterlambatan replikasi dipantau secara operasional; setelah mutasi, akun penulis sementara diarahkan ke primary agar perubahan langsung terlihat.

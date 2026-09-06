@@ -11,6 +11,18 @@ export type AppRelease = {
 export const RELEASE_HISTORY: AppRelease[] = [
   {
     version: APP_VERSION,
+    releaseDate: '6 September 2026',
+    releaseDateIso: '2026-09-06',
+    title: 'Filter Usia Program Lebih Tepat',
+    changes: [
+      'Filter umur ASI Eksklusif kini hanya menyediakan kelompok 0–5 bulan dan 6 bulan.',
+      'Filter umur MPASI kini dikunci ke kelompok 6–23 bulan sesuai sasaran program.',
+      'Tabel balita dan dashboard lainnya tetap menyediakan seluruh kelompok umur bersama.',
+      'Versi aplikasi dinaikkan ke 3.8.1, metadata layanan diseragamkan, dan cache PWA dinaikkan agar perangkat menerima perubahan.'
+    ]
+  },
+  {
+    version: '3.8.0',
     releaseDate: '30 Agustus 2026',
     releaseDateIso: '2026-08-30',
     title: 'Analisis Grafik Pertumbuhan',
@@ -19,7 +31,7 @@ export const RELEASE_HISTORY: AppRelease[] = [
       'Popup grafik menampilkan arah berat, panjang/tinggi badan, LILA, dan lingkar kepala beserta perubahan awal hingga terbaru.',
       'Baseline machine learning logistic yang ringan dan explainable menambahkan confidence, kesimpulan, saran tindak lanjut, serta deteksi anomali.',
       'Kalkulasi status gizi WHO tetap menggunakan rumus LMS deterministik dan tidak digantikan oleh machine learning.',
-      'Grafik tetap digambar di browser agar ringan; jika antrean atau layanan analisis tidak tersedia, grafik dasar tetap dapat dibuka dengan peringatan.'
+      'Grafik, kalkulasi WHO, status N/T/O/B, filter tabel, ASI, dan agregasi dashboard kini dipusatkan di layanan Python; browser hanya menampilkan hasil terverifikasi.'
     ]
   },
   {

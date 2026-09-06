@@ -293,6 +293,20 @@
   animation: app-skeleton-shimmer 1.5s ease-in-out infinite;
 }
 
+.table-analysis-skeleton {
+  display: inline-block;
+  width: 68px;
+  height: 11px;
+  vertical-align: middle;
+  border-radius: 6px;
+}
+
+.table-analysis-skeleton-badge {
+  width: 72px;
+  height: 25px;
+  border-radius: 999px;
+}
+
 /* Dashboard metric placeholders keep the real cards stable while the first
  * stats response is fetched. This prevents the initial EMPTY_DASHBOARD_STATS
  * values from flashing as genuine zeros. */

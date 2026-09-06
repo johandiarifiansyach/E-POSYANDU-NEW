@@ -1,0 +1,366 @@
+{
+  "schemaVersion": "kia-feeding-guidance-v1",
+  "source": {
+    "title": "Buku KIA 2024",
+    "publisher": "Kementerian Kesehatan Republik Indonesia",
+    "description": "Ringkasan terstruktur materi pemberian makan serta edukasi tatalaksana status gizi bayi dan balita untuk pendamping, bukan diagnosis atau pengganti tatalaksana tenaga kesehatan.",
+    "reviewRequired": true
+  },
+  "universalPrinciples": [
+    {
+      "id": "timely",
+      "text": "Mulai makanan pendamping ASI pada usia 6 bulan; sebelum itu, berikan ASI saja kecuali ada anjuran tenaga kesehatan.",
+      "sourcePages": [39, 58]
+    },
+    {
+      "id": "adequate",
+      "text": "MPASI perlu cukup jumlah, frekuensi, tekstur, kekentalan, dan variasinya. Utamakan sumber protein hewani, lengkapi makanan pokok, protein nabati, lemak, serta buah dan sayur.",
+      "sourcePages": [56, 58]
+    },
+    {
+      "id": "safe",
+      "text": "Cuci tangan sebelum menyiapkan dan memberikan makanan, gunakan peralatan yang bersih, dan perhatikan keamanan makanan.",
+      "sourcePages": [58]
+    },
+    {
+      "id": "responsive",
+      "text": "Berikan makan secara teratur dalam suasana netral, perhatikan respons anak, batasi waktu makan sekitar 30 menit, dan hindari makan sambil menonton layar.",
+      "sourcePages": [58]
+    },
+    {
+      "id": "monitoring",
+      "text": "Timbang, ukur panjang/tinggi badan, dan pantau perkembangan anak setiap bulan di Posyandu atau fasilitas pelayanan kesehatan.",
+      "sourcePages": [39, 57, 65]
+    }
+  ],
+  "ageBands": [
+    {
+      "id": "0_5",
+      "minMonths": 0,
+      "maxMonths": 5,
+      "label": "0–5 bulan",
+      "sourcePages": [39, 40],
+      "webSources": [
+        {
+          "title": "ASI Eksklusif 6 Bulan Kuncinya",
+          "publisher": "Kementerian Kesehatan Republik Indonesia",
+          "url": "https://ayosehat.kemkes.go.id/asi-eksklusif-6-bulan",
+          "published": "2024-06-28",
+          "accessed": "2026-09-02"
+        }
+      ],
+      "education": [
+        "Berikan hanya ASI sampai usia 6 bulan. Jangan menambahkan air putih, makanan, minuman, obat, vitamin, atau mineral kecuali dianjurkan dokter atau tenaga kesehatan.",
+        "ASI menyediakan zat gizi dan antibodi yang mendukung pertumbuhan serta daya tahan tubuh bayi; berikan tanpa tambahan makanan atau minuman lain sampai usia 6 bulan.",
+        "Susui sesuai tanda lapar bayi dan tawarkan ASI sesering mungkin, umumnya 8–12 kali dalam 24 jam atau lebih sesuai kebutuhan bayi.",
+        "Perhatikan posisi dan pelekatan: kepala serta badan bayi segaris, tubuh dekat dengan ibu, mulut terbuka lebar, dagu menyentuh payudara, dan bibir bawah membuka keluar.",
+        "Jika ASI perlu diperah, cuci tangan sebelum memerah, gunakan wadah bersih, simpan sesuai suhu dan durasi yang aman, lalu hangatkan dengan merendam wadah sebelum diberikan.",
+        "Lanjutkan pemantauan berat badan, panjang badan, dan perkembangan bayi setiap bulan."
+      ],
+      "followUp": [
+        "Jika bayi tidak mau menyusu, tampak lemah, muntah terus-menerus, sesak, demam, atau memiliki tanda bahaya lain, segera ke fasilitas kesehatan.",
+        "Bila ibu mengalami nyeri, payudara bengkak, khawatir ASI kurang, atau bayi sulit melekat, minta bantuan bidan atau konselor menyusui; jangan mengganti ASI dengan air atau makanan tanpa arahan tenaga kesehatan.",
+        "Riwayat ASI eksklusif yang kosong perlu dilengkapi; jangan menyimpulkan Ya atau Tidak dari data yang belum tercatat."
+      ]
+    },
+    {
+      "id": "6_8",
+      "minMonths": 6,
+      "maxMonths": 8,
+      "label": "6–8 bulan",
+      "sourcePages": [56, 58, 59],
+      "poster": {
+        "title": "Isi Piringku bayi usia 6–8 bulan",
+        "asset": "/education/posters/isi-piringku-6-8.jpg",
+        "sourceFile": "files56518FA Poster Isi Piringku Bayi Balita (6-8).jpg",
+        "keyPoints": [
+          "Lanjutkan pemberian ASI sekitar 70% dan MPASI sekitar 30% sesuai kebutuhan anak.",
+          "Sajikan makanan dengan tekstur lumat dan kental; poster mencontohkan makanan disaring.",
+          "Berikan MPASI sekitar 2–3 kali makan utama dan 1–2 kali makanan selingan per hari.",
+          "Utamakan lauk protein hewani pada setiap makan, dengan kebersihan dan jadwal makan yang baik."
+        ],
+        "portionExamples": [
+          "Contoh poster: nasi putih 3 sendok makan (±30 g), telur ayam 50 g, wortel 10 g, santan 30 ml, dan air 200 ml.",
+          "Kebutuhan MPASI pada poster: sekitar 200 kkal per hari; sesuaikan dengan penilaian tenaga kesehatan."
+        ],
+        "reviewRequired": true
+      },
+      "education": [
+        "Lanjutkan ASI dan mulai MPASI pada usia 6 bulan dengan makanan beragam, terutama protein hewani.",
+        "Mulai dari 2–3 sendok makan dan bertahap hingga sekitar setengah mangkuk 250 ml setiap kali makan.",
+        "Berikan 2–3 kali makanan utama dan 1–2 kali makanan selingan per hari; gunakan tekstur lumat dan kental sesuai kemampuan anak.",
+        "Perkenalkan makanan satu per satu sambil memperhatikan kemungkinan alergi; pilih cara masak rebus atau kukus dan hindari makanan tinggi gula, garam, serta ultra-proses."
+      ],
+      "followUp": [
+        "Perhatikan respons anak saat makan dan jangan memaksa. Bila anak sulit makan atau berat tidak naik, konsultasikan dengan tenaga kesehatan.",
+        "Lanjutkan pemantauan pertumbuhan dan perkembangan setiap bulan."
+      ]
+    },
+    {
+      "id": "9_11",
+      "minMonths": 9,
+      "maxMonths": 11,
+      "label": "9–11 bulan",
+      "sourcePages": [56, 58, 59],
+      "poster": {
+        "title": "Isi Piringku bayi usia 9–11 bulan",
+        "asset": "/education/posters/isi-piringku-9-11.jpg",
+        "sourceFile": "files50852FA Poster Isi Piringku Bayi Balita (9-11).jpg",
+        "keyPoints": [
+          "Lanjutkan pemberian ASI sekitar 50% dan MPASI sekitar 50% sesuai kebutuhan anak.",
+          "Naikkan tekstur menjadi makanan yang dicincang lembut dan berikan dalam porsi kecil yang sesuai kemampuan.",
+          "Berikan MPASI sekitar 3–4 kali makan utama dan 1–2 kali makanan selingan per hari.",
+          "Utamakan lauk protein hewani, tambahkan sayur atau buah, dan tetap jaga kebersihan makanan."
+        ],
+        "portionExamples": [
+          "Contoh poster: nasi putih 4 sendok makan (±45 g), ikan kembung 50 g, buncis 20 g, minyak 5 g, dan santan 30 ml.",
+          "Kebutuhan MPASI pada poster: sekitar 300 kkal per hari; sesuaikan dengan penilaian tenaga kesehatan."
+        ],
+        "reviewRequired": true
+      },
+      "education": [
+        "Lanjutkan ASI dan MPASI kaya protein hewani dengan makanan yang semakin beragam.",
+        "Berikan sekitar setengah hingga tiga perempat mangkuk 250 ml setiap kali makan.",
+        "Berikan 3–4 kali makanan utama dan 1–2 kali makanan selingan per hari; naikkan tekstur menjadi cincang lembut sesuai kemampuan anak.",
+        "Ajari anak makan dengan sendok dan minum dengan gelas sambil tetap memperhatikan responsnya."
+      ],
+      "followUp": [
+        "Tinjau jumlah, tekstur, dan variasi MPASI bila berat tidak naik atau anak sering menolak makan.",
+        "Bawa hasil pengukuran ke Posyandu atau fasilitas kesehatan untuk pemantauan berkala."
+      ]
+    },
+    {
+      "id": "12_23",
+      "minMonths": 12,
+      "maxMonths": 23,
+      "label": "12–23 bulan",
+      "sourcePages": [59, 64, 65],
+      "poster": {
+        "title": "Isi Piringku bayi usia 12–23 bulan",
+        "asset": "/education/posters/isi-piringku-12-23.jpg",
+        "sourceFile": "files52292FA Poster Isi Piringku Bayi Balita (12-23).jpg",
+        "keyPoints": [
+          "Lanjutkan pemberian ASI sekitar 30% dan MPASI sekitar 70% sesuai kebutuhan anak.",
+          "Sajikan makanan keluarga; makanan dapat diiris atau dicincang bila diperlukan.",
+          "Berikan MPASI sekitar 3–4 kali makan utama dan 1–2 kali makanan selingan per hari.",
+          "Utamakan lauk protein hewani setiap makan dan tambahkan sayur atau buah."
+        ],
+        "portionExamples": [
+          "Contoh poster: nasi putih 5 sendok makan (±55 g), hati ayam 55 g, bayam dan wortel 20 g, minyak 7,5 g.",
+          "Kebutuhan MPASI pada poster: sekitar 550 kkal per hari; sesuaikan dengan penilaian tenaga kesehatan."
+        ],
+        "reviewRequired": true
+      },
+      "education": [
+        "Lanjutkan ASI sampai usia 2 tahun atau lebih dan berikan makanan keluarga yang beragam, lengkap, serta kaya protein hewani.",
+        "Berikan sekitar tiga perempat hingga satu mangkuk 250 ml setiap kali makan.",
+        "Berikan 3–4 kali makanan utama dan 1–2 kali makanan selingan per hari; sajikan makanan keluarga dengan tekstur diiris atau dicincang bila diperlukan.",
+        "Hindari makanan atau minuman rendah gizi, tinggi gula dan garam, minuman berpemanis, minuman bersoda, serta makanan dengan banyak bahan pengawet."
+      ],
+      "followUp": [
+        "Timbang dan ukur anak setiap bulan serta pantau perkembangan, imunisasi, vitamin A, dan pelayanan kesehatan sesuai jadwal.",
+        "Jika anak sulit makan, berat tidak naik, atau ada keluhan kesehatan, minta penilaian bidan atau Ahli Gizi."
+      ]
+    },
+    {
+      "id": "24_59",
+      "minMonths": 24,
+      "maxMonths": 59,
+      "label": "24–59 bulan",
+      "sourcePages": [65, 72],
+      "poster": {
+        "title": "Isi Piringku anak usia 2–5 tahun",
+        "asset": "/education/posters/isi-piringku-2-5.jpg",
+        "sourceFile": "files58688FA Poster Isi Piringku Bayi Balita (2-5).jpg.jpg",
+        "keyPoints": [
+          "Setiap makan, isi piring dengan makanan pokok, lauk hewani yang diutamakan, lauk nabati, lemak, serta sayur dan buah.",
+          "Berikan 3–4 kali makan utama dan 1–2 kali makanan selingan per hari.",
+          "Perhatikan kecukupan gizi, kebersihan makanan, dan cairan sekitar 5–7 gelas belimbing per hari.",
+          "Utamakan lauk protein hewani dan batasi makanan atau minuman tinggi gula, garam, serta rendah gizi."
+        ],
+        "portionExamples": [
+          "Contoh poster: nasi putih 7 sendok makan (±125 g), ayam 50 g, tahu 1 potong sedang (±30 g), sayur 50 g, pepaya 75 g, dan minyak atau santan secukupnya.",
+          "Porsi contoh perlu disesuaikan dengan nafsu makan, kebutuhan, dan anjuran tenaga kesehatan."
+        ],
+        "reviewRequired": true
+      },
+      "education": [
+        "Berikan gizi seimbang yang terdiri dari makanan pokok, lauk hewani dan nabati, sayur, serta buah.",
+        "Utamakan makanan rumah yang beragam dan batasi jajanan rendah gizi, minuman manis, makanan tinggi gula atau garam, serta makanan berpengawet.",
+        "Jaga kebersihan makanan dan cukupi cairan; Buku KIA menganjurkan sedikitnya 5–7 gelas air per hari.",
+        "Lanjutkan pemantauan pertumbuhan, perkembangan, vitamin A, dan obat cacing sesuai jadwal fasilitas kesehatan."
+      ],
+      "followUp": [
+        "Jika anak diare, berikan cairan/larutan rehidrasi sesuai anjuran tenaga kesehatan dan segera ke fasilitas kesehatan bila tidak membaik atau ada tanda dehidrasi.",
+        "Konsultasikan pola makan dan pertumbuhan dengan tenaga kesehatan bila berat tidak naik atau anak tampak sakit."
+      ]
+    }
+  ],
+  "problemGuidance": [
+    {
+      "id": "gizi_kurang",
+      "title": "Tatalaksana edukasi balita gizi kurang atau berat kurang",
+      "statusMatches": [
+        "Berat Sangat Kurang",
+        "Berat Kurang",
+        "Gizi Kurang",
+        "LILA Rendah"
+      ],
+      "education": [
+        "Status ini perlu dikonfirmasi dengan seluruh indikator antropometri, riwayat pertumbuhan, asupan, penyakit penyerta, dan tanda bahaya oleh tenaga kesehatan.",
+        "Perkuat makanan beragam sesuai usia dengan protein hewani setiap hari bila tersedia; PMT lokal yang ditetapkan Puskesmas adalah tambahan asupan, bukan pengganti makanan utama.",
+        "Lanjutkan kebersihan makanan, pencegahan infeksi, dan stimulasi perkembangan. Untuk usia 6–23 bulan, ikuti prinsip pemberian makan bayi dan anak sesuai usia serta lanjutkan ASI.",
+        "Catat jumlah makan, keluhan sakit, dan hasil timbang agar tenaga kesehatan dapat menilai respons anak dari waktu ke waktu."
+      ],
+      "followUp": [
+        "Bila tidak ada tanda bahaya dan Puskesmas menetapkan rawat jalan, ikuti rencana PMT lokal, konseling gizi, dan pemantauan berat badan mingguan sesuai jadwal tenaga kesehatan.",
+        "Jika kenaikan berat tidak adekuat setelah sekitar 14 hari, muncul tanda bahaya, atau anak tetap bermasalah setelah satu siklus PMT, segera kembali ke Puskesmas untuk evaluasi atau rujukan.",
+        "Setelah membaik, lanjutkan pemantauan pertumbuhan bulanan di Posyandu dan bawa riwayat pengukuran pada setiap kunjungan."
+      ],
+      "sources": [
+        {
+          "title": "Tata Laksana Balita Bermasalah Gizi",
+          "file": "ilide.info-1-tata-laksana-balita-bermasalah-gizi-v2-pr_f7d47291139b3f56c502d07f16b51dc4.pdf",
+          "type": "provided_pdf"
+        },
+        {
+          "title": "Pedoman Pencegahan dan Tatalaksana Gizi Buruk pada Balita",
+          "file": "PEDOMAN PENCEGAHAN DAN TATALAKSANA GIZI BURUK PADA BALITA.pdf",
+          "url": "https://repository.kemkes.go.id/book/186",
+          "type": "official_guideline"
+        },
+        {
+          "title": "Peraturan Menteri Kesehatan Nomor 2 Tahun 2020",
+          "file": "Permenkes Nomor 2 Tahun 2020.pdf",
+          "type": "provided_regulation"
+        },
+        {
+          "title": "Petunjuk Teknis Integrasi Pelayanan Kesehatan Primer",
+          "url": "https://jdih.kemkes.go.id/common/dokumen/2023Perdirjenkesmas1622.pdf",
+          "type": "official_guideline"
+        }
+      ]
+    },
+    {
+      "id": "stunting",
+      "title": "Tatalaksana edukasi balita pendek atau stunting",
+      "statusMatches": [
+        "Pendek",
+        "Sangat Pendek"
+      ],
+      "education": [
+        "Pendek atau stunting perlu dikonfirmasi dari PB/U atau TB/U, riwayat pertumbuhan, asupan, penyakit, pemeriksaan fisik, dan penilaian tenaga kesehatan.",
+        "Kejar tumbuh memerlukan asuhan nutrisi yang terencana: penilaian, penentuan kebutuhan, cara pemberian, pemilihan makanan, serta pemantauan berkala.",
+        "Berikan makanan beragam sesuai usia dengan protein hewani, lanjutkan ASI sesuai usia, jaga kebersihan, cegah infeksi, dan lakukan stimulasi perkembangan.",
+        "Produk khusus atau PKMK bukan untuk dicoba sendiri; penggunaannya hanya bila ada indikasi dan resep atau pengawasan dokter anak."
+      ],
+      "followUp": [
+        "Bawa hasil dan riwayat pengukuran ke Puskesmas untuk menyusun rencana pemantauan pertumbuhan, perkembangan, asupan, dan penyakit penyerta.",
+        "Jika ada tanda bahaya, penyakit penyerta, atau pertumbuhan tidak membaik, ikuti rujukan berjenjang sesuai arahan tenaga kesehatan.",
+        "Bila stunting disertai masalah gizi akut, penanganan masalah akut didahulukan dan jadwal rujukan mengikuti rencana Puskesmas."
+      ],
+      "sources": [
+        {
+          "title": "Keputusan Menteri Kesehatan Nomor HK.01.07/MENKES/1928/2022 tentang PNPK Tata Laksana Stunting",
+          "file": "170009660765556a5fd08ea8.07048432.pdf",
+          "url": "https://keslan.kemkes.go.id/unduhan/fileunduhan_1673400525_335399.pdf",
+          "type": "official_guideline"
+        },
+        {
+          "title": "Tata Laksana Balita Bermasalah Gizi",
+          "file": "ilide.info-1-tata-laksana-balita-bermasalah-gizi-v2-pr_f7d47291139b3f56c502d07f16b51dc4.pdf",
+          "type": "provided_pdf"
+        },
+        {
+          "title": "Permenkes Nomor 2 Tahun 2020",
+          "file": "Permenkes Nomor 2 Tahun 2020.pdf",
+          "type": "provided_regulation"
+        }
+      ]
+    },
+    {
+      "id": "gizi_buruk",
+      "title": "Tatalaksana edukasi balita gizi buruk",
+      "statusMatches": [
+        "Gizi Buruk",
+        "LILA Sangat Rendah"
+      ],
+      "education": [
+        "Gizi buruk adalah kondisi serius; materi aplikasi hanya membantu mengenali dan mengarahkan, bukan menggantikan tata laksana klinis.",
+        "Jangan memberikan formula terapi, obat, vitamin dosis tinggi, atau suplemen sendiri. Jenis dan tahap terapi harus ditetapkan serta dipantau tenaga kesehatan.",
+        "Utamakan akses segera ke Puskesmas atau rumah sakit untuk menilai komplikasi, infeksi, edema, dehidrasi, dan penyebab yang mendasari."
+      ],
+      "followUp": [
+        "Segera ke Puskesmas atau rumah sakit. Tidak mau makan atau minum, sangat lemas atau mengantuk, muntah terus-menerus, sesak, demam, tanda dehidrasi, atau bengkak pada kedua kaki memerlukan pertolongan segera.",
+        "Tenaga kesehatan menentukan kebutuhan rawat jalan atau rawat inap serta terapi stabilisasi, transisi, rehabilitasi, dan tindak lanjut; aplikasi tidak menggantikan keputusan tersebut.",
+        "Catat hasil rujukan, terapi, dan jadwal timbang ulang dari fasilitas kesehatan agar dapat ditinjau pada kunjungan berikutnya."
+      ],
+      "sources": [
+        {
+          "title": "Pedoman Pencegahan dan Tatalaksana Gizi Buruk pada Balita",
+          "file": "PEDOMAN PENCEGAHAN DAN TATALAKSANA GIZI BURUK PADA BALITA.pdf",
+          "url": "https://repository.kemkes.go.id/book/186",
+          "type": "official_guideline"
+        },
+        {
+          "title": "Tata Laksana Balita Bermasalah Gizi",
+          "file": "ilide.info-1-tata-laksana-balita-bermasalah-gizi-v2-pr_f7d47291139b3f56c502d07f16b51dc4.pdf",
+          "type": "provided_pdf"
+        },
+        {
+          "title": "Penanganan Gizi Buruk dan Upaya Pencegahannya",
+          "url": "https://keslan.kemkes.go.id/view_artikel/2874/penanganan-gizi-buruk-dan-upaya-pencegahannya",
+          "type": "official_web"
+        }
+      ]
+    },
+    {
+      "id": "gizi_lebih",
+      "title": "Tatalaksana edukasi balita gizi lebih atau obesitas",
+      "statusMatches": [
+        "Gizi Lebih",
+        "Obesitas"
+      ],
+      "education": [
+        "Konfirmasi gizi lebih atau obesitas dengan indikator antropometri, riwayat makan, aktivitas, tidur, dan penilaian tenaga kesehatan.",
+        "Pertahankan makanan rumah yang beragam dengan porsi sesuai usia; batasi minuman manis, makanan ultra-proses, dan kebiasaan makan sambil melihat layar.",
+        "Dorong bermain aktif, tidur cukup, dan perubahan kebiasaan keluarga secara bertahap tanpa diet ketat atau menyalahkan anak."
+      ],
+      "followUp": [
+        "Konsultasikan pola makan dan aktivitas dengan tenaga kesehatan, lalu pantau pertumbuhan secara berkala.",
+        "Jangan melakukan pembatasan makan ekstrem; rencana perubahan harus mempertahankan kebutuhan tumbuh kembang anak."
+      ],
+      "sources": [
+        {
+          "title": "Permenkes Nomor 2 Tahun 2020",
+          "file": "Permenkes Nomor 2 Tahun 2020.pdf",
+          "type": "provided_regulation"
+        }
+      ]
+    }
+  ],
+  "riskTiers": [
+    {
+      "id": "low",
+      "minProbability": 0,
+      "maxProbability": 0.45,
+      "label": "rendah",
+      "education": "Pertahankan pola makan sesuai usia, lanjutkan pemantauan bulanan, dan gunakan hasil ini sebagai pengingat pencegahan; persentase ini adalah sinyal skrining, bukan kepastian kondisi klinis."
+    },
+    {
+      "id": "medium",
+      "minProbability": 0.45,
+      "maxProbability": 0.75,
+      "label": "sedang",
+      "education": "Perkuat praktik pemberian makan sesuai usia dan tinjau kembali asupan, cara ukur, riwayat z-score, serta pola N/T pada kunjungan berikutnya. Jika sinyal berulang, konsultasikan dengan kader, bidan, atau Ahli Gizi."
+    },
+    {
+      "id": "high",
+      "minProbability": 0.75,
+      "maxProbability": 1,
+      "label": "tinggi",
+      "education": "Sinyal skrining cukup tinggi untuk ditinjau lebih dekat. Ulangi atau verifikasi pengukuran, telaah asupan dan penyakit, lalu jadwalkan penilaian tenaga kesehatan; hasil ini bukan diagnosis."
+    }
+  ],
+  "disclaimer": "Materi edukasi diringkas dari Buku KIA 2024. Ini bukan diagnosis, resep, atau pengganti penilaian tenaga kesehatan; temuan gizi buruk atau tanda bahaya memerlukan pemeriksaan segera."
+}

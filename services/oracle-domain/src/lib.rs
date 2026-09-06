@@ -17,7 +17,7 @@ mod realtime;
 #[path = "../../oracle-api/src/system_metrics.rs"]
 mod system_metrics;
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use axum::{
     body::{Body, to_bytes},
@@ -26,8 +26,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use e_posyandu_proto::analysis::{
-    CalculateBatchRequest, GrowthChartPoint, NutritionItem, RenderGrowthChartRequest,
-    analysis_service_client::AnalysisServiceClient,
+    AnalyzeDatasetRequest, CalculateBatchRequest, GrowthChartPoint, NutritionItem,
+    RenderGrowthChartRequest, analysis_service_client::AnalysisServiceClient,
 };
 use e_posyandu_proto::proto::platform::v1::{HttpHeader, ServiceRequest, ServiceResponse};
 use reqwest::{Client, redirect::Policy};
@@ -50,6 +50,25 @@ const MAX_SERVICE_BODY_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_ANALYSIS_GRPC_URL: &str = "unix:///run/e-posyandu/analysis.sock";
 const ANALYSIS_TOKEN_HEADER: &str = "x-eposyandu-service-token";
 const MAX_ANALYSIS_ITEMS: usize = 10_000;
+// Dataset-level table/dashboard analysis sends the scoped raw rows to the
+// private Python service. Keep this in sync with grpcio's server options;
+// the default gRPC limit is only a few MiB and causes an opaque 502 once the
+// balita dataset grows beyond it.
+const MAX_ANALYSIS_GRPC_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
+// The page endpoint is intentionally split into two stages. Rust selects the
+// requested page and loads only the history belonging to those children;
+// Python then owns every status/risk/education calculation for that bounded
+// dataset. Keep the projection narrow so slow kader connections never wait
+// for unused identity/measurement columns.
+const PAGE_MEASUREMENT_SELECT: &str = "id,child_id,legacy_child_id,legacy_child_name,legacy_village,legacy_posyandu,measurement_date,weight_kg,height_cm,head_circumference_cm,mid_upper_arm_circumference_cm,measurement_method,weight_gain_status,age_in_months,exclusive_breastfeeding,edema,mother_class_attendance,mbg,vitamin_a,created_at,updated_at,version";
+const PAGE_MPASI_SELECT: &str = "id,child_id,legacy_child_id,legacy_child_name,monitoring_date,breastfeeding,staple_food,legumes,dairy,meat,eggs,vitamin_a_fruit_vegetable,other_fruit_vegetable,nutrition_intervention,created_at,updated_at,version";
+// Dashboard input is deliberately narrower than the generic table projection.
+// PostgreSQL performs the period/scope filtering, while Python remains the
+// authority for every clinical/longitudinal calculation.
+const DASHBOARD_CHILD_SELECT: &str =
+    "id,name,national_id,birth_date,sex,village,posyandu,created_at,updated_at,deleted_at,version";
+const DASHBOARD_MEASUREMENT_SELECT: &str = "id,child_id,legacy_child_id,legacy_child_name,legacy_village,legacy_posyandu,measurement_date,weight_kg,height_cm,head_circumference_cm,mid_upper_arm_circumference_cm,measurement_method,weight_gain_status,age_in_months,exclusive_breastfeeding,edema,mother_class_attendance,mbg,vitamin_a,created_at,updated_at,version";
 
 fn client() -> Result<Client, String> {
     Client::builder()
@@ -85,6 +104,45 @@ fn not_found() -> Response {
 
 fn method_path(request: &Request) -> (Method, String) {
     (request.method().clone(), request.uri().path().to_owned())
+}
+
+fn dashboard_scope_key(village: Option<&str>, posyandu: Option<&str>) -> String {
+    match (
+        village.map(str::trim).filter(|value| !value.is_empty()),
+        posyandu.map(str::trim).filter(|value| !value.is_empty()),
+    ) {
+        (None, None) => "global".to_owned(),
+        (village, posyandu) => format!("{}/{}", village.unwrap_or("-"), posyandu.unwrap_or("-")),
+    }
+}
+
+fn dashboard_cache_key(
+    scope_key: &str,
+    month_start: &str,
+    month_end: &str,
+    previous_month_start: &str,
+    previous_month_end: &str,
+    age_group: &str,
+) -> String {
+    format!(
+        "dashboard:v3|{scope_key}|{month_start}|{month_end}|{previous_month_start}|{previous_month_end}|age:{age_group}"
+    )
+}
+
+fn valid_age_group(value: &str) -> bool {
+    matches!(
+        value,
+        "0-59" | "newborn" | "newborn_premature" | "0-5" | "6" | "0-11"
+            | "0-23" | "6-11" | "6-23" | "12-23" | "6-59" | "12-59" | "24-59"
+    )
+}
+
+fn valid_exclusive_breastfeeding_age_group(value: &str) -> bool {
+    matches!(value, "0-5" | "6")
+}
+
+fn default_age_group() -> String {
+    "0-59".to_owned()
 }
 
 #[derive(Clone)]
@@ -156,7 +214,9 @@ impl AnalysisClient {
             AnalysisTokenInterceptor {
                 token: self.token.clone(),
             },
-        );
+        )
+        .max_decoding_message_size(MAX_ANALYSIS_GRPC_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_ANALYSIS_GRPC_MESSAGE_BYTES);
         client
             .calculate_batch(GrpcRequest::new(CalculateBatchRequest { items }))
             .await
@@ -172,11 +232,33 @@ impl AnalysisClient {
             AnalysisTokenInterceptor {
                 token: self.token.clone(),
             },
-        );
+        )
+        .max_decoding_message_size(MAX_ANALYSIS_GRPC_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_ANALYSIS_GRPC_MESSAGE_BYTES);
         client
             .render_growth_chart(GrpcRequest::new(request))
             .await
             .map(|response| response.into_inner())
+    }
+
+    async fn analyze_dataset(&self, dataset: Value) -> Result<Value, tonic::Status> {
+        let mut client = AnalysisServiceClient::with_interceptor(
+            self.channel.clone(),
+            AnalysisTokenInterceptor {
+                token: self.token.clone(),
+            },
+        )
+        .max_decoding_message_size(MAX_ANALYSIS_GRPC_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_ANALYSIS_GRPC_MESSAGE_BYTES);
+        let dataset_json = serde_json::to_string(&dataset)
+            .map_err(|error| tonic::Status::invalid_argument(error.to_string()))?;
+        let response = client
+            .analyze_dataset(GrpcRequest::new(AnalyzeDatasetRequest { dataset_json }))
+            .await?
+            .into_inner();
+        serde_json::from_str(&response.result_json).map_err(|error| {
+            tonic::Status::internal(format!("Respons analitik Python tidak valid: {error}"))
+        })
     }
 }
 
@@ -285,6 +367,56 @@ struct GrowthChartInput {
     language: String,
     #[serde(default)]
     points: Vec<AnalysisItemInput>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardAnalysisInput {
+    month_start: String,
+    month_end: String,
+    previous_month_start: String,
+    previous_month_end: String,
+    #[serde(default = "default_age_group")]
+    age_group: String,
+    village: Option<String>,
+    posyandu: Option<String>,
+}
+
+fn valid_iso_date(value: &str) -> bool {
+    value.len() == 10
+        && value.as_bytes()[4] == b'-'
+        && value.as_bytes()[7] == b'-'
+        && value
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
+}
+
+fn append_unique_rows(target: &mut Vec<Value>, rows: Value) {
+    let Some(rows) = rows.as_array() else {
+        return;
+    };
+    let mut seen = target
+        .iter()
+        .filter_map(|row| row.get("id").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    for row in rows {
+        let Some(id) = row.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        if seen.insert(id.to_owned()) {
+            target.push(row.clone());
+        }
+    }
+}
+
+fn id_list_filter(ids: &[String]) -> Option<String> {
+    (!ids.is_empty()).then(|| format!("in.({})", ids.join(",")))
+}
+
+fn is_full_access_role(role: &str) -> bool {
+    matches!(role, "Ahli Gizi" | "super_admin")
 }
 
 fn default_language() -> String {
@@ -483,8 +615,17 @@ impl OperationsDomain {
         if method == Method::POST && path == "/api/v1/analysis/anthropometry" {
             return self.calculate_anthropometry(request).await;
         }
+        if method == Method::POST && path == "/api/v1/analysis/dashboard-stats" {
+            return self.analyze_dashboard_stats(request).await;
+        }
         if method == Method::POST && path == "/api/v1/analysis/growth-chart" {
             return self.render_growth_chart(request).await;
+        }
+        if method == Method::GET && path == "/api/v1/children/page" {
+            return self.children_page_python(request).await;
+        }
+        if method == Method::GET && path == "/api/v1/exclusive-breastfeeding/page" {
+            return self.exclusive_breastfeeding_page_python(request).await;
         }
         if self.api.handles(&request) {
             self.api.handle(request).await
@@ -562,6 +703,936 @@ impl OperationsDomain {
                 json!({
                     "error": {"code": "analysis_unavailable", "message": format!("Analisis Python tidak dapat dijangkau: {error}")}
                 }),
+            ),
+        }
+    }
+
+    async fn analyze_dashboard_stats(&self, request: Request) -> Response {
+        let client = self.analysis.as_ref();
+        let scope = match self.auth.authorize_scope(request.headers().clone()).await {
+            Ok(scope) => scope,
+            Err(response) => return response,
+        };
+        let body = match to_bytes(request.into_body(), MAX_SERVICE_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return response_json(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    json!({"error": {"code": "payload_too_large", "message": "Dataset dashboard terlalu besar."}}),
+                );
+            }
+        };
+        let input = match serde_json::from_slice::<DashboardAnalysisInput>(&body) {
+            Ok(input)
+            if valid_iso_date(&input.month_start)
+                    && valid_iso_date(&input.month_end)
+                    && valid_iso_date(&input.previous_month_start)
+                    && valid_iso_date(&input.previous_month_end)
+                    && valid_age_group(&input.age_group) =>
+            {
+                input
+            }
+            _ => {
+                return response_json(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    json!({"error": {"code": "invalid_payload", "message": "Periode dashboard tidak valid."}}),
+                );
+            }
+        };
+
+        let scoped_village = scope.desa.clone().filter(|value| !value.trim().is_empty());
+        let scoped_posyandu = scope
+            .posyandu
+            .clone()
+            .filter(|value| !value.trim().is_empty());
+        let village = if is_full_access_role(&scope.role) {
+            input
+                .village
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+        } else {
+            scoped_village.clone()
+        };
+        let posyandu = if is_full_access_role(&scope.role) {
+            input
+                .posyandu
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+        } else if scope.role == "Kader Posyandu" {
+            scoped_posyandu.clone()
+        } else {
+            input
+                .posyandu
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+        };
+
+        // A completed Python snapshot is the fast read path for dashboard
+        // aggregates.  Its scope version is checked by PostgreSQL; after any
+        // raw mutation the version changes and this intentionally falls
+        // through to Python until the outbox worker publishes a fresh result.
+        let snapshot_scope = dashboard_scope_key(village.as_deref(), posyandu.as_deref());
+        let snapshot = self
+            .database
+            .rpc(
+                "eposyandu_dashboard_snapshot",
+                json!({
+                    "p_cache_key": dashboard_cache_key(
+                        &snapshot_scope,
+                        &input.month_start,
+                        &input.month_end,
+                        &input.previous_month_start,
+                        &input.previous_month_end,
+                        &input.age_group,
+                    ),
+                    "p_scope_key": snapshot_scope,
+                    "p_month_start": input.month_start,
+                    "p_month_end": input.month_end,
+                    "p_previous_month_start": input.previous_month_start,
+                    "p_previous_month_end": input.previous_month_end,
+                    "p_age_group": input.age_group,
+                    "p_village": village,
+                    "p_posyandu": posyandu,
+                }),
+            )
+            .await;
+        if let Ok(value) = snapshot
+            && value.get("hit").and_then(Value::as_bool) == Some(true)
+            && let Some(result) = value.get("result").cloned()
+        {
+            return response_json(StatusCode::OK, result);
+        }
+
+        let input_request = json!({
+            "p_month_start": input.month_start,
+            "p_month_end": input.month_end,
+            "p_previous_month_start": input.previous_month_start,
+            "p_previous_month_end": input.previous_month_end,
+            "p_age_group": input.age_group,
+            "p_village": village,
+            "p_posyandu": posyandu,
+            "p_role": scope.role,
+            "p_scope_village": scoped_village,
+            "p_scope_posyandu": scoped_posyandu,
+        });
+        // The preferred path is one PostgreSQL snapshot.  It returns only the
+        // fields needed by Python plus non-clinical input counts, avoiding two
+        // sequential full-table reads and keeping the child/measurement view
+        // internally consistent.
+        let sourced = match self
+            .database
+            .rpc("eposyandu_dashboard_dataset", input_request)
+            .await
+        {
+            Ok(value)
+                if value.as_object().is_some_and(|object| {
+                    object.get("children").is_some_and(Value::is_array)
+                        && object.get("measurements").is_some_and(Value::is_array)
+                }) =>
+            {
+                value
+            }
+            // Older databases may not have migration 036 yet.  Keep the
+            // service usable during a rolling migration with narrow, parallel
+            // projections; Python still performs the same calculations.
+            _ => {
+                let mut child_parameters = vec![
+                    ("select".to_owned(), DASHBOARD_CHILD_SELECT.to_owned()),
+                    ("birth_date".to_owned(), format!("lte.{}", input.month_end)),
+                ];
+                if let Some(value) = village.as_deref() {
+                    child_parameters.push(("village".to_owned(), format!("eq.{value}")));
+                }
+                if let Some(value) = posyandu.as_deref() {
+                    child_parameters.push(("posyandu".to_owned(), format!("eq.{value}")));
+                }
+                let mut measurement_parameters = vec![
+                    ("select".to_owned(), DASHBOARD_MEASUREMENT_SELECT.to_owned()),
+                    (
+                        "measurement_date".to_owned(),
+                        format!("gte.{}", input.previous_month_start),
+                    ),
+                    (
+                        "measurement_date".to_owned(),
+                        format!("lte.{}", input.month_end),
+                    ),
+                ];
+                if let Some(value) = village.as_deref() {
+                    measurement_parameters
+                        .push(("legacy_village".to_owned(), format!("eq.{value}")));
+                }
+                if let Some(value) = posyandu.as_deref() {
+                    measurement_parameters
+                        .push(("legacy_posyandu".to_owned(), format!("eq.{value}")));
+                }
+                let (children, measurements) = tokio::join!(
+                    self.database.get("children", &child_parameters, false),
+                    self.database
+                        .get("measurements", &measurement_parameters, false),
+                );
+                let children = match children {
+                    Ok(result) => result.value,
+                    Err(_) => {
+                        return response_json(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            json!({"error": {"code": "database_unavailable", "message": "Data balita untuk analisis dashboard tidak tersedia."}}),
+                        );
+                    }
+                };
+                let measurements = match measurements {
+                    Ok(result) => result.value,
+                    Err(_) => {
+                        return response_json(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            json!({"error": {"code": "database_unavailable", "message": "Data pengukuran untuk analisis dashboard tidak tersedia."}}),
+                        );
+                    }
+                };
+                json!({
+                    "children": children,
+                    "measurements": measurements,
+                    "technical": {"source": "postgresql-projection-rust-fallback-v1"},
+                })
+            }
+        };
+        let sourced = sourced.as_object();
+        let children = sourced
+            .and_then(|value| value.get("children"))
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let measurements = sourced
+            .and_then(|value| value.get("measurements"))
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let asi_children = sourced
+            .and_then(|value| value.get("asiChildren"))
+            .cloned()
+            // Older dashboard projections do not expose the independent
+            // six-month cohort. Python falls back to the selected cohort in
+            // that rolling-migration case.
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let asi_measurements = sourced
+            .and_then(|value| value.get("asiMeasurements"))
+            .cloned()
+            // Older dashboard projections do not expose the compact ASI
+            // history. Python will safely use the period measurements in
+            // that rolling-migration case.
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let technical = sourced
+            .and_then(|value| value.get("technical"))
+            .cloned()
+            .unwrap_or_else(|| json!({"source": "postgresql-projection-v1"}));
+        let dataset = json!({
+            "operation": "dashboard_stats",
+            "monthStart": input.month_start,
+            "monthEnd": input.month_end,
+            "previousMonthStart": input.previous_month_start,
+            "previousMonthEnd": input.previous_month_end,
+            "ageGroup": input.age_group,
+            "village": village,
+            "posyandu": posyandu,
+            "role": scope.role,
+            "scopeVillage": scoped_village,
+            "scopePosyandu": scoped_posyandu,
+            "children": children,
+            "measurements": measurements,
+            "asiChildren": asi_children,
+            "asiMeasurements": asi_measurements,
+            "technical": technical,
+        });
+        let Some(client) = client else {
+            return response_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({
+                    "error": {"code": "analysis_unavailable", "message": "Analisis Python belum aktif."}
+                }),
+            );
+        };
+        match client.analyze_dataset(dataset).await {
+            Ok(result) => response_json(StatusCode::OK, result),
+            Err(error) => response_json(
+                StatusCode::BAD_GATEWAY,
+                json!({"error": {"code": "analysis_unavailable", "message": format!("Analisis dashboard Python tidak dapat dijangkau: {error}")}}),
+            ),
+        }
+    }
+
+    /// Select one page in PostgreSQL, then send only those children and their
+    /// relevant measurement history to Python.  The database RPC is used only
+    /// for scope/order/page selection; Python still recalculates every status
+    /// and derived field before the response is returned.
+    async fn page_limited_children_data(
+        &self,
+        as_of: &str,
+        measurement_start: &str,
+        measurement_end: &str,
+        history_start: &str,
+        age_group: &str,
+        page: usize,
+        size: usize,
+        sort: &str,
+        view: &str,
+        search: Option<&str>,
+        village: Option<&str>,
+        posyandu: Option<&str>,
+        scope_role: &str,
+        scope_village: Option<&str>,
+        scope_posyandu: Option<&str>,
+    ) -> Result<(Value, Value, Value, i64), String> {
+        let page_request = json!({
+            "p_as_of": as_of,
+            "p_measurement_start": measurement_start,
+            "p_measurement_end": measurement_end,
+            "p_page": page,
+            "p_size": size,
+            "p_sort": sort,
+            "p_view": view,
+            "p_search": search,
+            "p_village": village,
+            "p_posyandu": posyandu,
+            // The SQL RPC treats Ahli Gizi as the full-access role;
+            // super_admin is normalized here after Rust auth checks.
+            "p_role": if is_full_access_role(scope_role) { "Ahli Gizi" } else { scope_role },
+            "p_scope_village": scope_village,
+            "p_scope_posyandu": scope_posyandu,
+            "p_age_group": age_group,
+        });
+        // Migration 039 adds the age-aware 14-argument overload. During a
+        // rolling deployment an older database may still expose only the
+        // 13-argument function; its MPASI branch already applies the fixed
+        // 6–23-month cohort, so retry that legacy signature rather than
+        // falling back to a full-table Python request.
+        let selected = match self
+            .database
+            .rpc("eposyandu_replica_children_page", page_request)
+            .await
+        {
+            Ok(value) => value,
+            Err(new_error) => self
+                .database
+                .rpc(
+                    "eposyandu_replica_children_page",
+                    json!({
+                        "p_as_of": as_of,
+                        "p_measurement_start": measurement_start,
+                        "p_measurement_end": measurement_end,
+                        "p_page": page,
+                        "p_size": size,
+                        "p_sort": sort,
+                        "p_view": view,
+                        "p_search": search,
+                        "p_village": village,
+                        "p_posyandu": posyandu,
+                        "p_role": if is_full_access_role(scope_role) { "Ahli Gizi" } else { scope_role },
+                        "p_scope_village": scope_village,
+                        "p_scope_posyandu": scope_posyandu,
+                    }),
+                )
+                .await
+                .map_err(|legacy_error| {
+                    format!(
+                        "Pemilihan halaman database gagal (age-aware: {new_error:?}; legacy: {legacy_error:?})"
+                    )
+                })?,
+        };
+        let selected = selected
+            .as_object()
+            .ok_or_else(|| "Respons halaman database tidak valid.".to_owned())?;
+        let selected_items = selected
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let total = selected
+            .get("total")
+            .and_then(Value::as_i64)
+            .or_else(|| {
+                selected
+                    .get("total")
+                    .and_then(Value::as_u64)
+                    .map(|value| value as i64)
+            })
+            .unwrap_or(selected_items.len() as i64);
+
+        let mut child_rows = Vec::with_capacity(selected_items.len());
+        let mut child_ids = Vec::with_capacity(selected_items.len());
+        for item in selected_items {
+            let Some(id) = item.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let mut child = item.get("data").cloned().unwrap_or_else(|| json!({}));
+            let Some(child_object) = child.as_object_mut() else {
+                continue;
+            };
+            child_object.insert("id".to_owned(), Value::String(id.to_owned()));
+            child_rows.push(Value::Object(child_object.clone()));
+            child_ids.push(id.to_owned());
+        }
+
+        let mut measurement_rows = Vec::new();
+        let date_parameters = [
+            (
+                "measurement_date".to_owned(),
+                format!("gte.{history_start}"),
+            ),
+            (
+                "measurement_date".to_owned(),
+                format!("lte.{measurement_end}"),
+            ),
+            ("select".to_owned(), PAGE_MEASUREMENT_SELECT.to_owned()),
+        ];
+        if let Some(ids) = id_list_filter(&child_ids) {
+            let mut child_parameters = date_parameters.to_vec();
+            child_parameters.push(("child_id".to_owned(), ids.clone()));
+            let mut legacy_parameters = date_parameters.to_vec();
+            legacy_parameters.push(("legacy_child_id".to_owned(), ids));
+            let (child_result, legacy_result) = tokio::join!(
+                self.database.get("measurements", &child_parameters, false),
+                self.database.get("measurements", &legacy_parameters, false),
+            );
+            for result in [child_result, legacy_result] {
+                let result = result
+                    .map_err(|error| format!("Riwayat pengukuran database gagal: {error:?}"))?;
+                append_unique_rows(&mut measurement_rows, result.value);
+            }
+        }
+
+        let mut mpasi_rows = Vec::new();
+        if view == "mpasi" {
+            if let Some(ids) = id_list_filter(&child_ids) {
+                let date_parameters = [
+                    (
+                        "monitoring_date".to_owned(),
+                        format!("gte.{measurement_start}"),
+                    ),
+                    (
+                        "monitoring_date".to_owned(),
+                        format!("lte.{measurement_end}"),
+                    ),
+                    ("select".to_owned(), PAGE_MPASI_SELECT.to_owned()),
+                ];
+                let mut child_parameters = date_parameters.to_vec();
+                child_parameters.push(("child_id".to_owned(), ids.clone()));
+                let mut legacy_parameters = date_parameters.to_vec();
+                legacy_parameters.push(("legacy_child_id".to_owned(), ids));
+                let (child_result, legacy_result) = tokio::join!(
+                    self.database.get("mpasi_logs", &child_parameters, false),
+                    self.database.get("mpasi_logs", &legacy_parameters, false),
+                );
+                for result in [child_result, legacy_result] {
+                    let result = result
+                        .map_err(|error| format!("Riwayat MPASI database gagal: {error:?}"))?;
+                    append_unique_rows(&mut mpasi_rows, result.value);
+                }
+            }
+        }
+
+        Ok((
+            Value::Array(child_rows),
+            Value::Array(measurement_rows),
+            Value::Array(mpasi_rows),
+            total,
+        ))
+    }
+
+    async fn children_page_python(&self, request: Request) -> Response {
+        let scope = match self.auth.authorize_scope(request.headers().clone()).await {
+            Ok(scope) => scope,
+            Err(response) => return response,
+        };
+        let query =
+            url::form_urlencoded::parse(request.uri().query().unwrap_or_default().as_bytes())
+                .into_owned()
+                .collect::<BTreeMap<_, _>>();
+        let as_of = query.get("asOf").map(String::as_str).unwrap_or_default();
+        let measurement_start = query
+            .get("measurementStart")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let history_start = query
+            .get("historyStart")
+            .map(String::as_str)
+            .unwrap_or("1900-01-01");
+        let measurement_end = query
+            .get("measurementEnd")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let requested_age_group = query
+            .get("ageGroup")
+            .map(String::as_str)
+            .unwrap_or("0-59");
+        if !valid_iso_date(as_of)
+            || !valid_iso_date(measurement_start)
+            || !valid_iso_date(measurement_end)
+            || !valid_iso_date(history_start)
+            || !valid_age_group(requested_age_group)
+        {
+            return response_json(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({"error": {"code": "invalid_query", "message": "Periode halaman balita tidak valid."}}),
+            );
+        }
+        let previous_start = query
+            .get("previousMonthStart")
+            .map(String::as_str)
+            .unwrap_or(measurement_start);
+        let previous_end = query
+            .get("previousMonthEnd")
+            .map(String::as_str)
+            .unwrap_or(measurement_start);
+        if !valid_iso_date(previous_start) || !valid_iso_date(previous_end) {
+            return response_json(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({"error": {"code": "invalid_query", "message": "Periode riwayat halaman balita tidak valid."}}),
+            );
+        }
+        let page = query
+            .get("page")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(1);
+        let size = query
+            .get("size")
+            .and_then(|value| value.parse::<usize>().ok())
+            .map(|value| value.clamp(1, 50))
+            .unwrap_or(10);
+        let view = query.get("view").map(String::as_str).unwrap_or("data");
+        let allowed_views = [
+            "data",
+            "recent",
+            "recycle",
+            "mpasi",
+            "problem_underweight",
+            "problem_stunting",
+            "problem_wasting",
+            "problem_tidak_naik",
+        ];
+        if !allowed_views.contains(&view) {
+            return response_json(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({"error": {"code": "invalid_query", "message": "Filter halaman balita tidak dikenal."}}),
+            );
+        }
+        // MPASI is a fixed 6–23-month programme cohort; the frontend hides
+        // the age selector, and the API enforces the same rule for callers
+        // that bypass the UI.
+        let age_group = if view == "mpasi" { "6-23" } else { requested_age_group };
+        let sort = query.get("sort").map(String::as_str).unwrap_or("recent");
+        let allowed_sorts = [
+            "recent",
+            "oldest_input",
+            "name_asc",
+            "name_desc",
+            "age_oldest",
+            "age_youngest",
+        ];
+        if !allowed_sorts.contains(&sort) {
+            return response_json(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({"error": {"code": "invalid_query", "message": "Urutan halaman balita tidak dikenal."}}),
+            );
+        }
+        if query
+            .get("search")
+            .map(|value| value.chars().count() > 80)
+            .unwrap_or(false)
+        {
+            return response_json(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({"error": {"code": "invalid_query", "message": "Pencarian terlalu panjang."}}),
+            );
+        }
+        let requested_village = query
+            .get("village")
+            .cloned()
+            .filter(|value| !value.trim().is_empty());
+        let requested_posyandu = query
+            .get("posyandu")
+            .cloned()
+            .filter(|value| !value.trim().is_empty());
+        let scoped_village = scope.desa.clone().filter(|value| !value.trim().is_empty());
+        let scoped_posyandu = scope
+            .posyandu
+            .clone()
+            .filter(|value| !value.trim().is_empty());
+        let village = if is_full_access_role(&scope.role) {
+            requested_village
+        } else {
+            scoped_village.clone()
+        };
+        let posyandu = if is_full_access_role(&scope.role) {
+            requested_posyandu
+        } else if scope.role == "Kader Posyandu" {
+            scoped_posyandu.clone()
+        } else {
+            requested_posyandu
+        };
+
+        // The materialized SQL projection applies every named age cohort
+        // before pagination. MPASI is always page-limited because its only
+        // supported cohort is 6–23 months; this prevents a rolling migration
+        // or a temporary materialized-read miss from sending the entire
+        // child population to Python.
+        let page_limited =
+            (age_group == "0-59" && matches!(view, "data" | "recent" | "recycle"))
+                || view == "mpasi";
+        // Once migration 037 is present, reads use the PostgreSQL materialized
+        // projection directly.  Python has already populated each row after
+        // the raw write; a pending row is explicitly marked by SQL rather than
+        // blocking a kader request on a full re-analysis.  During a rolling
+        // migration an absent function falls back to the Python path below.
+        let materialized = {
+            self
+            .database
+            .rpc(
+                "eposyandu_materialized_children_page",
+                json!({
+                    "p_as_of": as_of,
+                    "p_measurement_start": measurement_start,
+                    "p_measurement_end": measurement_end,
+                    "p_page": page,
+                    "p_size": size,
+                    "p_sort": sort,
+                    "p_view": view,
+                    "p_search": query.get("search"),
+                    "p_village": village,
+                    "p_posyandu": posyandu,
+                    "p_role": if is_full_access_role(&scope.role) { "Ahli Gizi" } else { scope.role.as_str() },
+                    "p_scope_village": scoped_village,
+                    "p_scope_posyandu": scoped_posyandu,
+                    "p_age_group": age_group,
+                }),
+            )
+            .await
+        };
+        if let Ok(value) = materialized
+            && value
+                .as_object()
+                .is_some_and(|object| object.get("items").is_some())
+        {
+            return response_json(StatusCode::OK, value);
+        }
+        // A materialized read does not require a live Python connection.  Only
+        // the rolling-migration fallback below needs the analysis client.
+        let Some(client) = self.analysis.as_ref() else {
+            return response_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({
+                    "error": {"code": "analysis_unavailable", "message": "Analisis Python belum aktif dan proyeksi database belum tersedia."}
+                }),
+            );
+        };
+        let (children, measurements, mpasi_logs, total_hint) = if page_limited {
+            match self
+                .page_limited_children_data(
+                    as_of,
+                    measurement_start,
+                    measurement_end,
+                    history_start,
+                    age_group,
+                    page,
+                    size,
+                    sort,
+                    view,
+                    query.get("search").map(String::as_str),
+                    village.as_deref(),
+                    posyandu.as_deref(),
+                    &scope.role,
+                    scoped_village.as_deref(),
+                    scoped_posyandu.as_deref(),
+                )
+                .await
+            {
+                Ok(data) => data,
+                Err(message) => {
+                    return response_json(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({"error": {"code": "database_unavailable", "message": message}}),
+                    );
+                }
+            }
+        } else {
+            // Problem tabs need the complete scoped history so Python can
+            // determine which children match the requested status.  The
+            // regular data/recent/recycle/mpasi tabs above remain page-limited.
+            let mut child_parameters = vec![
+                ("select".to_owned(), "*".to_owned()),
+                ("birth_date".to_owned(), format!("lte.{as_of}")),
+            ];
+            if let Some(value) = village.as_deref() {
+                child_parameters.push(("village".to_owned(), format!("eq.{value}")));
+            }
+            if let Some(value) = posyandu.as_deref() {
+                child_parameters.push(("posyandu".to_owned(), format!("eq.{value}")));
+            }
+            let mut measurement_parameters = vec![
+                ("select".to_owned(), "*".to_owned()),
+                (
+                    "measurement_date".to_owned(),
+                    format!("gte.{history_start}"),
+                ),
+                (
+                    "measurement_date".to_owned(),
+                    format!("lte.{measurement_end}"),
+                ),
+            ];
+            if let Some(value) = village.as_deref() {
+                measurement_parameters.push(("legacy_village".to_owned(), format!("eq.{value}")));
+            }
+            if let Some(value) = posyandu.as_deref() {
+                measurement_parameters.push(("legacy_posyandu".to_owned(), format!("eq.{value}")));
+            }
+            let children = match self
+                .database
+                .get("children", &child_parameters, false)
+                .await
+            {
+                Ok(result) => result.value,
+                Err(_) => {
+                    return response_json(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({"error": {"code": "database_unavailable", "message": "Data balita untuk analisis Python tidak tersedia."}}),
+                    );
+                }
+            };
+            let measurements = match self
+                .database
+                .get("measurements", &measurement_parameters, false)
+                .await
+            {
+                Ok(result) => result.value,
+                Err(_) => {
+                    return response_json(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({"error": {"code": "database_unavailable", "message": "Data pengukuran untuk analisis Python tidak tersedia."}}),
+                    );
+                }
+            };
+            let mpasi_parameters = vec![
+                ("select".to_owned(), "*".to_owned()),
+                (
+                    "monitoring_date".to_owned(),
+                    format!("gte.{measurement_start}"),
+                ),
+                (
+                    "monitoring_date".to_owned(),
+                    format!("lte.{measurement_end}"),
+                ),
+            ];
+            let mpasi_logs = match self
+                .database
+                .get("mpasi_logs", &mpasi_parameters, false)
+                .await
+            {
+                Ok(result) => result.value,
+                Err(_) => Value::Array(Vec::new()),
+            };
+            (children, measurements, mpasi_logs, -1)
+        };
+        let dataset = json!({
+            "operation": "children_page",
+            "asOf": as_of,
+            "measurementStart": measurement_start,
+            "historyStart": history_start,
+            "measurementEnd": measurement_end,
+            "ageGroup": age_group,
+            "previousMonthStart": previous_start,
+            "previousMonthEnd": previous_end,
+            "page": page,
+            "size": size,
+            "sort": sort,
+            "view": view,
+            "search": query.get("search"),
+            "village": village,
+            "posyandu": posyandu,
+            "role": scope.role,
+            "scopeVillage": scoped_village,
+            "scopePosyandu": scoped_posyandu,
+            "children": children,
+            "measurements": measurements,
+            "mpasiLogs": mpasi_logs,
+            "pageLimited": page_limited,
+            "totalHint": (total_hint >= 0).then_some(total_hint),
+        });
+        match client.analyze_dataset(dataset).await {
+            Ok(result) => response_json(StatusCode::OK, result),
+            Err(error) => response_json(
+                StatusCode::BAD_GATEWAY,
+                json!({"error": {"code": "analysis_unavailable", "message": format!("Analisis tabel Python tidak dapat dijangkau: {error}")}}),
+            ),
+        }
+    }
+
+    async fn exclusive_breastfeeding_page_python(&self, request: Request) -> Response {
+        let scope = match self.auth.authorize_scope(request.headers().clone()).await {
+            Ok(scope) => scope,
+            Err(response) => return response,
+        };
+        let query =
+            url::form_urlencoded::parse(request.uri().query().unwrap_or_default().as_bytes())
+                .into_owned()
+                .collect::<BTreeMap<_, _>>();
+        let start = query
+            .get("measurementStart")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let end = query
+            .get("measurementEnd")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let history_start = query
+            .get("historyStart")
+            .map(String::as_str)
+            .unwrap_or("1900-01-01");
+        let age_group = query
+            .get("ageGroup")
+            .map(String::as_str)
+            .unwrap_or_default();
+        if !valid_iso_date(start)
+            || !valid_iso_date(end)
+            || !valid_iso_date(history_start)
+            || !valid_exclusive_breastfeeding_age_group(age_group)
+        {
+            return response_json(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({"error": {"code": "invalid_query", "message": "Parameter ASI eksklusif tidak valid."}}),
+            );
+        }
+        let page = query
+            .get("page")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(1);
+        let size = query
+            .get("size")
+            .and_then(|value| value.parse::<usize>().ok())
+            .map(|value| value.clamp(1, 50))
+            .unwrap_or(10);
+        let scoped_village = scope.desa.clone().filter(|value| !value.trim().is_empty());
+        let scoped_posyandu = scope
+            .posyandu
+            .clone()
+            .filter(|value| !value.trim().is_empty());
+        let village = if is_full_access_role(&scope.role) {
+            query
+                .get("village")
+                .cloned()
+                .filter(|value| !value.trim().is_empty())
+        } else {
+            scoped_village.clone()
+        };
+        let posyandu = if is_full_access_role(&scope.role) {
+            query
+                .get("posyandu")
+                .cloned()
+                .filter(|value| !value.trim().is_empty())
+        } else if scope.role == "Kader Posyandu" {
+            scoped_posyandu.clone()
+        } else {
+            query
+                .get("posyandu")
+                .cloned()
+                .filter(|value| !value.trim().is_empty())
+        };
+        if let Ok(value) = self
+            .database
+            .rpc(
+                "eposyandu_materialized_exclusive_breastfeeding_page",
+                json!({
+                    "p_measurement_start": start,
+                    "p_measurement_end": end,
+                    "p_age_group": age_group,
+                    "p_page": page,
+                    "p_size": size,
+                    "p_village": village,
+                    "p_posyandu": posyandu,
+                    "p_role": if is_full_access_role(&scope.role) { "Ahli Gizi" } else { scope.role.as_str() },
+                    "p_scope_village": scoped_village,
+                    "p_scope_posyandu": scoped_posyandu,
+                }),
+            )
+            .await
+            && value.as_object().is_some_and(|object| object.get("items").is_some())
+        {
+            return response_json(StatusCode::OK, value);
+        }
+        let Some(client) = self.analysis.as_ref() else {
+            return response_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error": {"code": "analysis_unavailable", "message": "Analisis Python belum aktif dan proyeksi ASI belum tersedia."}}),
+            );
+        };
+        let mut child_parameters = vec![
+            ("select".to_owned(), "*".to_owned()),
+            ("birth_date".to_owned(), format!("lte.{end}")),
+        ];
+        if let Some(value) = village.as_deref() {
+            child_parameters.push(("village".to_owned(), format!("eq.{value}")));
+        }
+        if let Some(value) = posyandu.as_deref() {
+            child_parameters.push(("posyandu".to_owned(), format!("eq.{value}")));
+        }
+        let mut measurement_parameters = vec![
+            ("select".to_owned(), "*".to_owned()),
+            (
+                "measurement_date".to_owned(),
+                format!("gte.{history_start}"),
+            ),
+            ("measurement_date".to_owned(), format!("lte.{end}")),
+        ];
+        if let Some(value) = village.as_deref() {
+            measurement_parameters.push(("legacy_village".to_owned(), format!("eq.{value}")));
+        }
+        if let Some(value) = posyandu.as_deref() {
+            measurement_parameters.push(("legacy_posyandu".to_owned(), format!("eq.{value}")));
+        }
+        let children = match self
+            .database
+            .get("children", &child_parameters, false)
+            .await
+        {
+            Ok(result) => result.value,
+            Err(_) => {
+                return response_json(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error": {"code": "database_unavailable", "message": "Data balita untuk analisis ASI tidak tersedia."}}),
+                );
+            }
+        };
+        let measurements = match self
+            .database
+            .get("measurements", &measurement_parameters, false)
+            .await
+        {
+            Ok(result) => result.value,
+            Err(_) => {
+                return response_json(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error": {"code": "database_unavailable", "message": "Data pengukuran untuk analisis ASI tidak tersedia."}}),
+                );
+            }
+        };
+        let dataset = json!({
+            "operation": "exclusive_breastfeeding_page",
+            "measurementStart": start,
+            "historyStart": history_start,
+            "measurementEnd": end,
+            "ageGroup": age_group,
+            "page": page,
+            "size": size,
+            "village": village,
+            "posyandu": posyandu,
+            "role": scope.role,
+            "scopeVillage": scoped_village,
+            "scopePosyandu": scoped_posyandu,
+            "children": children,
+            "measurements": measurements,
+        });
+        match client.analyze_dataset(dataset).await {
+            Ok(result) => response_json(StatusCode::OK, result),
+            Err(error) => response_json(
+                StatusCode::BAD_GATEWAY,
+                json!({"error": {"code": "analysis_unavailable", "message": format!("Analisis ASI Python tidak dapat dijangkau: {error}")}}),
             ),
         }
     }
@@ -743,7 +1814,7 @@ impl RealtimeDomain {
     pub fn start_listener(&self) {
         let database = self.database.clone();
         let hub = self.hub.clone();
-        tokio::spawn(async move { database.listen_realtime(hub).await });
+        tokio::spawn(async move { database.listen_realtime(hub, None).await });
     }
 
     pub async fn authorize(

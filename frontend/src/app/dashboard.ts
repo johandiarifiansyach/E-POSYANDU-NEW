@@ -6,17 +6,18 @@ import { applySidebarCollapsedState, dashboardPages, getDashboardHashState, isDa
 import { MpasiModal } from '../features/breastfeeding/MpasiModal';
 import { PmtModal, PmtMonitoringModal } from '../features/pmt/modals';
 import { DeleteChildModal, AddChildModal } from '../features/children/modals';
-import { MeasurementModal } from '../features/measurements/MeasurementModal';
-import { requestPythonAnthropometry } from '../api/analysisApi';
 import { filterByLocation } from '../services/locationService';
+import { DEFAULT_AGE_GROUP, ageGroupOptionsForTab, matchesAgeGroup, normalizeAgeGroupForTab } from '../config/ageFilters';
 import { createSafeWorksheet, sanitizeImportedCellText, validateSpreadsheetFile } from '../services/xlsx';
 import {
     buildSigiziMeasurementExportItems,
     fetchExportChildren,
     fetchExportDocuments,
+    filterChildrenByAgeGroup,
     filterChildrenByAgeRange,
     getMpasiExportRows,
     getPmtExportRows,
+    getScopedExportFilename,
     getSelectedMonthRange,
     getSigiziIdentityRows,
     getSigiziMeasurementRows,
@@ -39,8 +40,8 @@ const {
     listSyncConflicts, resolveSyncConflict, subscribeToSyncConflicts,
     subscribeToRealtime, subscribeToSyncedMutations, syncActiveViewFromServer, syncPendingMutations,
     orderBy, DATA_WILAYAH, ROLES, isFullAccessRole, DASHBOARD_TABS, COMPACT_SIDEBAR_MEDIA_QUERY,
-    MONTHS, YEARS, formatChildName, getKBM, formatDate, formatIndoDate,
-    formatIndoDateTime, getAgeInMonths, calculateZScore, calculateGiziStatus,
+    MONTHS, YEARS, formatChildName, formatDate, formatIndoDate,
+    formatIndoDateTime, getAgeInMonths,
     generateRandomDigits, normalizeDecimalInput, parseLocaleNumber,
     parseLocaleNumberForRange, ensureXlsx, Card, Button, InputGroup, Select,
     LocationFilterPanel, Badge, KenaikanBadge, StatusBadge,
@@ -113,6 +114,13 @@ export const Dashboard = ({ user, onLogout }) => {
     const [colorScheme, setColorScheme] = useState(() => getPreferredColorScheme());
     const [filterMonth, setFilterMonth] = useState(new Date().getMonth() + 1);
     const [filterYear, setFilterYear] = useState(new Date().getFullYear());
+    const [ageGroupState, setAgeGroup] = useState(DEFAULT_AGE_GROUP);
+    // Keep one shared age-group state while constraining programme-specific
+    // pages to the cohorts they actually measure. This derived value is used
+    // by all reads, exports, dashboard aggregates, and the filter control, so
+    // an unsupported cohort can never leak into an ASI/MPASI request.
+    const ageGroup = normalizeAgeGroupForTab(ageGroupState, activeTab);
+    const ageGroupOptions = ageGroupOptionsForTab(activeTab);
     const [viewDesa, setViewDesa] = useState(isFullAccessRole(user.role) ? '' : (user.desa || ''));
     const [viewPosyandu, setViewPosyandu] = useState(user.role === ROLES.KADER ? (user.posyandu || '') : '');
     const [draftDesa, setDraftDesa] = useState(isFullAccessRole(user.role) ? '' : (user.desa || ''));
@@ -142,6 +150,17 @@ export const Dashboard = ({ user, onLogout }) => {
         };
     }, [isAccountMenuOpen]);
     useEffect(() => setIsAccountMenuOpen(false), [activeTab]);
+    useEffect(() => {
+        if (ageGroupState === ageGroup)
+            return;
+        setAgeGroup(ageGroup);
+        if (typeof window !== 'undefined') {
+            window.__ePosyanduAgeGroup = ageGroup;
+            window.dispatchEvent(new CustomEvent('e-posyandu-filter-context-change', {
+                detail: { ageGroup, filterDate: window.__ePosyanduFilterDate }
+            }));
+        }
+    }, [activeTab, ageGroup, ageGroupState]);
     useEffect(() => {
         const pulse = () => {
             if (document.visibilityState === 'visible' && navigator.onLine)
@@ -310,7 +329,8 @@ export const Dashboard = ({ user, onLogout }) => {
     // Reset pagination when filters change
     useLayoutEffect(() => {
         setCurrentPage(1);
-    }, [activeTab, searchTerm, sortOrder, viewDesa, viewPosyandu, filterMonth, filterYear]);
+        setChangeHistoryPage(1);
+    }, [activeTab, searchTerm, sortOrder, viewDesa, viewPosyandu, filterMonth, filterYear, ageGroup]);
     // Fetch Change Logs
     useEffect(() => {
         if (activeTab !== 'change_history')
@@ -319,7 +339,8 @@ export const Dashboard = ({ user, onLogout }) => {
         setChangeHistoryError(null);
         if (changeHistoryPageState.status !== 'success')
             setChangeHistoryPageState({ status: 'loading' });
-        void getChangeHistory(changeHistoryPage, 10)
+        const changeHistoryAsOf = formatDate(new Date(filterYear, filterMonth, 0));
+        void getChangeHistory(changeHistoryPage, 10, ageGroup, changeHistoryAsOf, viewDesa || undefined, viewPosyandu || undefined)
             .then(({ items, total }) => {
                 if (!current)
                     return;
@@ -339,7 +360,7 @@ export const Dashboard = ({ user, onLogout }) => {
         return () => {
             current = false;
         };
-    }, [activeTab, changeHistoryPage, changeHistoryRevision]);
+    }, [activeTab, changeHistoryPage, changeHistoryRevision, ageGroup, filterMonth, filterYear, viewDesa, viewPosyandu]);
     // Fetch Monthly Measurements
     useEffect(() => {
         if (activeTab === 'dashboard' || activeTab === 'admin_backend' || activeTab === 'asi_eksklusif' || isServerPagedChildTab) {
@@ -382,7 +403,7 @@ export const Dashboard = ({ user, onLogout }) => {
             setErrorMsg('Gagal memuat penimbangan: ' + message);
         });
         return () => unsubscribe();
-    }, [activeTab, filterMonth, filterYear, isServerPagedChildTab, user, viewDesa, viewPosyandu]);
+    }, [activeTab, filterMonth, filterYear, ageGroup, isServerPagedChildTab, user, viewDesa, viewPosyandu]);
     // Table-based child views request one page only, never the whole collection.
     useEffect(() => {
         if (!isServerPagedChildTab)
@@ -392,10 +413,20 @@ export const Dashboard = ({ user, onLogout }) => {
         const lastDay = String(new Date(filterYear, filterMonth, 0).getDate()).padStart(2, '0');
         const monthStart = `${filterYear}-${month}-01`;
         const monthEnd = `${filterYear}-${month}-${lastDay}`;
+        const previous = new Date(filterYear, filterMonth - 2, 1);
+        const previousYear = previous.getFullYear();
+        const previousMonth = previous.getMonth() + 1;
+        const previousMonthText = String(previousMonth).padStart(2, '0');
+        const previousMonthStart = `${previousYear}-${previousMonthText}-01`;
+        const previousMonthEnd = `${previousYear}-${previousMonthText}-${String(new Date(previousYear, previousMonth, 0).getDate()).padStart(2, '0')}`;
         const request = {
             asOf: activeTab === 'recent' ? monthStart : monthEnd,
+            ageGroup,
+            historyStart: '1900-01-01',
             measurementEnd: monthEnd,
             measurementStart: monthStart,
+            previousMonthEnd,
+            previousMonthStart,
             page: currentPage,
             posyandu: viewPosyandu || undefined,
             search: searchTerm,
@@ -475,7 +506,27 @@ export const Dashboard = ({ user, onLogout }) => {
         return () => {
             current = false;
         };
-    }, [activeTab, currentPage, dataRevision, filterMonth, filterYear, isServerPagedChildTab, itemsPerPage, searchTerm, sortOrder, viewDesa, viewPosyandu]);
+    }, [activeTab, currentPage, dataRevision, filterMonth, filterYear, ageGroup, isServerPagedChildTab, itemsPerPage, searchTerm, sortOrder, viewDesa, viewPosyandu]);
+    // A raw write can be visible before the Python materializer finishes. Keep
+    // the affected table page in a lightweight revalidation loop so its
+    // derived-cell skeletons are replaced automatically as soon as the
+    // materialized result becomes available. The loop stops after two minutes
+    // and never blocks the rest of the page.
+    useEffect(() => {
+        if (!isServerPagedChildTab)
+            return;
+        const hasPendingAnalysis = Object.values(pagedMeasurements).some((measurement) => Boolean(measurement?.analysisPending || measurement?.analysis_pending));
+        if (!hasPendingAnalysis)
+            return;
+        let attempts = 0;
+        const interval = window.setInterval(() => {
+            attempts += 1;
+            setDataRevision((revision) => revision + 1);
+            if (attempts >= 40)
+                window.clearInterval(interval);
+        }, 3_000);
+        return () => window.clearInterval(interval);
+    }, [isServerPagedChildTab, pagedMeasurements]);
     // Dashboard receives calculated totals only; no child or measurement collection is sent to the browser.
     useEffect(() => {
         if (activeTab !== 'dashboard')
@@ -491,6 +542,7 @@ export const Dashboard = ({ user, onLogout }) => {
         const previousMonthStart = `${previousYear}-${previousMonthText}-01`;
         const previousMonthEnd = `${previousYear}-${previousMonthText}-${String(new Date(previousYear, previousMonth, 0).getDate()).padStart(2, '0')}`;
         const request = {
+            ageGroup,
             monthEnd,
             monthStart,
             previousMonthEnd,
@@ -500,7 +552,11 @@ export const Dashboard = ({ user, onLogout }) => {
         };
         // Keep the browser cache separate from summaries produced by the old query.
         const requestKey = JSON.stringify(request);
-        const cacheKey = `e-posyandu:dashboard-stats:v4:${requestKey}`;
+        // The ASI dashboard denominator now uses every active six-month child
+        // (S), not only children with a current measurement. Bump the browser
+        // namespace so an older cached 0/target result cannot survive a
+        // deployment of the corrected Python aggregate.
+        const cacheKey = `e-posyandu:dashboard-stats:v6-python:${requestKey}`;
         let cachedStats;
         try {
             const cached = window.localStorage.getItem(cacheKey);
@@ -559,7 +615,7 @@ export const Dashboard = ({ user, onLogout }) => {
         return () => {
             current = false;
         };
-    }, [activeTab, dataRevision, filterMonth, filterYear, viewDesa, viewPosyandu]);
+    }, [activeTab, dataRevision, filterMonth, filterYear, ageGroup, viewDesa, viewPosyandu]);
     useEffect(() => {
         if (activeTab !== 'dashboard' || !isFullAccessRole(user.role)) {
             setMonitoringStatus(null);
@@ -622,7 +678,7 @@ export const Dashboard = ({ user, onLogout }) => {
             });
         }, 0);
         return () => window.clearTimeout(timer);
-    }, [activeTab, filterMonth, filterYear, viewDesa, viewPosyandu]);
+    }, [activeTab, filterMonth, filterYear, ageGroup, viewDesa, viewPosyandu]);
     const filteredByLocation = useMemo(() => {
         return filterByLocation(children, viewDesa, viewPosyandu);
     }, [children, viewDesa, viewPosyandu]);
@@ -630,9 +686,8 @@ export const Dashboard = ({ user, onLogout }) => {
     const activeChildren = useMemo(() => filteredByLocation.filter(c => {
         if (c.deletedAt)
             return false;
-        const age = getAgeInMonths(c.tglLahir, currentFilterDate);
-        return age >= 0 && age <= 59;
-    }), [filteredByLocation, currentFilterDate]);
+        return matchesAgeGroup(c, ageGroup, currentFilterDate);
+    }), [filteredByLocation, currentFilterDate, ageGroup]);
     const deletedChildren = useMemo(() => filteredByLocation.filter(c => c.deletedAt), [filteredByLocation]);
     const newInputs = useMemo(() => activeChildren.filter(c => {
         if (!c.createdAt)
@@ -870,11 +925,12 @@ export const Dashboard = ({ user, onLogout }) => {
                     end: `${end}T23:59:59.999Z`,
                     ...exportQueryContext,
                 });
-                exportedChildren = filterChildrenByAgeRange(fullChildren, 0, 59, currentFilterDate);
+                exportedChildren = filterChildrenByAgeGroup(fullChildren, ageGroup, currentFilterDate);
             }
             catch (collectionError) {
-                // Compatibility fallback for older API deployments and cached
-                // sessions that do not expose filtered collection exports.
+                // Compatibility path for older deployments that do not expose
+                // filtered collection exports. The page response itself is
+                // still produced by Python; this branch only changes transport.
                 console.warn('Ekspor identitas lengkap memakai jalur halaman cadangan:', collectionError);
                 const recentChildren = [];
                 const pageSize = 50;
@@ -884,6 +940,7 @@ export const Dashboard = ({ user, onLogout }) => {
                             asOf: start,
                             measurementEnd: end,
                             measurementStart: start,
+                            ageGroup,
                             page,
                             posyandu: viewPosyandu || undefined,
                             size: pageSize,
@@ -895,18 +952,24 @@ export const Dashboard = ({ user, onLogout }) => {
                         if (response.items.length < pageSize || recentChildren.length >= response.total)
                             break;
                     }
-                    exportedChildren = filterChildrenByAgeRange(recentChildren, 0, 59, currentFilterDate);
+                    exportedChildren = filterChildrenByAgeGroup(recentChildren, ageGroup, currentFilterDate);
                 }
                 catch (recentError) {
-                    console.warn('Jalur halaman balita baru tidak tersedia, memakai koleksi lokal:', recentError);
-                    exportedChildren = await fetchExportChildren({ currentFilterDate, ...exportQueryContext });
+                    console.warn('Jalur halaman Python tidak tersedia, memakai koleksi ekspor lama:', recentError);
+                    exportedChildren = await fetchExportChildren({ ageGroup, currentFilterDate, ...exportQueryContext });
                 }
             }
             const rows = getSigiziIdentityRows(exportedChildren, filterMonth, filterYear);
             const worksheet = createSafeWorksheet(xlsx, [SIGIZI_IDENTITY_HEADERS, ...rows]);
             const workbook = xlsx.utils.book_new();
             xlsx.utils.book_append_sheet(workbook, worksheet, "Data Balita");
-            xlsx.writeFile(workbook, `Format_Identitas_Sigizi_${MONTHS[filterMonth - 1]}_${filterYear}.xls`, { bookType: 'biff8' });
+            xlsx.writeFile(workbook, getScopedExportFilename({
+                prefix: 'Identitas-Balita-Baru',
+                month: MONTHS[filterMonth - 1],
+                year: filterYear,
+                desa: viewDesa,
+                posyandu: viewPosyandu,
+            }), { bookType: 'biff8' });
         });
     };
     const handleExportPengukuranSigizi = async () => {
@@ -917,6 +980,7 @@ export const Dashboard = ({ user, onLogout }) => {
             let usedLocalFallback = false;
             try {
                 const result = await getSigiziMeasurementExport({
+                    ageGroup,
                     monthEnd: end,
                     monthStart: start,
                     village: viewDesa || undefined,
@@ -925,7 +989,7 @@ export const Dashboard = ({ user, onLogout }) => {
                 exportItems = result.items;
             }
             catch (apiError) {
-                console.warn('API ekspor SigiZI tidak tersedia, memakai jalur data terautentikasi/lokal:', apiError);
+                console.warn('API ekspor SigiZI tidak tersedia, memakai jalur kompatibilitas data:', apiError);
                 usedLocalFallback = true;
                 const fallbackChildren = [];
                 const fallbackMeasurements = [];
@@ -935,6 +999,7 @@ export const Dashboard = ({ user, onLogout }) => {
                         const response = await getChildrenPage({
                             asOf: end,
                             measurementStart: start,
+                            ageGroup,
                             measurementEnd: end,
                             page,
                             size: pageSize,
@@ -950,8 +1015,8 @@ export const Dashboard = ({ user, onLogout }) => {
                     }
                 }
                 catch (fallbackError) {
-                    console.warn('Jalur baca terautentikasi tidak tersedia, memakai cache ekspor:', fallbackError);
-                    fallbackChildren.push(...await fetchExportChildren({ currentFilterDate, ...exportQueryContext }));
+                    console.warn('Jalur halaman Python tidak tersedia, memakai jalur kompatibilitas ekspor:', fallbackError);
+                    fallbackChildren.push(...await fetchExportChildren({ ageGroup, currentFilterDate, ...exportQueryContext }));
                 }
                 const cachedMeasurements = await fetchExportDocuments({
                     resource: 'measurements',
@@ -967,7 +1032,13 @@ export const Dashboard = ({ user, onLogout }) => {
             const worksheet = createSafeWorksheet(xlsx, [SIGIZI_MEASUREMENT_HEADERS, ...rows]);
             const workbook = xlsx.utils.book_new();
             xlsx.utils.book_append_sheet(workbook, worksheet, "Data Pengukuran");
-            xlsx.writeFile(workbook, `Format_Ukur_Sigizi_${MONTHS[filterMonth - 1]}_${filterYear}.xls`);
+            xlsx.writeFile(workbook, getScopedExportFilename({
+                prefix: 'Pengukuran',
+                month: MONTHS[filterMonth - 1],
+                year: filterYear,
+                desa: viewDesa,
+                posyandu: viewPosyandu,
+            }));
             if (usedLocalFallback)
                 showSuccess('File pengukuran SigiZI berhasil dibuat melalui jalur cadangan.');
         });
@@ -977,40 +1048,51 @@ export const Dashboard = ({ user, onLogout }) => {
         await runExport('file tabel balita', async () => {
             const xlsx = await ensureXlsx();
             const { start, end } = getSelectedMonthRange(filterMonth, filterYear);
-            const [exportedChildren, measurements] = await Promise.all([
-                fetchExportChildren({ currentFilterDate, ...exportQueryContext }),
-                fetchExportDocuments({
-                    resource: 'measurements',
-                    dateField: 'tglUkur',
-                    start,
-                    end,
-                    ...exportQueryContext,
-                }),
-            ]);
-            const measurementsByChild = latestMeasurementsByChild(measurements);
-            let pythonStatuses = {};
-            const analysisEntries = exportedChildren
-                .map((child) => ({ child, measurement: measurementsByChild[child?.id], history: [] }))
-                .filter((entry) => entry.child?.id && entry.measurement?.bb !== null && entry.measurement?.bb !== undefined && entry.measurement?.bb !== '');
-            try {
-                const response = await requestPythonAnthropometry(analysisEntries);
-                pythonStatuses = (response.items || []).reduce((result, item) => {
-                    const entry = analysisEntries[Math.max(0, Number(item.rowNumber || 1) - 1)];
-                    const key = String(entry?.child?.id || '');
-                    if (key) result[key] = item;
-                    return result;
-                }, {});
-            } catch (error) {
-                // Keep exports available while an older gateway is being rolled out.
-                console.warn('Status Python belum tersedia untuk ekspor; memakai fallback lokal.', error);
+            const previous = new Date(filterYear, filterMonth - 2, 1);
+            const previousYear = previous.getFullYear();
+            const previousMonth = previous.getMonth() + 1;
+            const previousMonthStart = `${previousYear}-${String(previousMonth).padStart(2, '0')}-01`;
+            const previousMonthEnd = `${previousYear}-${String(previousMonth).padStart(2, '0')}-${String(new Date(previousYear, previousMonth, 0).getDate()).padStart(2, '0')}`;
+            const view = activeTab === 'data_balita' ? 'data' : activeTab;
+            const exportedChildrenById = new Map();
+            const measurementsByChild = {};
+            const pageSize = 50;
+            for (let page = 1; page <= 200; page += 1) {
+                const response = await getChildrenPage({
+                    asOf: end,
+                    historyStart: '1900-01-01',
+                    measurementEnd: end,
+                    measurementStart: start,
+                    previousMonthEnd,
+                    previousMonthStart,
+                    page,
+                    ageGroup,
+                    search: searchTerm || undefined,
+                    posyandu: viewPosyandu || undefined,
+                    size: pageSize,
+                    sort: sortOrder,
+                    view,
+                    village: viewDesa || undefined,
+                });
+                response.items.forEach((item) => exportedChildrenById.set(item.id, { id: item.id, ...item.data }));
+                response.measurements.forEach((item) => {
+                    const measurement = { id: item.id, ...item.data };
+                    const childId = measurement.childId || measurement.child_id;
+                    if (childId) measurementsByChild[childId] = measurement;
+                });
+                if (response.items.length < pageSize || exportedChildrenById.size >= response.total) break;
             }
+            const exportedChildren = Array.from(exportedChildrenById.values());
+            const pythonStatuses = Object.fromEntries(
+                Object.entries(measurementsByChild).map(([childId, measurement]) => [childId, measurement])
+            );
             const rows = getTableExportRows({
                 activeTab,
                 children: exportedChildren,
                 measurementsByChild,
                 referenceDate: currentFilterDate,
-                sortData: getSortedData,
                 pythonStatuses,
+                pythonFiltered: true,
             });
             const worksheet = createSafeWorksheet(xlsx, [TABLE_EXPORT_HEADERS, ...rows]);
             const workbook = xlsx.utils.book_new();
@@ -1032,7 +1114,7 @@ export const Dashboard = ({ user, onLogout }) => {
             const xlsx = await ensureXlsx();
             const { start, end } = getSelectedMonthRange(filterMonth, filterYear);
             const [allChildren, logs] = await Promise.all([
-                fetchExportChildren({ currentFilterDate, ...exportQueryContext }),
+                fetchExportChildren({ ageGroup, currentFilterDate, ...exportQueryContext }),
                 fetchExportDocuments({
                     resource: 'mpasi_logs',
                     dateField: 'tglMonitoring',
@@ -1041,7 +1123,7 @@ export const Dashboard = ({ user, onLogout }) => {
                     ...exportQueryContext,
                 }),
             ]);
-            const exportedChildren = filterChildrenByAgeRange(allChildren, 6, 23, currentFilterDate);
+            const exportedChildren = filterChildrenByAgeGroup(allChildren, '6-23', currentFilterDate);
             const childIds = new Set(exportedChildren.map((child) => child.id).filter(Boolean));
             const logsByChild = latestMpasiLogsByChild(
                 logs.filter((log) => childIds.has(log.childId || log.child_id || log.balitaId))
@@ -1057,7 +1139,7 @@ export const Dashboard = ({ user, onLogout }) => {
         await runExport('file PMT', async () => {
             const xlsx = await ensureXlsx();
             const [exportedChildren, exportedPrograms] = await Promise.all([
-                fetchExportChildren({ currentFilterDate, ...exportQueryContext }),
+                fetchExportChildren({ ageGroup, currentFilterDate, ...exportQueryContext }),
                 fetchExportDocuments({ resource: 'pmt_programs', ...exportQueryContext }),
             ]);
             const childById = new Map(exportedChildren.filter((child) => child.id).map((child) => [child.id, child]));
@@ -1087,10 +1169,7 @@ export const Dashboard = ({ user, onLogout }) => {
             case 'recycle_bin': return deletedChildren;
             case 'recent': return newInputs;
             case 'mpasi':
-                return activeChildren.filter(c => {
-                    const age = getAgeInMonths(c.tglLahir, currentFilterDate);
-                    return age >= 6 && age <= 23;
-                });
+                return activeChildren.filter(c => matchesAgeGroup(c, '6-23', currentFilterDate));
             default: return activeChildren;
         }
     };
@@ -1127,6 +1206,13 @@ export const Dashboard = ({ user, onLogout }) => {
         setDraftPosyandu(defaultPosyandu);
         setViewDesa(defaultDesa);
         setViewPosyandu(defaultPosyandu);
+        const resetAgeGroup = normalizeAgeGroupForTab(DEFAULT_AGE_GROUP, activeTab);
+        setAgeGroup(resetAgeGroup);
+        window.__ePosyanduAgeGroup = resetAgeGroup;
+        window.__ePosyanduFilterDate = new Date(filterYear, filterMonth, 0).toISOString();
+        window.dispatchEvent(new CustomEvent('e-posyandu-filter-context-change', {
+            detail: { ageGroup: resetAgeGroup, filterDate: window.__ePosyanduFilterDate }
+        }));
     };
     const measurementChild = useMemo(() => {
         if (selectedMeasurementChild?.id === measurementChildId)
@@ -1381,9 +1467,9 @@ export const Dashboard = ({ user, onLogout }) => {
                             Native.createElement("div", { className: "mt-3 flex flex-wrap gap-2" },
                                 Native.createElement("button", { type: "button", className: "apple-button apple-button-primary bg-blue-600 px-4 py-2 text-sm font-semibold text-white", onClick: () => void handleResolveSyncConflict(syncConflicts[0].id, 'keep-local') }, "Gunakan Data Saya"),
                                 Native.createElement("button", { type: "button", className: "apple-button apple-button-secondary px-4 py-2 text-sm font-semibold", onClick: () => void handleResolveSyncConflict(syncConflicts[0].id, 'accept-server') }, "Gunakan Data Server")))))),
-                activeTab !== 'add_child' && activeTab !== 'measurement' && activeTab !== 'change_history' && activeTab !== 'admin_backend' && (Native.createElement("div", { className: "mb-6" },
-                    Native.createElement(LocationFilterPanel, { draftDesa: draftDesa, draftPosyandu: draftPosyandu, filterMonth: filterMonth, filterYear: filterYear, onApply: handleApplyLocationFilter, onReset: handleResetLocationFilter, role: user.role, setDraftDesa: setDraftDesa, setDraftPosyandu: setDraftPosyandu, setFilterMonth: setFilterMonth, setFilterYear: setFilterYear, user: user }))),
-                Native.createElement(Native.Suspense, { fallback: Native.createElement(DashboardPageSkeleton, null) }, activeTab === 'admin_backend' ? (user.role === ROLES.SUPER_ADMIN ? Native.createElement(AdminBackendPage, null) : Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, pageState: dashboardPageState, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'add_child' ? (Native.createElement(AddChildPage, { allChildren: children, onBack: handleBackFromAddChild, onSuccess: handleBackFromAddChild, user: user })) : activeTab === 'measurement' ? (measurementChild ? (Native.createElement(MeasurementPage, { child: measurementChild, onBack: handleBackFromMeasurement })) : (Native.createElement(Card, { className: "p-8 text-center text-slate-500" }, childrenLoading ? 'Memuat data balita...' : 'Data balita tidak ditemukan atau tidak dapat diakses.'))) : activeTab === 'dashboard' ? (Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, pageState: dashboardPageState, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'asi_eksklusif' ? (Native.createElement(ExclusiveBreastfeedingPage, { filterMonth: filterMonth, filterYear: filterYear, refreshKey: dataRevision, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'pmt_program' ? (Native.createElement(PmtProgramPage, { childrenData: children, pmtPrograms: pmtPrograms, pageState: pmtPageState, onExportPmt: handleExportPmt, onDeleteProgram: handleDeletePmt, onOpenMonitoring: handleOpenPmtMonitoring })) : activeTab === 'change_history' ? (Native.createElement(ChangeHistoryPage, { changeLogs: changeLogs, loading: changeHistoryLoading, error: changeHistoryError, pageState: changeHistoryPageState, currentPage: changeHistoryPage, total: changeHistoryTotal, pageSize: 10, onPageChange: setChangeHistoryPage, onRetry: () => setChangeHistoryRevision((revision) => revision + 1) })) : (Native.createElement(ChildrenTablePage, { activeTab: activeTab, currentFilterDate: currentFilterDate, currentPage: currentPage, displayData: tableDisplayData, fileInputRef: fileInputRef, filterMonth: filterMonth, filterYear: filterYear, handleExportMpasi: handleExportMpasi, handleExportPengukuranSigizi: handleExportPengukuranSigizi, handleExportSigizi: handleExportSigizi, handleExportTable: handleExportTable, handleImportIdentitas: handleImportIdentitas, handlePermanentDelete: handlePermanentDelete, handleRestore: handleRestore, itemsPerPage: itemsPerPage, loading: tableLoading, pageState: pagedChildrenPageState, monthlyMeasurements: tableMeasurements, mpasiLogs: tableMpasiLogs, paginatedData: tablePaginatedData, searchTerm: searchTerm, searchDraft: searchDraft, setChildToDelete: setChildToDelete, setChildToMpasi: setChildToMpasi, setCurrentPage: setCurrentPage, onEditChild: handleOpenEditChild, setPmtModalData: setPmtModalData, setSearchDraft: setSearchDraft, onClearSearch: handleClearSearch, onSubmitSearch: handleSearchSubmit, onOpenMeasurement: handleOpenMeasurementPage, onOpenAddChild: handleOpenAddChildPage, setSortOrder: setSortOrder, sortOrder: sortOrder, totalDataCount: tableTotalCount, user: user, readOnly: !canWrite })))),
+                activeTab !== 'add_child' && activeTab !== 'measurement' && activeTab !== 'admin_backend' && (Native.createElement("div", { className: "mb-6" },
+                    Native.createElement(LocationFilterPanel, { ageGroup: ageGroup, ageGroupOptions: ageGroupOptions, draftDesa: draftDesa, draftPosyandu: draftPosyandu, filterMonth: filterMonth, filterYear: filterYear, onApply: handleApplyLocationFilter, onReset: handleResetLocationFilter, role: user.role, setAgeGroup: setAgeGroup, setDraftDesa: setDraftDesa, setDraftPosyandu: setDraftPosyandu, setFilterMonth: setFilterMonth, setFilterYear: setFilterYear, user: user, showAgeGroupFilter: activeTab !== 'mpasi' }))),
+                Native.createElement(Native.Suspense, { fallback: Native.createElement(DashboardPageSkeleton, null) }, activeTab === 'admin_backend' ? (user.role === ROLES.SUPER_ADMIN ? Native.createElement(AdminBackendPage, null) : Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, pageState: dashboardPageState, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, ageGroup: ageGroup, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'add_child' ? (Native.createElement(AddChildPage, { allChildren: children, onBack: handleBackFromAddChild, onSuccess: handleBackFromAddChild, user: user })) : activeTab === 'measurement' ? (measurementChild ? (Native.createElement(MeasurementPage, { child: measurementChild, onBack: handleBackFromMeasurement })) : (Native.createElement(Card, { className: "p-8 text-center text-slate-500" }, childrenLoading ? 'Memuat data balita...' : 'Data balita tidak ditemukan atau tidak dapat diakses.'))) : activeTab === 'dashboard' ? (Native.createElement(DashboardOverviewPage, { stats: dashboardStats, loading: dashboardStatsLoading, pageState: dashboardPageState, monitoringStatus: monitoringStatus, filterMonth: filterMonth, filterYear: filterYear, ageGroup: ageGroup, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'asi_eksklusif' ? (Native.createElement(ExclusiveBreastfeedingPage, { ageGroup: ageGroup, filterMonth: filterMonth, filterYear: filterYear, refreshKey: dataRevision, viewDesa: viewDesa, viewPosyandu: viewPosyandu })) : activeTab === 'pmt_program' ? (Native.createElement(PmtProgramPage, { ageGroup: ageGroup, currentFilterDate: currentFilterDate, childrenData: children, pmtPrograms: pmtPrograms, pageState: pmtPageState, onExportPmt: handleExportPmt, onDeleteProgram: handleDeletePmt, onOpenMonitoring: handleOpenPmtMonitoring })) : activeTab === 'change_history' ? (Native.createElement(ChangeHistoryPage, { changeLogs: changeLogs, loading: changeHistoryLoading, error: changeHistoryError, pageState: changeHistoryPageState, currentPage: changeHistoryPage, total: changeHistoryTotal, pageSize: 10, onPageChange: setChangeHistoryPage, onRetry: () => setChangeHistoryRevision((revision) => revision + 1) })) : (Native.createElement(ChildrenTablePage, { activeTab: activeTab, currentFilterDate: currentFilterDate, currentPage: currentPage, displayData: tableDisplayData, fileInputRef: fileInputRef, filterMonth: filterMonth, filterYear: filterYear, handleExportMpasi: handleExportMpasi, handleExportPengukuranSigizi: handleExportPengukuranSigizi, handleExportSigizi: handleExportSigizi, handleExportTable: handleExportTable, handleImportIdentitas: handleImportIdentitas, handlePermanentDelete: handlePermanentDelete, handleRestore: handleRestore, itemsPerPage: itemsPerPage, loading: tableLoading, pageState: pagedChildrenPageState, monthlyMeasurements: tableMeasurements, mpasiLogs: tableMpasiLogs, paginatedData: tablePaginatedData, searchTerm: searchTerm, searchDraft: searchDraft, setChildToDelete: setChildToDelete, setChildToMpasi: setChildToMpasi, setCurrentPage: setCurrentPage, onEditChild: handleOpenEditChild, setPmtModalData: setPmtModalData, setSearchDraft: setSearchDraft, onClearSearch: handleClearSearch, onSubmitSearch: handleSearchSubmit, onOpenMeasurement: handleOpenMeasurementPage, onOpenAddChild: handleOpenAddChildPage, setSortOrder: setSortOrder, sortOrder: sortOrder, totalDataCount: tableTotalCount, user: user, readOnly: !canWrite })))),
             Native.createElement("footer", { className: "app-footer" },
                 Native.createElement("p", null, "\u00A9 2026 UPTD Puskesmas Gumukmas Developed by Johandi Arifiansyach"),
                 Native.createElement("button", { type: "button", className: "app-version-button", onClick: openReleaseNotes, "aria-haspopup": "dialog", title: "Lihat apa yang baru" }, `E-Posyandu v${APP_VERSION}`))),

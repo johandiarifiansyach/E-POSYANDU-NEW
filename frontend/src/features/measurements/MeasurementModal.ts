@@ -2,13 +2,13 @@
 import * as Context from '../../shared/dashboardContext';
 import { errorMessage, type PageState } from '../../shared/pageState';
 import { TableLoadingSkeleton } from '../../ui/skeleton';
-import { requestPythonAnthropometry } from '../../api/analysisApi';
+import { pythonWeightGainStatus, requestPythonAnthropometry } from '../../api/analysisApi';
 
 const {
     Native, useState, useEffect, useMemo, useRef, collection, addDoc,
     query, where, onSnapshot, serverTimestamp, updateDoc, doc, deleteDoc,
-    getDocs, db, appId, formatDate, parseLocaleNumber, parseLocaleNumberForRange,
-    getKBM, getAgeInMonths, calculateZScore, calculateGiziStatus, showSuccess, Button, InputGroup,
+    getDocs, db, appId, formatDate, getAgeInMonths, parseLocaleNumberForRange,
+    showSuccess, Button, InputGroup,
     Select, Badge, KenaikanBadge, StatusBadge, X, XCircle, ChevronLeft
 } = Context;
 
@@ -28,6 +28,7 @@ export const MeasurementModal = ({ child, onClose }) => {
         caraUkur: '',
         statusNaik: 'B'
     });
+    const [asiTouched, setAsiTouched] = useState(false);
     const [historyState, setHistoryState] = useState<PageState<any[]>>({ status: 'idle' });
     const [saveState, setSaveState] = useState<PageState<void>>({ status: 'idle' });
     useEffect(() => {
@@ -56,36 +57,9 @@ export const MeasurementModal = ({ child, onClose }) => {
     const historyLoading = historyState.status === 'loading';
     const historyError = historyState.status === 'error' ? historyState.message : null;
     const saveError = saveState.status === 'error' ? saveState.message : null;
-    useEffect(() => {
-        if (!formData.bb || !formData.tglUkur)
-            return;
-        const currentWeight = parseLocaleNumber(formData.bb);
-        if (currentWeight === null)
-            return;
-        const currentDate = new Date(formData.tglUkur);
-        const prevMeasurement = history.find((m) => new Date(m.tglUkur).getTime() < currentDate.getTime());
-        if (!prevMeasurement) {
-            setFormData((prev) => ({ ...prev, statusNaik: 'B' }));
-            return;
-        }
-        const prevDate = new Date(prevMeasurement.tglUkur);
-        const diffTime = Math.abs(currentDate.getTime() - prevDate.getTime());
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        if (diffDays > 45) {
-            setFormData((prev) => ({ ...prev, statusNaik: 'O' }));
-            return;
-        }
-        const prevWeight = parseLocaleNumber(prevMeasurement.bb);
-        if (prevWeight === null)
-            return;
-        const gain = (currentWeight - prevWeight) * 1000;
-        const measureAgeInMonths = getAgeInMonths(child.tglLahir, currentDate);
-        const minGain = getKBM(measureAgeInMonths);
-        const newStatus = gain >= minGain ? 'N' : 'T';
-        setFormData((prev) => ({ ...prev, statusNaik: newStatus }));
-    }, [formData.bb, formData.tglUkur, history, child.tglLahir]);
     const measureDate = useMemo(() => new Date(formData.tglUkur), [formData.tglUkur]);
     const ageAtMeasure = useMemo(() => getAgeInMonths(child.tglLahir, measureDate), [child.tglLahir, measureDate]);
+    const asiLabel = `ASI EKSKLUSIF USIA ${Math.max(0, Math.min(6, ageAtMeasure))} BULAN`;
     const monthlyHistory = useMemo(() => {
         const monthlyMap = new Map();
         history.forEach((item) => {
@@ -124,7 +98,8 @@ export const MeasurementModal = ({ child, onClose }) => {
                 setPythonHistoryStatuses(next);
             })
             .catch(() => {
-                // Older gateways/offline mode retain the local display as a safe fallback.
+                // Do not calculate a second result in the browser. A missing
+                // Python response is represented by empty status cells.
                 if (active) setPythonHistoryStatuses({});
             });
         return () => { active = false; };
@@ -137,7 +112,13 @@ export const MeasurementModal = ({ child, onClose }) => {
         else
             setFormData((prev) => ({ ...prev, caraUkur: 'Terlentang' }));
     }, [ageAtMeasure, activeMenu]);
+    useEffect(() => {
+        if (activeMenu === 'add' && !asiTouched && ageAtMeasure === 0) {
+            setFormData((previous) => previous.asi === 'Ya' ? previous : { ...previous, asi: 'Ya' });
+        }
+    }, [activeMenu, ageAtMeasure, asiTouched]);
     const handleStartAdd = () => {
+        setAsiTouched(false);
         setActiveMenu('add');
         setFormData((prev) => ({
             ...prev,
@@ -286,19 +267,16 @@ export const MeasurementModal = ({ child, onClose }) => {
                                     month: 'short',
                                     year: 'numeric'
                                 });
-                                const ageAtHistory = getAgeInMonths(child.tglLahir, new Date(h.tglUkur));
-                                const localStatuses = {
-                                    statusBbu: calculateGiziStatus(h.bb, 'BBU', ageAtHistory, child.jk),
-                                    statusTbu: calculateGiziStatus(h.tb, 'TBU', ageAtHistory, child.jk, null, h.caraUkur),
-                                    statusBbtb: calculateGiziStatus(h.bb, 'BBTB', ageAtHistory, child.jk, h.tb, h.caraUkur),
-                                };
                                 const pythonStatus = pythonHistoryStatuses[String(h.id || h.tglUkur || '')];
                                 const statuses = pythonStatus ? {
-                                    ...localStatuses,
                                     statusBbu: pythonStatus.bbuStatus,
                                     statusTbu: pythonStatus.tbuStatus,
                                     statusBbtb: pythonStatus.bbtbStatus,
-                                } : localStatuses;
+                                } : {
+                                    statusBbu: '-',
+                                    statusTbu: '-',
+                                    statusBbtb: '-',
+                                };
                                 return (Native.createElement("tr", { key: h.id || h.tglUkur, className: "ios-data-row text-slate-700" },
                                     Native.createElement("td", { className: "py-2 pr-4 font-semibold uppercase whitespace-nowrap" }, monthLabel),
                                     Native.createElement("td", { className: "py-2 pr-4 whitespace-nowrap" }, formatIndoDate(h.tglUkur)),
@@ -313,7 +291,7 @@ export const MeasurementModal = ({ child, onClose }) => {
                                     Native.createElement("td", { className: "py-2 px-2 text-center" },
                                         Native.createElement(StatusBadge, { status: statuses.statusBbtb })),
                                     Native.createElement("td", { className: "py-2 pl-2 text-center" },
-                                        Native.createElement(KenaikanBadge, { status: h.statusNaik }))));
+                                        Native.createElement(KenaikanBadge, { status: pythonWeightGainStatus(pythonStatus) || '-' }))));
                             }))))))) : (Native.createElement("form", { onSubmit: handleSubmit, className: "space-y-6" },
                     Native.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
                         Native.createElement(InputGroup, { label: "Tanggal Pengukuran" },
@@ -348,7 +326,8 @@ export const MeasurementModal = ({ child, onClose }) => {
                             Native.createElement(Select, { value: formData.mbg, onChange: (e) => setFormData({ ...formData, mbg: e.target.value }), options: [
                                     { value: 'Tidak', label: 'Tidak' },
                                     { value: 'Ya', label: 'Ya' }
-                                ] }))),
+                                ] }),
+                            Native.createElement("p", { className: "text-[11px] leading-4 font-medium italic normal-case text-slate-500" }, "*Balita yang menerima PMT dari Posyandu atau PAUD/TK."))),
                     Native.createElement("div", { className: "space-y-4" },
                         showVitA && (Native.createElement("div", { className: "bg-amber-50 p-4 rounded-xl border border-amber-100" },
                             Native.createElement(InputGroup, { label: "Dapat Vitamin A (Feb/Agu)?" },
@@ -357,8 +336,8 @@ export const MeasurementModal = ({ child, onClose }) => {
                                         { value: 'Ya', label: 'Ya' }
                                     ] })))),
                         showAsi && (Native.createElement("div", { className: "bg-blue-50 p-4 rounded-xl border border-blue-100" },
-                            Native.createElement(InputGroup, { label: "ASI Eksklusif (0-6 bln)?" },
-                                Native.createElement(Select, { className: "bg-white", value: formData.asi, onChange: (e) => setFormData({ ...formData, asi: e.target.value }), options: [
+                            Native.createElement(InputGroup, { label: asiLabel },
+                                Native.createElement(Select, { className: "bg-white", value: formData.asi, onChange: (e) => { setAsiTouched(true); setFormData({ ...formData, asi: e.target.value }); }, options: [
                                         { value: 'Tidak', label: 'Tidak' },
                                         { value: 'Ya', label: 'Ya' }
                                     ] }))))),

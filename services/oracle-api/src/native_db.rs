@@ -1,4 +1,4 @@
-use std::{env, str::FromStr, time::Duration};
+use std::{collections::HashMap, env, str::FromStr, time::Duration};
 
 use axum::http::Method;
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
@@ -12,6 +12,7 @@ use tokio_postgres::{
 use tracing::{error, warn};
 use uuid::Uuid;
 
+use crate::native_cache::NativeCache;
 use crate::realtime::{NOTIFY_CHANNEL, RealtimeEvent, RealtimeHub};
 
 const DEFAULT_POOL_SIZE: usize = 5;
@@ -84,7 +85,11 @@ impl NativeDatabase {
             .is_ok()
     }
 
-    pub(crate) async fn listen_realtime(&self, hub: RealtimeHub) {
+    pub(crate) async fn listen_realtime(
+        &self,
+        hub: RealtimeHub,
+        cache: Option<NativeCache>,
+    ) {
         let config = self.config.clone();
         loop {
             let connection = config.connect(NoTls).await;
@@ -113,6 +118,17 @@ impl NativeDatabase {
                         if let Ok(event) =
                             serde_json::from_str::<RealtimeEvent>(notification.payload())
                         {
+                            // Python commits materialized WHO/ML results
+                            // directly to PostgreSQL, so no Rust mutation
+                            // path gets a chance to bump Redis' dynamic
+                            // cache version.  Analysis notifications close
+                            // that gap without invalidating the cache for
+                            // every polling request.
+                            if event.operation == "analysis_updated"
+                                && let Some(cache) = cache.as_ref()
+                            {
+                                cache.invalidate().await;
+                            }
                             hub.publish(event);
                         }
                     }
@@ -212,10 +228,111 @@ impl NativeDatabase {
             .first()
             .map(|row| row.get::<_, i64>("total"))
             .unwrap_or(0);
-        let documents = rows
+        let mut documents = rows
             .iter()
             .map(|row| row.get::<_, Json<Value>>("document").0)
             .collect::<Vec<_>>();
+        // Derived WHO/N/T/O/B/ASI/risk fields are written by Python and joined
+        // only for reads.  A missing table/row is tolerated during a rolling
+        // migration; callers then see the raw document plus a pending marker.
+        if table == "measurements" && !documents.is_empty() {
+            let ids = documents
+                .iter()
+                .filter_map(|document| {
+                    document
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect::<Vec<_>>();
+            if !ids.is_empty()
+                && let Ok(analysis_rows) = client
+                    .query(
+                        "SELECT measurement_id, bbu_status, tbu_status, bbtb_status, imtu_status,
+                                lila_status, lk_status, bbu_z_score::double precision as bbu_z_score,
+                                tbu_z_score::double precision as tbu_z_score,
+                                bbtb_z_score::double precision as bbtb_z_score,
+                                imtu_z_score::double precision as imtu_z_score,
+                                lila_z_score::double precision as lila_z_score,
+                                lk_z_score::double precision as lk_z_score, weight_gain_status,
+                                weight_gain_minimum_grams, exclusive_breastfeeding_status,
+                                result_json
+                         FROM public.measurement_analysis
+                         WHERE measurement_id = ANY($1::text[])",
+                        &[&ids],
+                    )
+                    .await
+            {
+                let by_id = analysis_rows
+                    .into_iter()
+                    .map(|row| {
+                        let id = row.get::<_, String>("measurement_id");
+                        let derived = json!({
+                            "bbuStatus": row.get::<_, Option<String>>("bbu_status"),
+                            "tbuStatus": row.get::<_, Option<String>>("tbu_status"),
+                            "bbtbStatus": row.get::<_, Option<String>>("bbtb_status"),
+                            "imtuStatus": row.get::<_, Option<String>>("imtu_status"),
+                            "lilaStatus": row.get::<_, Option<String>>("lila_status"),
+                            "lkStatus": row.get::<_, Option<String>>("lk_status"),
+                            "bbuZScore": row.get::<_, Option<f64>>("bbu_z_score"),
+                            "tbuZScore": row.get::<_, Option<f64>>("tbu_z_score"),
+                            "bbtbZScore": row.get::<_, Option<f64>>("bbtb_z_score"),
+                            "imtuZScore": row.get::<_, Option<f64>>("imtu_z_score"),
+                            "lilaZScore": row.get::<_, Option<f64>>("lila_z_score"),
+                            "lkZScore": row.get::<_, Option<f64>>("lk_z_score"),
+                            "statusNaik": row.get::<_, Option<String>>("weight_gain_status"),
+                            "weightGainStatus": row.get::<_, Option<String>>("weight_gain_status"),
+                            "weightGainMinimumGrams": row.get::<_, Option<i32>>("weight_gain_minimum_grams"),
+                            "exclusiveBreastfeedingStatus": row.get::<_, Option<String>>("exclusive_breastfeeding_status"),
+                            "analysis": row.get::<_, Json<Value>>("result_json").0,
+                            "analysisPending": false,
+                        });
+                        (id, derived)
+                    })
+                    .collect::<HashMap<_, _>>();
+                for document in &mut documents {
+                    if let Some(object) = document.as_object_mut()
+                        && let Some(id) = object.get("id").and_then(Value::as_str)
+                    {
+                        let derived = by_id
+                            .get(id)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                json!({
+                                    "bbuStatus": null,
+                                    "tbuStatus": null,
+                                    "bbtbStatus": null,
+                                    "imtuStatus": null,
+                                    "lilaStatus": null,
+                                    "lkStatus": null,
+                                    "bbuZScore": null,
+                                    "tbuZScore": null,
+                                    "bbtbZScore": null,
+                                    "imtuZScore": null,
+                                    "lilaZScore": null,
+                                    "lkZScore": null,
+                                    "statusNaik": null,
+                                    "weightGainStatus": null,
+                                    "weightGainMinimumGrams": null,
+                                    "exclusiveBreastfeedingStatus": null,
+                                    "analysis": null,
+                                    "analysisPending": true,
+                                })
+                            });
+                        let current = object.get("data").and_then(Value::as_object).cloned();
+                        if let Some(current) = current {
+                            let mut data = current;
+                            if let Some(values) = derived.as_object() {
+                                data.extend(values.clone());
+                            }
+                            object.insert("data".to_owned(), Value::Object(data));
+                        } else {
+                            object.extend(derived.as_object().cloned().unwrap_or_default());
+                        }
+                    }
+                }
+            }
+        }
         let content_range = count.then(|| {
             if documents.is_empty() {
                 format!("*/{total}")
@@ -841,20 +958,42 @@ fn build_delete(
 
 fn rpc_sql(name: &str) -> Result<&'static str, DatabaseError> {
     match name {
+        "eposyandu_dashboard_dataset" => Ok(
+            "SELECT public.eposyandu_dashboard_dataset(a.p_month_start, a.p_month_end, a.p_previous_month_start, a.p_previous_month_end, a.p_age_group, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_month_start date, p_month_end date, p_previous_month_start date, p_previous_month_end date, p_age_group text, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
+        ),
         "eposyandu_dashboard_stats" => Ok(
             "SELECT public.eposyandu_dashboard_stats(a.p_month_start, a.p_month_end, a.p_previous_month_start, a.p_previous_month_end, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_month_start date, p_month_end date, p_previous_month_start date, p_previous_month_end date, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
+        ),
+        "eposyandu_dashboard_snapshot" => Ok(
+            "SELECT public.eposyandu_dashboard_snapshot(a.p_cache_key, a.p_scope_key, a.p_month_start, a.p_month_end, a.p_previous_month_start, a.p_previous_month_end, a.p_age_group, a.p_village, a.p_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_cache_key text, p_scope_key text, p_month_start date, p_month_end date, p_previous_month_start date, p_previous_month_end date, p_age_group text, p_village text, p_posyandu text)",
         ),
         "eposyandu_exclusive_breastfeeding_page" => Ok(
             "SELECT public.eposyandu_exclusive_breastfeeding_page(a.p_measurement_start, a.p_measurement_end, a.p_age_group, a.p_page, a.p_size, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_measurement_start date, p_measurement_end date, p_age_group text, p_page integer, p_size integer, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
         ),
         "eposyandu_problem_children_page" => Ok(
+            "SELECT public.eposyandu_problem_children_page(a.p_month_start, a.p_month_end, a.p_problem, a.p_page, a.p_size, a.p_search, a.p_sort, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu, a.p_age_group) AS value FROM jsonb_to_record($1::jsonb) AS a(p_month_start date, p_month_end date, p_problem text, p_page integer, p_size integer, p_search text, p_sort text, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text, p_age_group text)",
+        ),
+        // Rolling-migration fallback for databases before migration 039.
+        // Keep the legacy arity under a distinct internal operation name so
+        // the age-aware operation can be used whenever the new overload is
+        // available without breaking older replicas.
+        "eposyandu_problem_children_page_legacy" => Ok(
             "SELECT public.eposyandu_problem_children_page(a.p_month_start, a.p_month_end, a.p_problem, a.p_page, a.p_size, a.p_search, a.p_sort, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_month_start date, p_month_end date, p_problem text, p_page integer, p_size integer, p_search text, p_sort text, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
         ),
         "eposyandu_replica_children_page" => Ok(
-            "SELECT public.eposyandu_replica_children_page(a.p_as_of, a.p_measurement_start, a.p_measurement_end, a.p_page, a.p_size, a.p_sort, a.p_view, a.p_search, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_as_of date, p_measurement_start date, p_measurement_end date, p_page integer, p_size integer, p_sort text, p_view text, p_search text, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
+            "SELECT public.eposyandu_replica_children_page(a.p_as_of, a.p_measurement_start, a.p_measurement_end, a.p_page, a.p_size, a.p_sort, a.p_view, a.p_search, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu, a.p_age_group) AS value FROM jsonb_to_record($1::jsonb) AS a(p_as_of date, p_measurement_start date, p_measurement_end date, p_page integer, p_size integer, p_sort text, p_view text, p_search text, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text, p_age_group text)",
+        ),
+        "eposyandu_materialized_children_page" => Ok(
+            "SELECT public.eposyandu_materialized_children_page(a.p_as_of, a.p_measurement_start, a.p_measurement_end, a.p_page, a.p_size, a.p_sort, a.p_view, a.p_search, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu, a.p_age_group) AS value FROM jsonb_to_record($1::jsonb) AS a(p_as_of date, p_measurement_start date, p_measurement_end date, p_page integer, p_size integer, p_sort text, p_view text, p_search text, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text, p_age_group text)",
+        ),
+        "eposyandu_materialized_exclusive_breastfeeding_page" => Ok(
+            "SELECT public.eposyandu_materialized_exclusive_breastfeeding_page(a.p_measurement_start, a.p_measurement_end, a.p_age_group, a.p_page, a.p_size, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_measurement_start date, p_measurement_end date, p_age_group text, p_page integer, p_size integer, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
+        ),
+        "eposyandu_change_history_page" => Ok(
+            "SELECT public.eposyandu_change_history_page(a.p_as_of, a.p_page, a.p_size, a.p_age_group, a.p_search, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_as_of date, p_page integer, p_size integer, p_age_group text, p_search text, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
         ),
         "eposyandu_sigizi_measurement_export" => Ok(
-            "SELECT public.eposyandu_sigizi_measurement_export(a.p_month_start, a.p_month_end, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_month_start date, p_month_end date, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
+            "SELECT public.eposyandu_sigizi_measurement_export(a.p_month_start, a.p_month_end, a.p_age_group, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_month_start date, p_month_end date, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text, p_age_group text)",
         ),
         "eposyandu_cleanup_retention" => Ok(
             "SELECT public.eposyandu_cleanup_retention(coalesce(a.p_now, clock_timestamp())) AS value FROM jsonb_to_record($1::jsonb) AS a(p_now timestamptz)",
@@ -914,6 +1053,13 @@ mod tests {
     }
 
     #[test]
+    fn exposes_python_materialized_read_rpcs() {
+        assert!(rpc_sql("eposyandu_materialized_children_page").is_ok());
+        assert!(rpc_sql("eposyandu_materialized_exclusive_breastfeeding_page").is_ok());
+        assert!(rpc_sql("eposyandu_dashboard_snapshot").is_ok());
+    }
+
+    #[test]
     fn validates_native_auth_user_ids_as_uuid_parameters() {
         assert!(parse_user_uuid("00000000-0000-0000-0000-000000000001").is_ok());
         assert!(parse_user_uuid("not-a-uuid").is_err());
@@ -931,6 +1077,13 @@ mod tests {
         .expect("valid filter");
         assert_eq!(filters, vec!["t.\"updated_at\" > $1::text::timestamptz"]);
         assert_eq!(values.len(), 1);
+    }
+
+    #[test]
+    fn exposes_python_dashboard_input_rpc() {
+        let sql = rpc_sql("eposyandu_dashboard_dataset").expect("dashboard input RPC");
+        assert!(sql.contains("public.eposyandu_dashboard_dataset"));
+        assert!(sql.contains("p_previous_month_end"));
     }
 
     #[tokio::test]

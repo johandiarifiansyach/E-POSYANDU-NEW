@@ -1,11 +1,10 @@
 // @ts-nocheck
-import Native, { useEffect, useMemo, useState } from '../runtime/dom';
+import Native, { useMemo } from '../runtime/dom';
 import { Badge, Button, DataTable, KenaikanBadge, Pagination, StatusBadge } from '../components';
 import { ChevronDown, FileDown, FileText, FileUp, Filter, Gift, Pencil, Plus, RotateCcw, Ruler, Search, Trash2, Utensils, X } from '../ui/icons';
-import { TableLoadingSkeleton } from '../ui/skeleton';
+import { SkeletonBlock, TableLoadingSkeleton } from '../ui/skeleton';
 import { Card, formatIndoDate, isFullAccessRole, MONTHS, ROLES } from './DashboardApp';
-import { getMeasurementStatuses } from '../features/measurements/measurementRules';
-import { requestPythonAnthropometry } from '../api/analysisApi';
+import { pythonWeightGainStatus } from '../api/analysisApi';
 import { getPmtCategoryForTab } from '../features/children/childRules';
 import type { PageState } from '../shared/pageState';
 function getPageTitle(activeTab, filterMonth, filterYear) {
@@ -33,38 +32,18 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
     const pageLoading = resolvedState.status === 'loading';
     const pageError = resolvedState.status === 'error' ? resolvedState.message : null;
     const pageItems = resolvedState.status === 'success' ? resolvedState.data.items : paginatedData;
-    const [pythonStatuses, setPythonStatuses] = useState({});
-    const pythonBatchKey = useMemo(() => pageItems.map((child) => {
-        const measurement = monthlyMeasurements[child?.id];
-        return `${child?.id || ''}:${measurement?.id || ''}:${measurement?.tglUkur || ''}:${measurement?.bb || ''}:${measurement?.tb || ''}`;
-    }).join('|'), [pageItems, monthlyMeasurements]);
-    useEffect(() => {
-        let active = true;
-        const entries = pageItems
-            .map((child) => ({ child, measurement: monthlyMeasurements[child?.id] }))
-            .filter((entry) => entry.child?.id && entry.measurement && entry.measurement.bb !== null && entry.measurement.bb !== undefined && entry.measurement.bb !== '');
-        if (!entries.length) {
-            setPythonStatuses({});
-            return () => { active = false; };
-        }
-        void requestPythonAnthropometry(entries)
-            .then((response) => {
-                if (!active) return;
-                const next = {};
-                (response.items || []).forEach((item) => {
-                    const entry = entries[Math.max(0, Number(item.rowNumber || 1) - 1)];
-                    const key = String(entry?.child?.id || item.recordId || '');
-                    if (key) next[key] = item;
-                });
-                setPythonStatuses(next);
-            })
-            .catch(() => {
-                // Keep the deterministic local presentation while an older
-                // gateway or an offline browser is unavailable.
-                if (active) setPythonStatuses({});
-            });
-        return () => { active = false; };
-    }, [pythonBatchKey]);
+    // The Python page response already contains the authoritative WHO,
+    // N/T/O/B, ASI, and risk fields. The browser only maps those fields for
+    // presentation; it never runs a second calculator or fetches history.
+    const pythonStatuses = useMemo(() => Object.fromEntries(
+        pageItems
+            .map((child) => [String(child?.id || ''), monthlyMeasurements[child?.id]])
+            .filter(([id, measurement]) => id && measurement && (
+                measurement.bbuStatus !== undefined
+                || measurement.tbuStatus !== undefined
+                || measurement.weightGainStatus !== undefined
+            ))
+    ), [pageItems, monthlyMeasurements]);
     const totalItems = resolvedState.status === 'success' ? resolvedState.data.total : fallbackTotal;
     const totalPages = Math.ceil(totalItems / itemsPerPage);
     const identityColumnCount = 3 + (activeTab === 'recycle_bin' ? 1 : 0) + (isFullAccessRole(user.role) ? 1 : 0) + (user.role === ROLES.BIDAN || isFullAccessRole(user.role) ? 1 : 0);
@@ -203,10 +182,11 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                         const mpasiLog = mpasiLogs[child.id];
                         const hasMpasi = !!mpasiLog;
                         const measurement = monthlyMeasurements[child.id];
-                        const localStatuses = getMeasurementStatuses(measurement || {}, child, measurement?.tglUkur ? new Date(measurement.tglUkur) : currentFilterDate);
                         const pythonStatus = pythonStatuses[String(child.id)];
                         const statuses = pythonStatus ? {
-                            ...localStatuses,
+                            // Age is a display field from the child/measurement
+                            // record. WHO classification remains Python-owned.
+                            age: pythonStatus.ageInMonths ?? child?.ageInMonths ?? '-',
                             statusBbu: pythonStatus.bbuStatus,
                             statusTbu: pythonStatus.tbuStatus,
                             statusBbtb: pythonStatus.bbtbStatus,
@@ -219,12 +199,33 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                             zScoreImtu: pythonStatus.imtuZScore,
                             zScoreLilau: pythonStatus.lilaZScore,
                             zScoreLku: pythonStatus.lkZScore,
-                        } : localStatuses;
+                        } : {
+                            age: null,
+                            statusBbu: '-',
+                            statusTbu: '-',
+                            statusBbtb: '-',
+                            statusImtu: '-',
+                            statusLilau: '-',
+                            statusLku: '-',
+                            pythonRequired: true,
+                        };
                         const age = statuses.age;
                         const statusBbu = statuses.statusBbu;
                         const statusTbu = statuses.statusTbu;
                         const statusBbtb = statuses.statusBbtb;
                         const statusImtu = statuses.statusImtu;
+                        const statusNaik = pythonWeightGainStatus(pythonStatus) || '-';
+                        // Raw measurements remain visible while the Python
+                        // materialized result is being calculated. Only the
+                        // derived status cells use a progressive skeleton.
+                        const analysisLoading = Boolean(measurement?.analysisPending || measurement?.analysis_pending);
+                        const analysisCellSkeleton = (className = '') => Native.createElement(SkeletonBlock, { className: `table-analysis-skeleton ${className}`.trim() });
+                        const analysisBadge = (status) => analysisLoading
+                            ? analysisCellSkeleton('table-analysis-skeleton-badge')
+                            : Native.createElement(StatusBadge, { status });
+                        const gainBadge = analysisLoading
+                            ? analysisCellSkeleton('table-analysis-skeleton-badge')
+                            : Native.createElement(KenaikanBadge, { status: statusNaik });
                         return (Native.createElement("tr", { key: child.id, className: "ios-data-row text-xs" },
                             Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap text-slate-500 border-r border-slate-100 text-center md:sticky md:left-0 bg-white z-10" }, realIndex),
                             Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap border-r border-slate-100 md:sticky md:left-[48px] bg-white z-10 md:shadow-lg" },
@@ -259,15 +260,15 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                                 Native.createElement("td", { className: "px-2 py-3 text-center border-r border-slate-100 font-mono bg-blue-50/10" }, measurement?.lila || '-'),
                                 Native.createElement("td", { className: "px-2 py-3 text-center border-r border-slate-100 font-mono bg-blue-50/10" }, measurement?.lk || '-'),
                                 Native.createElement("td", { className: "px-2 py-3 text-center border-r border-slate-100 bg-indigo-50/10" },
-                                    Native.createElement(KenaikanBadge, { status: measurement?.statusNaik })),
+                                    gainBadge),
                                 Native.createElement("td", { className: "px-2 py-3 text-center border-r border-slate-100 bg-emerald-50/10" },
-                                    Native.createElement(StatusBadge, { status: statusBbu })),
+                                    analysisBadge(statusBbu)),
                                 Native.createElement("td", { className: "px-2 py-3 text-center border-r border-slate-100 bg-emerald-50/10" },
-                                    Native.createElement(StatusBadge, { status: statusTbu })),
+                                    analysisBadge(statusTbu)),
                                 Native.createElement("td", { className: "px-2 py-3 text-center border-r border-slate-100 bg-emerald-50/10" },
-                                    Native.createElement(StatusBadge, { status: statusBbtb })),
+                                    analysisBadge(statusBbtb)),
                                 Native.createElement("td", { className: "px-2 py-3 text-center border-r border-slate-100 bg-emerald-50/10" },
-                                    Native.createElement(StatusBadge, { status: statusImtu })))),
+                                    analysisBadge(statusImtu)))),
                             Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap text-center" },
                                 Native.createElement("div", { className: "flex justify-center gap-1" }, readOnly ? Native.createElement("span", { className: "text-xs font-semibold text-slate-400" }, "Hanya baca") : activeTab === 'recycle_bin' ? (Native.createElement(Native.Fragment, null,
                                     Native.createElement(Button, { variant: "actionGreen", className: "table-action-button table-action-green", onClick: () => handleRestore(child.id), title: "Pulihkan" },

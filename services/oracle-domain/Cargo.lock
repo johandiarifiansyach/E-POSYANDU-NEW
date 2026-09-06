@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "e-posyandu-oracle-domain"
-version = "3.8.0"
+version = "3.8.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "e-posyandu-proto"
-version = "3.8.0"
+version = "3.8.1"
 dependencies = [
  "prost",
  "protoc-bin-vendored",

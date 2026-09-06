@@ -7,13 +7,10 @@ import { CheckCircle2, ChevronLeft, History, Loader2, Pencil, Plus, Scale, Trash
 import { showError, showSuccess } from '../ui/notifications';
 import GrowthChartsDialog from '../features/measurements/GrowthChartsDialog';
 import MeasurementAnalysisDialog from '../features/measurements/MeasurementAnalysisDialog';
-import { quickMeasurementAnomaly } from '../features/measurements/measurementAnalysis';
 import { fetchChildMeasurementHistory } from '../services/measurementService';
-import { requestMeasurementAnalysis, requestPythonAnthropometry } from '../api/analysisApi';
-import { TableLoadingSkeleton } from '../ui/skeleton';
+import { pythonWeightGainStatus, requestMeasurementAnalysis, requestPythonAnthropometry } from '../api/analysisApi';
+import { SkeletonBlock, TableLoadingSkeleton } from '../ui/skeleton';
 import {
-    calculateWeightGainStatus as calculateMeasurementWeightGainStatus,
-    getMeasurementStatuses,
     MEASUREMENT_DECIMAL_RULES,
     normalizeMeasurementInput,
     parseMeasurementDecimalForRange,
@@ -39,6 +36,7 @@ export default function MeasurementPage({ child, onBack }) {
         caraUkur: '',
         statusNaik: 'B'
     });
+    const [asiTouched, setAsiTouched] = useState(false);
     const [historyState, setHistoryState] = useState<PageState<any[]>>({ status: 'idle' });
     const [saveState, setSaveState] = useState<PageState<void>>({ status: 'idle' });
     // Keep the empty fallback referentially stable.  A fresh [] on every render
@@ -53,6 +51,7 @@ export default function MeasurementPage({ child, onBack }) {
     const [showGrowthCharts, setShowGrowthCharts] = useState(false);
     const [analysisState, setAnalysisState] = useState({ status: 'idle', result: null, error: null, measurement: null });
     const [pythonHistoryStatuses, setPythonHistoryStatuses] = useState({});
+    const [pythonHistoryLoading, setPythonHistoryLoading] = useState(false);
     useEffect(() => {
         if (!child.id) {
             setHistoryState({ status: 'success', data: [] });
@@ -97,6 +96,7 @@ export default function MeasurementPage({ child, onBack }) {
     }, [child.id]);
     const measureDate = useMemo(() => new Date(formData.tglUkur), [formData.tglUkur]);
     const ageAtMeasure = useMemo(() => getAgeInMonths(child.tglLahir, measureDate), [child.tglLahir, measureDate]);
+    const asiLabel = `ASI EKSKLUSIF USIA ${Math.max(0, Math.min(6, ageAtMeasure))} BULAN`;
     const showLilaMeasurement = ageAtMeasure >= 3;
     const lengthHeightLabel = ageAtMeasure <= 24 ? 'Panjang Badan (cm)' : 'Tinggi Badan (cm)';
     const monthlyHistory = useMemo(() => {
@@ -112,16 +112,18 @@ export default function MeasurementPage({ child, onBack }) {
         });
         return Array.from(monthlyMap.values()).sort((a, b) => new Date(b.tglUkur).getTime() - new Date(a.tglUkur).getTime());
     }, [history]);
-    const pythonHistoryKey = useMemo(() => monthlyHistory.map((item) => `${item?.id || ''}:${item?.tglUkur || ''}:${item?.bb || ''}:${item?.tb || ''}`).join('|'), [monthlyHistory]);
+    const pythonHistoryKey = useMemo(() => monthlyHistory.map((item) => `${item?.id || ''}:${item?.tglUkur || ''}:${item?.bb || ''}:${item?.tb || ''}:${item?.lila || ''}:${item?.lk || ''}:${item?.asi || ''}`).join('|'), [monthlyHistory]);
     useEffect(() => {
         let active = true;
         const entries = monthlyHistory
             .filter((item) => item?.bb !== null && item?.bb !== undefined && item?.bb !== '')
             .map((measurement) => ({ child, measurement, history }));
         if (!entries.length) {
+            setPythonHistoryLoading(false);
             setPythonHistoryStatuses((previous) => Object.keys(previous).length ? {} : previous);
             return () => { active = false; };
         }
+        setPythonHistoryLoading(true);
         void requestPythonAnthropometry(entries)
             .then((response) => {
                 if (!active) return;
@@ -132,11 +134,17 @@ export default function MeasurementPage({ child, onBack }) {
                     if (key) next[key] = item;
                 });
                 setPythonHistoryStatuses(next);
+                setPythonHistoryLoading(false);
             })
             .catch(() => {
-                if (active) setPythonHistoryStatuses({});
+                if (active) {
+                    setPythonHistoryStatuses({});
+                    setPythonHistoryLoading(false);
+                }
             });
-        return () => { active = false; };
+        return () => {
+            active = false;
+        };
     }, [child?.id, pythonHistoryKey, history]);
     useEffect(() => {
         if (activeMenu !== 'add')
@@ -149,8 +157,14 @@ export default function MeasurementPage({ child, onBack }) {
                 : { ...previous, caraUkur, lila: nextLila };
         });
     }, [ageAtMeasure, activeMenu]);
+    useEffect(() => {
+        if (activeMenu === 'add' && !asiTouched && ageAtMeasure === 0) {
+            setFormData((previous) => previous.asi === 'Ya' ? previous : { ...previous, asi: 'Ya' });
+        }
+    }, [activeMenu, ageAtMeasure, asiTouched]);
     const handleStartAdd = () => {
         setEditingMeasurementId(null);
+        setAsiTouched(false);
         setActiveMenu('add');
         setFormData((previous) => ({
             ...previous,
@@ -171,8 +185,12 @@ export default function MeasurementPage({ child, onBack }) {
         if (!measurement?.id || loading || deletingMeasurementId)
             return;
         setEditingMeasurementId(measurement.id);
+        const editDate = String(measurement.tglUkur || formatDate(new Date())).slice(0, 10);
+        const editAge = getAgeInMonths(child.tglLahir, new Date(`${editDate}T00:00:00`));
+        const recordedAsi = measurement.asi;
+        setAsiTouched(recordedAsi !== undefined && recordedAsi !== null && recordedAsi !== '');
         setFormData({
-            tglUkur: String(measurement.tglUkur || formatDate(new Date())).slice(0, 10),
+            tglUkur: editDate,
             bb: String(measurement.bb ?? ''),
             tb: String(measurement.tb ?? ''),
             lila: String(measurement.lila ?? ''),
@@ -181,7 +199,7 @@ export default function MeasurementPage({ child, onBack }) {
             kelasIbu: measurement.kelasIbu || 'Tidak',
             mbg: measurement.mbg || 'Tidak',
             vitA: measurement.vitA || 'Tidak',
-            asi: measurement.asi || 'Tidak',
+            asi: recordedAsi || (editAge === 0 ? 'Ya' : 'Tidak'),
             caraUkur: measurement.caraUkur || '',
             statusNaik: measurement.statusNaik || 'B'
         });
@@ -192,10 +210,9 @@ export default function MeasurementPage({ child, onBack }) {
         setActiveMenu('history');
     };
     const startMeasurementAnalysis = (measurement, analysisHistory) => {
-        const quickAnomaly = quickMeasurementAnomaly(analysisHistory, measurement);
         setAnalysisState({
             status: 'loading',
-            result: { anomaly: quickAnomaly, risk: null },
+            result: { anomaly: { detected: false, count: 0, severity: 'none', items: [] }, risk: null },
             error: null,
             measurement,
         });
@@ -237,10 +254,6 @@ export default function MeasurementPage({ child, onBack }) {
             showError('Tanggal pengukuran belum valid.');
             return;
         }
-        const previousMeasurement = history
-            .filter((item) => item.id !== editingMeasurementId)
-            .find((item) => new Date(item.tglUkur).getTime() < currentDate.getTime());
-        const statusNaik = calculateMeasurementWeightGainStatus({ bb: weight, tglUkur: measurementDate }, previousMeasurement, child);
         const normalizedPayload = {
             ...formData,
             tglUkur: measurementDate,
@@ -248,7 +261,10 @@ export default function MeasurementPage({ child, onBack }) {
             tb: height,
             lila,
             lk,
-            statusNaik
+            // N/T/O/B is calculated by the Python analysis service from the
+            // chronological measurements. Keep B only as a legacy storage
+            // placeholder; the table reads the Python response below.
+            statusNaik: formData.statusNaik || 'B'
         };
         setSaveState({ status: 'loading' });
         try {
@@ -272,20 +288,6 @@ export default function MeasurementPage({ child, onBack }) {
                 ...history.filter((item) => item.id !== measurementId),
                 { ...(history.find((item) => item.id === measurementId) || {}), id: measurementId, ...measurementData }
             ].sort((a, b) => new Date(b.tglUkur).getTime() - new Date(a.tglUkur).getTime());
-            const chronologicalHistory = [...projectedHistory].reverse();
-            const statusMutationIds = [];
-            for (let index = 0; index < chronologicalHistory.length; index += 1) {
-                const item = chronologicalHistory[index];
-                const recalculatedStatus = calculateMeasurementWeightGainStatus(item, chronologicalHistory[index - 1], child);
-                if (item.id !== measurementId && item.statusNaik !== recalculatedStatus) {
-                    const statusMutation = await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'measurements', item.id), {
-                        statusNaik: recalculatedStatus,
-                        updatedAt: serverTimestamp()
-                    }, { deferSync: true });
-                    statusMutationIds.push(statusMutation.mutationId);
-                }
-                item.statusNaik = recalculatedStatus;
-            }
             const latestMeasurement = projectedHistory[0];
             const childMutation = await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'children', child.id), {
                 currentBB: latestMeasurement?.bb ?? child.bbLahir ?? null,
@@ -295,7 +297,7 @@ export default function MeasurementPage({ child, onBack }) {
                 lastMeasurementDate: latestMeasurement?.tglUkur ?? null,
                 updatedAt: serverTimestamp()
             }, { deferSync: true });
-            await syncMeasurementMutationsNow([measurementMutation.mutationId, ...statusMutationIds, childMutation.mutationId]);
+            await syncMeasurementMutationsNow([measurementMutation.mutationId, childMutation.mutationId]);
             setHistoryState({ status: 'success', data: projectedHistory });
             setSaveState({ status: 'success', data: undefined });
             startMeasurementAnalysis(
@@ -463,23 +465,38 @@ export default function MeasurementPage({ child, onBack }) {
                             month: 'short',
                             year: 'numeric'
                         });
-                        const localStatuses = getMeasurementStatuses(item, child);
                         const pythonStatus = pythonHistoryStatuses[String(item.id || '')];
                         const statuses = pythonStatus ? {
-                            ...localStatuses,
+                            age: child?.ageInMonths ?? null,
                             statusBbu: pythonStatus.bbuStatus,
                             statusTbu: pythonStatus.tbuStatus,
                             statusBbtb: pythonStatus.bbtbStatus,
                             statusImtu: pythonStatus.imtuStatus,
                             statusLilau: pythonStatus.lilaStatus,
                             statusLku: pythonStatus.lkStatus,
-                        } : localStatuses;
+                        } : {
+                            age: null,
+                            statusBbu: '-',
+                            statusTbu: '-',
+                            statusBbtb: '-',
+                            statusImtu: '-',
+                            statusLilau: '-',
+                            statusLku: '-',
+                            pythonRequired: true,
+                        };
                         const statusBbu = statuses.statusBbu;
                         const statusTbu = statuses.statusTbu;
                         const statusBbtb = statuses.statusBbtb;
                         const statusImtu = statuses.statusImtu;
                         const statusLilau = statuses.statusLilau;
                         const statusLku = statuses.statusLku;
+                        const analysisLoading = Boolean(item.analysisPending || item.analysis_pending || (pythonHistoryLoading && !pythonStatus));
+                        const analysisBadge = (status) => analysisLoading
+                            ? Native.createElement(SkeletonBlock, { className: 'table-analysis-skeleton table-analysis-skeleton-badge' })
+                            : Native.createElement(StatusBadge, { status });
+                        const gainBadge = analysisLoading
+                            ? Native.createElement(SkeletonBlock, { className: 'table-analysis-skeleton table-analysis-skeleton-badge' })
+                            : Native.createElement(KenaikanBadge, { status: pythonWeightGainStatus(pythonStatus) || '-' });
                         return (Native.createElement("tr", { key: item.id || item.tglUkur, className: "ios-data-row text-slate-700" },
                             Native.createElement("td", { className: "py-2 pr-4 font-semibold uppercase whitespace-nowrap" }, monthLabel),
                             Native.createElement("td", { className: "py-2 pr-4 whitespace-nowrap" }, formatIndoDate(item.tglUkur)),
@@ -488,19 +505,19 @@ export default function MeasurementPage({ child, onBack }) {
                             Native.createElement("td", { className: "py-2 px-2 text-center" }, item.lila || '-'),
                             Native.createElement("td", { className: "py-2 px-2 text-center" }, item.lk || '-'),
                             Native.createElement("td", { className: "py-2 px-2 text-center" },
-                                Native.createElement(StatusBadge, { status: statusBbu })),
+                                analysisBadge(statusBbu)),
                             Native.createElement("td", { className: "py-2 px-2 text-center" },
-                                Native.createElement(StatusBadge, { status: statusTbu })),
+                                analysisBadge(statusTbu)),
                             Native.createElement("td", { className: "py-2 px-2 text-center" },
-                                Native.createElement(StatusBadge, { status: statusBbtb })),
+                                analysisBadge(statusBbtb)),
                             Native.createElement("td", { className: "py-2 px-2 text-center" },
-                                Native.createElement(StatusBadge, { status: statusImtu })),
+                                analysisBadge(statusImtu)),
                             Native.createElement("td", { className: "py-2 px-2 text-center" },
-                                Native.createElement(StatusBadge, { status: statusLilau })),
+                                analysisBadge(statusLilau)),
                             Native.createElement("td", { className: "py-2 px-2 text-center" },
-                                Native.createElement(StatusBadge, { status: statusLku })),
+                                analysisBadge(statusLku)),
                             Native.createElement("td", { className: "py-2 px-2 text-center" },
-                                Native.createElement(KenaikanBadge, { status: item.statusNaik })),
+                                gainBadge),
                             Native.createElement("td", { className: "py-2 pl-2 text-center" },
                                 Native.createElement("div", { className: "flex items-center justify-center gap-2" },
                                     Native.createElement("button", { ...actionTooltipProps("Edit riwayat penimbangan"), type: "button", className: "table-action-button table-action-blue disabled:cursor-not-allowed disabled:opacity-50", "aria-label": `Edit penimbangan tanggal ${formatIndoDate(item.tglUkur)}`, disabled: loading || Boolean(deletingMeasurementId), onClick: () => handleStartEdit(item) },
@@ -543,7 +560,8 @@ export default function MeasurementPage({ child, onBack }) {
                         Native.createElement(Select, { value: formData.mbg, onChange: (event) => setFormData((previous) => ({ ...previous, mbg: event.target.value })), options: [
                                 { value: 'Tidak', label: 'Tidak' },
                                 { value: 'Ya', label: 'Ya' }
-                            ] }))),
+                            ] }),
+                        Native.createElement("p", { className: "text-[11px] leading-4 font-medium italic normal-case text-slate-500" }, "*Balita yang menerima PMT dari Posyandu atau PAUD/TK."))),
                 Native.createElement("div", { className: "space-y-4" },
                     showVitA && (Native.createElement("div", { className: "measurement-service-option measurement-service-vitamin" },
                         Native.createElement(InputGroup, { label: "Dapat Vitamin A (Feb/Agu)?" },
@@ -552,8 +570,8 @@ export default function MeasurementPage({ child, onBack }) {
                                     { value: 'Ya', label: 'Ya' }
                                 ] })))),
                     showAsi && (Native.createElement("div", { className: "measurement-service-option measurement-service-asi" },
-                        Native.createElement(InputGroup, { label: "ASI Eksklusif (0-6 bln)?" },
-                            Native.createElement(Select, { className: "bg-white", value: formData.asi, onChange: (event) => setFormData((previous) => ({ ...previous, asi: event.target.value })), options: [
+                        Native.createElement(InputGroup, { label: asiLabel },
+                            Native.createElement(Select, { className: "bg-white", value: formData.asi, onChange: (event) => { setAsiTouched(true); setFormData((previous) => ({ ...previous, asi: event.target.value })); }, options: [
                                     { value: 'Tidak', label: 'Tidak' },
                                     { value: 'Ya', label: 'Ya' }
                                 ] }))))),
