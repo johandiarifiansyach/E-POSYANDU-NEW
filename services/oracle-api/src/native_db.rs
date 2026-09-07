@@ -1,7 +1,7 @@
 use std::{collections::HashMap, env, str::FromStr, time::Duration};
 
 use axum::http::Method;
-use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
+use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use futures_util::{StreamExt, stream::poll_fn};
 use serde_json::{Map, Value, json};
 use tokio_postgres::{
@@ -16,8 +16,22 @@ use crate::native_cache::NativeCache;
 use crate::realtime::{NOTIFY_CHANNEL, RealtimeEvent, RealtimeHub};
 
 const DEFAULT_POOL_SIZE: usize = 5;
+const DEFAULT_POOL_WAIT_TIMEOUT_SECONDS: f64 = 2.0;
+const DEFAULT_POOL_CREATE_TIMEOUT_SECONDS: f64 = 5.0;
+const DEFAULT_POOL_RECYCLE_TIMEOUT_SECONDS: f64 = 2.0;
 
 type SqlParameter = Box<dyn ToSql + Sync + Send>;
+
+fn pool_timeout(name: &str, default_seconds: f64) -> Option<Duration> {
+    let value = env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<f64>().ok())
+        .unwrap_or(default_seconds);
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    Some(Duration::from_secs_f64(value.clamp(0.1, 30.0)))
+}
 
 fn parse_user_uuid(user_id: &str) -> Result<Uuid, DatabaseError> {
     Uuid::parse_str(user_id).map_err(|_| DatabaseError::Invalid)
@@ -58,6 +72,18 @@ impl NativeDatabase {
         if !(1..=10).contains(&pool_size) {
             return Err("ORACLE_DATABASE_POOL_SIZE wajib antara 1 dan 10.".into());
         }
+        let pool_wait_timeout = pool_timeout(
+            "ORACLE_DATABASE_POOL_WAIT_TIMEOUT_SECONDS",
+            DEFAULT_POOL_WAIT_TIMEOUT_SECONDS,
+        );
+        let pool_create_timeout = pool_timeout(
+            "ORACLE_DATABASE_POOL_CREATE_TIMEOUT_SECONDS",
+            DEFAULT_POOL_CREATE_TIMEOUT_SECONDS,
+        );
+        let pool_recycle_timeout = pool_timeout(
+            "ORACLE_DATABASE_POOL_RECYCLE_TIMEOUT_SECONDS",
+            DEFAULT_POOL_RECYCLE_TIMEOUT_SECONDS,
+        );
         let manager = Manager::from_config(
             config.clone(),
             NoTls,
@@ -67,6 +93,10 @@ impl NativeDatabase {
         );
         let pool = Pool::builder(manager)
             .max_size(pool_size)
+            .runtime(Runtime::Tokio1)
+            .wait_timeout(pool_wait_timeout)
+            .create_timeout(pool_create_timeout)
+            .recycle_timeout(pool_recycle_timeout)
             .build()
             .map_err(|_| "Pool PostgreSQL native Oracle tidak dapat dibuat.".to_string())?;
         Ok(Self { pool, config })
@@ -79,17 +109,16 @@ impl NativeDatabase {
         let Ok(client) = self.pool.get().await else {
             return false;
         };
+        let Ok(statement) = client.prepare_cached("SELECT pg_notify($1, $2)").await else {
+            return false;
+        };
         client
-            .query_one("SELECT pg_notify($1, $2)", &[&NOTIFY_CHANNEL, &payload])
+            .query_one(&statement, &[&NOTIFY_CHANNEL, &payload])
             .await
             .is_ok()
     }
 
-    pub(crate) async fn listen_realtime(
-        &self,
-        hub: RealtimeHub,
-        cache: Option<NativeCache>,
-    ) {
+    pub(crate) async fn listen_realtime(&self, hub: RealtimeHub, cache: Option<NativeCache>) {
         let config = self.config.clone();
         loop {
             let connection = config.connect(NoTls).await;
@@ -151,13 +180,17 @@ impl NativeDatabase {
                 return false;
             }
         };
-        match client
-            .query_one(
-                "SELECT to_regclass('public.schema_migrations') IS NOT NULL",
-                &[],
-            )
+        let statement = match client
+            .prepare_cached("SELECT to_regclass('public.schema_migrations') IS NOT NULL")
             .await
         {
+            Ok(statement) => statement,
+            Err(error_value) => {
+                error!(error = %error_value, "health check PostgreSQL native gagal menyiapkan statement");
+                return false;
+            }
+        };
+        match client.query_one(&statement, &[]).await {
             Ok(row) => row.get::<_, bool>(0),
             Err(error_value) => {
                 error!(error = %error_value, "health check PostgreSQL native gagal");
@@ -186,9 +219,16 @@ impl NativeDatabase {
         let limit = numeric_parameter(parameters, "limit")?;
         let offset = numeric_parameter(parameters, "offset")?;
 
+        // Counting every matching row forces PostgreSQL to finish the full
+        // scan even when the caller requested a small page. Only history
+        // endpoints need an exact total; normal reads can stop at LIMIT.
+        let total_expression = count
+            .then_some(", count(*) OVER()::bigint AS total")
+            .unwrap_or("");
         let mut sql = format!(
-            "SELECT {}, count(*) OVER()::bigint AS total FROM public.{} AS t",
+            "SELECT {}{} FROM public.{} AS t",
             document_expression(join_children),
+            total_expression,
             quote_identifier(table)?
         );
         if join_children {
@@ -220,13 +260,19 @@ impl NativeDatabase {
             DatabaseError::Unavailable
         })?;
         let refs = parameter_refs(&values);
+        let statement = client.prepare_cached(&sql).await.map_err(|error| {
+            map_postgres_query_error(error, "prepare select", &sql, values.len())
+        })?;
         let rows = client
-            .query(&sql, &refs)
+            .query(&statement, &refs)
             .await
             .map_err(|error| map_postgres_query_error(error, "select", &sql, values.len()))?;
-        let total = rows
-            .first()
-            .map(|row| row.get::<_, i64>("total"))
+        let total = count
+            .then(|| {
+                rows.first()
+                    .map(|row| row.get::<_, i64>("total"))
+                    .unwrap_or(0)
+            })
             .unwrap_or(0);
         let mut documents = rows
             .iter()
@@ -246,8 +292,8 @@ impl NativeDatabase {
                 })
                 .collect::<Vec<_>>();
             if !ids.is_empty()
-                && let Ok(analysis_rows) = client
-                    .query(
+                && let Ok(statement) = client
+                    .prepare_cached(
                         "SELECT measurement_id, bbu_status, tbu_status, bbtb_status, imtu_status,
                                 lila_status, lk_status, bbu_z_score::double precision as bbu_z_score,
                                 tbu_z_score::double precision as tbu_z_score,
@@ -259,9 +305,9 @@ impl NativeDatabase {
                                 result_json
                          FROM public.measurement_analysis
                          WHERE measurement_id = ANY($1::text[])",
-                        &[&ids],
                     )
                     .await
+                && let Ok(analysis_rows) = client.query(&statement, &[&ids]).await
             {
                 let by_id = analysis_rows
                     .into_iter()
@@ -384,9 +430,16 @@ impl NativeDatabase {
                 for row in rows {
                     let (sql, values) = build_insert(table, row, &conflict_columns, resolution)?;
                     let refs = parameter_refs(&values);
-                    for stored in transaction.query(&sql, &refs).await.map_err(|error| {
-                        map_postgres_query_error(error, "insert", &sql, values.len())
-                    })? {
+                    let statement = transaction.prepare_cached(&sql).await.map_err(|error| {
+                        map_postgres_query_error(error, "prepare insert", &sql, values.len())
+                    })?;
+                    for stored in transaction
+                        .query(&statement, &refs)
+                        .await
+                        .map_err(|error| {
+                            map_postgres_query_error(error, "insert", &sql, values.len())
+                        })?
+                    {
                         output.push(stored.get::<_, Json<Value>>("document").0);
                     }
                 }
@@ -397,18 +450,32 @@ impl NativeDatabase {
                     .ok_or(DatabaseError::Invalid)?;
                 let (sql, values) = build_update(table, row, parameters)?;
                 let refs = parameter_refs(&values);
-                for stored in transaction.query(&sql, &refs).await.map_err(|error| {
-                    map_postgres_query_error(error, "update", &sql, values.len())
-                })? {
+                let statement = transaction.prepare_cached(&sql).await.map_err(|error| {
+                    map_postgres_query_error(error, "prepare update", &sql, values.len())
+                })?;
+                for stored in transaction
+                    .query(&statement, &refs)
+                    .await
+                    .map_err(|error| {
+                        map_postgres_query_error(error, "update", &sql, values.len())
+                    })?
+                {
                     output.push(stored.get::<_, Json<Value>>("document").0);
                 }
             }
             Method::DELETE => {
                 let (sql, values) = build_delete(table, parameters)?;
                 let refs = parameter_refs(&values);
-                for stored in transaction.query(&sql, &refs).await.map_err(|error| {
-                    map_postgres_query_error(error, "delete", &sql, values.len())
-                })? {
+                let statement = transaction.prepare_cached(&sql).await.map_err(|error| {
+                    map_postgres_query_error(error, "prepare delete", &sql, values.len())
+                })?;
+                for stored in transaction
+                    .query(&statement, &refs)
+                    .await
+                    .map_err(|error| {
+                        map_postgres_query_error(error, "delete", &sql, values.len())
+                    })?
+                {
                     output.push(stored.get::<_, Json<Value>>("document").0);
                 }
             }
@@ -433,8 +500,8 @@ impl NativeDatabase {
             DatabaseError::Unavailable
         })?;
         let transaction = client.transaction().await.map_err(map_postgres_error)?;
-        transaction
-            .execute(
+        let credentials_statement = transaction
+            .prepare_cached(
                 "INSERT INTO public.auth_credentials (
                      user_id, password_hash, password_scheme,
                      password_changed_at, last_password_login_at,
@@ -449,14 +516,24 @@ impl NativeDatabase {
                      password_changed_at = excluded.password_changed_at,
                      last_password_login_at = excluded.last_password_login_at,
                      updated_at = excluded.updated_at",
-                &[&user_uuid, &password_hash],
             )
+            .await
+            .map_err(|error| {
+                map_postgres_query_error(
+                    error,
+                    "prepare native credential upsert",
+                    "auth_credentials",
+                    2,
+                )
+            })?;
+        transaction
+            .execute(&credentials_statement, &[&user_uuid, &password_hash])
             .await
             .map_err(|error| {
                 map_postgres_query_error(error, "native credential upsert", "auth_credentials", 2)
             })?;
-        transaction
-            .execute(
+        let migration_statement = transaction
+            .prepare_cached(
                 "INSERT INTO public.auth_credential_migration_state (
                      user_id, status, supabase_verified_at, native_hashed_at,
                      last_error, created_at, updated_at
@@ -470,8 +547,18 @@ impl NativeDatabase {
                      native_hashed_at = timezone('utc', now()),
                      last_error = NULL,
                      updated_at = timezone('utc', now())",
-                &[&user_uuid],
             )
+            .await
+            .map_err(|error| {
+                map_postgres_query_error(
+                    error,
+                    "prepare native credential migration state upsert",
+                    "auth_credential_migration_state",
+                    1,
+                )
+            })?;
+        transaction
+            .execute(&migration_statement, &[&user_uuid])
             .await
             .map_err(|error| {
                 map_postgres_query_error(
@@ -494,14 +581,24 @@ impl NativeDatabase {
             error!(error = %error_value, "pool PostgreSQL native tidak tersedia");
             DatabaseError::Unavailable
         })?;
-        let row = client
-            .query_opt(
+        let statement = client
+            .prepare_cached(
                 "SELECT password_hash
                  FROM public.auth_credentials
                  WHERE user_id = $1::uuid
                  LIMIT 1",
-                &[&user_uuid],
             )
+            .await
+            .map_err(|error| {
+                map_postgres_query_error(
+                    error,
+                    "prepare native credential lookup",
+                    "auth_credentials",
+                    1,
+                )
+            })?;
+        let row = client
+            .query_opt(&statement, &[&user_uuid])
             .await
             .map_err(|error| {
                 map_postgres_query_error(error, "native credential lookup", "auth_credentials", 1)
@@ -519,14 +616,24 @@ impl NativeDatabase {
             DatabaseError::Unavailable
         })?;
         let transaction = client.transaction().await.map_err(map_postgres_error)?;
-        transaction
-            .execute(
+        let credentials_statement = transaction
+            .prepare_cached(
                 "UPDATE public.auth_credentials
                  SET last_password_login_at = timezone('utc', now()),
                      updated_at = timezone('utc', now())
                  WHERE user_id = $1::uuid",
-                &[&user_uuid],
             )
+            .await
+            .map_err(|error| {
+                map_postgres_query_error(
+                    error,
+                    "prepare native credential login mark",
+                    "auth_credentials",
+                    1,
+                )
+            })?;
+        transaction
+            .execute(&credentials_statement, &[&user_uuid])
             .await
             .map_err(|error| {
                 map_postgres_query_error(
@@ -536,13 +643,23 @@ impl NativeDatabase {
                     1,
                 )
             })?;
-        transaction
-            .execute(
+        let migration_statement = transaction
+            .prepare_cached(
                 "UPDATE public.auth_credential_migration_state
                  SET updated_at = timezone('utc', now()), last_error = NULL
                  WHERE user_id = $1::uuid",
-                &[&user_uuid],
             )
+            .await
+            .map_err(|error| {
+                map_postgres_query_error(
+                    error,
+                    "prepare native credential migration mark",
+                    "auth_credential_migration_state",
+                    1,
+                )
+            })?;
+        transaction
+            .execute(&migration_statement, &[&user_uuid])
             .await
             .map_err(|error| {
                 map_postgres_query_error(
@@ -567,8 +684,8 @@ impl NativeDatabase {
             error!(error = %error_value, "pool PostgreSQL native tidak tersedia");
             DatabaseError::Unavailable
         })?;
-        client
-            .execute(
+        let statement = client
+            .prepare_cached(
                 "INSERT INTO public.auth_security_migration_state (
                      user_id, mfa_status, passkey_status,
                      supabase_totp_count, supabase_passkey_count,
@@ -596,8 +713,18 @@ impl NativeDatabase {
                      last_synced_at = excluded.last_synced_at,
                      last_error = NULL,
                      updated_at = excluded.updated_at",
-                &[&user_uuid, &totp_count, &passkey_count],
             )
+            .await
+            .map_err(|error| {
+                map_postgres_query_error(
+                    error,
+                    "prepare admin security shadow state upsert",
+                    "auth_security_migration_state",
+                    3,
+                )
+            })?;
+        client
+            .execute(&statement, &[&user_uuid, &totp_count, &passkey_count])
             .await
             .map_err(|error| {
                 map_postgres_query_error(
@@ -616,8 +743,12 @@ impl NativeDatabase {
             error!(error = %error_value, "pool PostgreSQL native tidak tersedia");
             DatabaseError::Unavailable
         })?;
+        let statement = client
+            .prepare_cached(sql)
+            .await
+            .map_err(|error| map_postgres_query_error(error, "prepare rpc", sql, 1))?;
         let row = client
-            .query_one(sql, &[&Json(payload)])
+            .query_one(&statement, &[&Json(payload)])
             .await
             .map_err(|error| map_postgres_query_error(error, "rpc", sql, 1))?;
         Ok(row.get::<_, Json<Value>>("value").0)
@@ -967,6 +1098,9 @@ fn rpc_sql(name: &str) -> Result<&'static str, DatabaseError> {
         "eposyandu_dashboard_snapshot" => Ok(
             "SELECT public.eposyandu_dashboard_snapshot(a.p_cache_key, a.p_scope_key, a.p_month_start, a.p_month_end, a.p_previous_month_start, a.p_previous_month_end, a.p_age_group, a.p_village, a.p_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_cache_key text, p_scope_key text, p_month_start date, p_month_end date, p_previous_month_start date, p_previous_month_end date, p_age_group text, p_village text, p_posyandu text)",
         ),
+        "eposyandu_dashboard_snapshot_latest" => Ok(
+            "SELECT public.eposyandu_dashboard_snapshot_latest(a.p_cache_key, a.p_scope_key, a.p_month_start, a.p_month_end, a.p_previous_month_start, a.p_previous_month_end, a.p_age_group, a.p_village, a.p_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_cache_key text, p_scope_key text, p_month_start date, p_month_end date, p_previous_month_start date, p_previous_month_end date, p_age_group text, p_village text, p_posyandu text)",
+        ),
         "eposyandu_exclusive_breastfeeding_page" => Ok(
             "SELECT public.eposyandu_exclusive_breastfeeding_page(a.p_measurement_start, a.p_measurement_end, a.p_age_group, a.p_page, a.p_size, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_measurement_start date, p_measurement_end date, p_age_group text, p_page integer, p_size integer, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
         ),
@@ -982,6 +1116,12 @@ fn rpc_sql(name: &str) -> Result<&'static str, DatabaseError> {
         ),
         "eposyandu_replica_children_page" => Ok(
             "SELECT public.eposyandu_replica_children_page(a.p_as_of, a.p_measurement_start, a.p_measurement_end, a.p_page, a.p_size, a.p_sort, a.p_view, a.p_search, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu, a.p_age_group) AS value FROM jsonb_to_record($1::jsonb) AS a(p_as_of date, p_measurement_start date, p_measurement_end date, p_page integer, p_size integer, p_sort text, p_view text, p_search text, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text, p_age_group text)",
+        ),
+        // Rolling-migration fallback for databases that still expose the
+        // original 13-argument replica function (before age cohorts were
+        // added). Callers only use this for the default 0-59 cohort.
+        "eposyandu_replica_children_page_legacy" => Ok(
+            "SELECT public.eposyandu_replica_children_page(a.p_as_of, a.p_measurement_start, a.p_measurement_end, a.p_page, a.p_size, a.p_sort, a.p_view, a.p_search, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_as_of date, p_measurement_start date, p_measurement_end date, p_page integer, p_size integer, p_sort text, p_view text, p_search text, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
         ),
         "eposyandu_materialized_children_page" => Ok(
             "SELECT public.eposyandu_materialized_children_page(a.p_as_of, a.p_measurement_start, a.p_measurement_end, a.p_page, a.p_size, a.p_sort, a.p_view, a.p_search, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu, a.p_age_group) AS value FROM jsonb_to_record($1::jsonb) AS a(p_as_of date, p_measurement_start date, p_measurement_end date, p_page integer, p_size integer, p_sort text, p_view text, p_search text, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text, p_age_group text)",
@@ -1055,8 +1195,10 @@ mod tests {
     #[test]
     fn exposes_python_materialized_read_rpcs() {
         assert!(rpc_sql("eposyandu_materialized_children_page").is_ok());
+        assert!(rpc_sql("eposyandu_replica_children_page_legacy").is_ok());
         assert!(rpc_sql("eposyandu_materialized_exclusive_breastfeeding_page").is_ok());
         assert!(rpc_sql("eposyandu_dashboard_snapshot").is_ok());
+        assert!(rpc_sql("eposyandu_dashboard_snapshot_latest").is_ok());
     }
 
     #[test]

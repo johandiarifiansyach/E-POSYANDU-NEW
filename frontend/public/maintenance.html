@@ -3,8 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>E-Posyandu Sedang Maintenance</title>
+    <meta name="theme-color" content="#0f766e" />
+    <meta name="description" content="E-Posyandu sedang dalam pemeliharaan terjadwal. Data tetap aman dan layanan akan segera tersedia kembali." />
     <meta name="robots" content="noindex,nofollow" />
+    <link rel="icon" type="image/svg+xml" href="/logo-puskesmas-32981.svg" />
+    <title>Pemeliharaan Sistem | E-Posyandu</title>
     <style>
       :root {
         --bg-a: #f7f4eb;
@@ -119,35 +122,257 @@
           padding: 18px;
         }
       }
+
+      /* The maintenance page is deliberately self-contained so it remains
+         usable when the API, Redis, or application bundle is unavailable. */
+      :root {
+        color-scheme: light;
+        --page-ink: #122a2b;
+        --page-muted: #587071;
+        --page-border: #d9e8e4;
+        --page-soft: #f7faf9;
+        --page-brand-dark: #075e59;
+        --page-gold-soft: #fff7df;
+      }
+
+      body {
+        min-width: 320px;
+        color: var(--page-ink);
+        background:
+          radial-gradient(circle at 8% 12%, rgba(194, 122, 25, 0.12), transparent 26rem),
+          radial-gradient(circle at 95% 0%, rgba(15, 118, 110, 0.15), transparent 30rem),
+          linear-gradient(145deg, #f2f7f6, #e4f5ef);
+      }
+
+      .panel {
+        width: min(1040px, 100%);
+        border-color: var(--page-border);
+        border-radius: 28px;
+        box-shadow: 0 28px 80px rgba(13, 78, 76, 0.14);
+      }
+
+      .site-brand {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        width: min(1040px, 100%);
+        margin: 0 auto 20px;
+      }
+
+      .brand-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 11px;
+        color: var(--page-ink);
+        font-weight: 800;
+        text-decoration: none;
+      }
+
+      .brand-link img {
+        width: 44px;
+        height: 44px;
+        padding: 6px;
+        object-fit: contain;
+        background: #fff;
+        border: 1px solid var(--page-border);
+        border-radius: 13px;
+        box-shadow: 0 8px 20px rgba(13, 78, 76, 0.1);
+      }
+
+      .brand-link span { display: grid; gap: 2px; }
+      .brand-link small { color: var(--page-muted); font-size: 0.74rem; font-weight: 600; }
+
+      .service-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 13px;
+        color: #8b5a13;
+        border: 1px solid #f2dca4;
+        border-radius: 999px;
+        background: rgba(255, 250, 232, 0.88);
+        font-size: 0.78rem;
+        font-weight: 750;
+      }
+
+      .service-badge::before {
+        width: 8px;
+        height: 8px;
+        content: "";
+        border-radius: 50%;
+        background: #d28a1c;
+        box-shadow: 0 0 0 4px rgba(210, 138, 28, 0.14);
+      }
+
+      .head {
+        position: relative;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 14px 18px;
+        padding: clamp(28px, 6vw, 54px);
+        background:
+          radial-gradient(circle at 90% 12%, rgba(255, 255, 255, 0.18), transparent 18rem),
+          linear-gradient(120deg, var(--page-brand-dark), #0f766e);
+      }
+
+      .head::after {
+        position: absolute;
+        right: 7%;
+        bottom: -74px;
+        width: 250px;
+        height: 160px;
+        content: "";
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 50%;
+        transform: rotate(-14deg);
+      }
+
+      .head-icon {
+        display: grid;
+        place-items: center;
+        width: 64px;
+        height: 64px;
+        color: #f8d98e;
+        border: 1px solid rgba(255, 255, 255, 0.28);
+        border-radius: 19px;
+        background: rgba(255, 255, 255, 0.12);
+      }
+
+      .head-icon svg { width: 35px; height: 35px; }
+      .badge { margin: 2px 0 8px; border-color: rgba(255, 255, 255, 0.28); background: rgba(255, 255, 255, 0.16); }
+      .title { font-size: clamp(27px, 4vw, 48px); letter-spacing: -0.045em; }
+      .head-copy { grid-column: 2; max-width: 700px; margin: 0; color: #d9f4ec; line-height: 1.7; }
+
+      .status-banner {
+        grid-column: 2;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px 12px;
+        width: fit-content;
+        max-width: 100%;
+        padding: 11px 14px;
+        color: #f8fffc;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        border-radius: 13px;
+        background: rgba(3, 65, 61, 0.34);
+        font-size: 0.88rem;
+      }
+
+      .status-dot { width: 9px; height: 9px; border-radius: 50%; background: #f6cb67; box-shadow: 0 0 0 4px rgba(246, 203, 103, 0.17); }
+      .status-detail { color: #c4e9dc; }
+      .body { padding: clamp(24px, 5vw, 44px) clamp(24px, 6vw, 56px) 34px; }
+      .desc { margin: 0 0 24px; color: var(--page-muted); line-height: 1.7; }
+
+      .info-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 26px; }
+      .info-card { padding: 18px; border: 1px solid var(--page-border); border-radius: 17px; background: var(--page-soft); }
+      .info-number { display: grid; place-items: center; width: 30px; height: 30px; margin-bottom: 13px; color: var(--page-brand-dark); border-radius: 9px; background: #dff7ef; font-size: 0.84rem; font-weight: 850; }
+      .info-card h2 { margin: 0 0 7px; font-size: 1rem; }
+      .info-card p { margin: 0; color: var(--page-muted); font-size: 0.89rem; line-height: 1.6; }
+
+      .next-step { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 20px; padding: 19px 20px; border: 1px solid #f0dfb4; border-radius: 17px; background: var(--page-gold-soft); }
+      .next-step h2 { margin: 0 0 7px; color: #855711; font-size: 1rem; }
+      .next-step ul { margin: 0; padding-left: 19px; color: #765a2a; font-size: 0.88rem; line-height: 1.7; }
+      .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; }
+      .button { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; padding: 10px 15px; border-radius: 11px; font-size: 0.85rem; font-weight: 800; text-decoration: none; }
+      .button-primary { color: #fff; background: #0f766e; box-shadow: 0 8px 18px rgba(15, 118, 110, 0.2); }
+      .button-secondary { color: #79551e; border: 1px solid #e6c979; background: rgba(255, 255, 255, 0.65); }
+
+      .site-footer { display: flex; justify-content: space-between; gap: 12px; width: min(1040px, 100%); margin: 16px auto 0; color: #6b8584; font-size: 0.76rem; }
+
+      @media (max-width: 700px) {
+        body { display: block; padding: 18px 12px; }
+        .site-brand { align-items: flex-start; flex-direction: column; }
+        .head { grid-template-columns: auto 1fr; padding: 28px 22px 34px; }
+        .head-copy, .status-banner { grid-column: 1 / -1; }
+        .info-grid { grid-template-columns: 1fr; }
+        .next-step { grid-template-columns: 1fr; }
+        .actions { justify-content: flex-start; }
+        .site-footer { flex-direction: column; }
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root { color-scheme: dark; --page-ink: #e8f8f3; --page-muted: #b5d0cb; --page-border: #2a5a57; --page-soft: #153d3c; --page-gold-soft: #493b1d; }
+        body { background: linear-gradient(145deg, #0c2324, #123737); }
+        .brand-link img { background: #eaf8f3; }
+        .brand-link small, .site-footer { color: #9db9b3; }
+        .service-badge { color: #f7d890; border-color: #705722; background: rgba(75, 57, 24, 0.65); }
+        .next-step h2 { color: #f7d890; }
+        .next-step ul { color: #e8d59e; }
+        .button-secondary { color: #f7d890; border-color: #80682b; background: rgba(34, 31, 19, 0.45); }
+      }
     </style>
   </head>
   <body>
+    <header class="site-brand">
+      <a class="brand-link" href="/" aria-label="Kembali ke E-Posyandu">
+        <img src="/logo-puskesmas-32981.svg" alt="" width="44" height="44" />
+        <span>E-Posyandu<small>UPTD Puskesmas Gumukmas</small></span>
+      </a>
+      <span class="service-badge">Pemeliharaan terjadwal</span>
+    </header>
+
     <main class="panel" role="main" aria-labelledby="maintenance-title">
       <section class="head">
-        <span class="badge">Sementara Tidak Tersedia</span>
-        <h1 id="maintenance-title" class="title">E-Posyandu Sedang Maintenance</h1>
+        <div class="head-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14.7 6.1a4.5 4.5 0 0 0-5.8 5.8L4.2 16.6a2.1 2.1 0 0 0 3 3l4.7-4.7a4.5 4.5 0 0 0 5.8-5.8l-2.7 2.7-2.8-.7-.7-2.8 2.7-2.2Z" />
+            <path d="m14 14 5.8 5.8M17.5 17.5l1.3-1.3" />
+          </svg>
+        </div>
+        <div>
+          <span class="badge">Sementara Tidak Tersedia</span>
+          <h1 id="maintenance-title" class="title">E-Posyandu sedang dipelihara</h1>
+        </div>
+        <p class="head-copy">Kami sedang menyiapkan pembaruan agar pencatatan dan pemantauan balita tetap aman, cepat, dan stabil.</p>
+        <div class="status-banner" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <strong>Layanan sementara dijeda</strong>
+          <span class="status-detail">Silakan coba kembali setelah pemeliharaan selesai.</span>
+        </div>
       </section>
 
       <section class="body">
-        <p class="desc">
-          Sistem sedang dalam proses pemeliharaan dan migrasi data agar layanan lebih stabil.
-          Silakan kembali beberapa saat lagi.
-        </p>
+        <p class="desc">Mohon tunggu sebentar. Pemeliharaan ini tidak menghapus data balita, riwayat pengukuran, maupun catatan layanan yang sudah tersimpan.</p>
 
-        <div class="notice">
-          <strong>Informasi:</strong>
-          <ul class="list">
-            <li>Data lama tetap aman, tidak dihapus.</li>
-            <li>Akses sementara ditutup untuk mencegah gangguan sinkronisasi.</li>
-            <li>Tim akan membuka layanan kembali setelah validasi selesai.</li>
-          </ul>
+        <div class="info-grid">
+          <article class="info-card">
+            <span class="info-number" aria-hidden="true">1</span>
+            <h2>Data tetap aman</h2>
+            <p>Data tersimpan di penyimpanan utama dan akan tetap tersedia setelah layanan dibuka kembali.</p>
+          </article>
+          <article class="info-card">
+            <span class="info-number" aria-hidden="true">2</span>
+            <h2>Akses sedang dibatasi</h2>
+            <p>Pembatasan sementara mencegah perubahan data terputus selama proses pemeliharaan berlangsung.</p>
+          </article>
+          <article class="info-card">
+            <span class="info-number" aria-hidden="true">3</span>
+            <h2>Periksa kembali nanti</h2>
+            <p>Setelah layanan aktif, muat ulang halaman dan lanjutkan pekerjaan seperti biasa.</p>
+          </article>
         </div>
 
-        <div class="foot">
-          <span class="chip">UPTD Puskesmas Gumukmas</span>
-          <span class="chip">Pemeliharaan Sistem</span>
+        <div class="next-step">
+          <div>
+            <h2>Yang dapat dilakukan</h2>
+            <ul>
+              <li>Simpan halaman ini dan coba lagi beberapa saat lagi.</li>
+              <li>Hubungi administrator jika pemeliharaan berlangsung terlalu lama.</li>
+            </ul>
+          </div>
+          <div class="actions">
+            <a class="button button-primary" href="/">Coba lagi</a>
+            <a class="button button-secondary" href="mailto:admin@eposyandu.app">Hubungi administrator</a>
+          </div>
         </div>
       </section>
     </main>
+
+    <footer class="site-footer">
+      <span>© 2026 UPTD Puskesmas Gumukmas</span>
+      <span>Pemeliharaan Sistem · E-Posyandu</span>
+    </footer>
   </body>
 </html>

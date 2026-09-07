@@ -147,12 +147,11 @@ class AnalysisServicer(analysis_pb2_grpc.AnalysisServiceServicer):
         try:
             result, cache_hit = self.runtime.analyze_dataset(dataset, payload_json=payload)
             if dataset.get("operation", "dashboard_stats") == "dashboard_stats" and self.persistence is not None:
-                try:
-                    self.persistence.persist_dashboard(dataset, result)
-                except Exception:
-                    # A dashboard response remains available even if the
-                    # optional materialized write is temporarily unavailable.
-                    LOGGER.exception("snapshot dashboard Python tidak dapat disimpan")
+                # Keep dashboard persistence off the request path.  The
+                # calculated response is returned immediately; the bounded
+                # Python writer stores the materialized snapshot in the
+                # background and retries transient database failures.
+                self.persistence.enqueue_dashboard(dataset, result)
             LOGGER.debug(
                 "dataset analysis operation=%s cache_hit=%s cache=%s",
                 dataset.get("operation", "dashboard_stats"),

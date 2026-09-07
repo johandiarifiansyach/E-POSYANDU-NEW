@@ -696,7 +696,8 @@ fn issue_json(value: &ValidationIssue) -> Value {
 }
 
 fn analysis_assessment_json(value: &e_posyandu_proto::analysis::NutritionAssessment) -> Value {
-    let analysis = serde_json::from_str::<Value>(&value.analysis_json).unwrap_or_else(|_| json!({}));
+    let analysis =
+        serde_json::from_str::<Value>(&value.analysis_json).unwrap_or_else(|_| json!({}));
     json!({
         "rowNumber": value.row_number,
         "recordId": value.record_id,
@@ -785,9 +786,11 @@ pub fn process_job(request: ProcessJobRequest) -> Result<ProcessJobResponse, Sta
             .to_string();
             response.issues = result.issues;
         }
-        "nutrition_report" => return Err(Status::failed_precondition(
-            "Job laporan gizi harus diproses oleh analysis-service Python.",
-        )),
+        "nutrition_report" => {
+            return Err(Status::failed_precondition(
+                "Job laporan gizi harus diproses oleh analysis-worker Rust/PyO3 (modul Python).",
+            ));
+        }
         "export_file" => {
             let payload: ExportJobPayload = serde_json::from_str(&request.payload_json)
                 .map_err(|_| Status::invalid_argument("Payload ekspor tidak valid."))?;
@@ -885,9 +888,11 @@ impl DataProcessingWorker for DataProcessingWorkerService {
         if request.kind == "nutrition_report" {
             let client = AnalysisGrpcClient::from_env()
                 .map_err(Status::internal)?
-                .ok_or_else(|| Status::failed_precondition(
-                    "ANALYSIS_GRPC_ENABLED harus true untuk job laporan gizi.",
-                ))?;
+                .ok_or_else(|| {
+                    Status::failed_precondition(
+                        "ANALYSIS_GRPC_ENABLED harus true untuk job laporan gizi.",
+                    )
+                })?;
             let payload: NutritionJobPayload = serde_json::from_str(&request.payload_json)
                 .map_err(|_| Status::invalid_argument("Payload laporan gizi tidak valid."))?;
             let items = payload

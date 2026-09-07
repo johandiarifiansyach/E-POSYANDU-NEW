@@ -34,6 +34,9 @@ ORACLE_API_SECRET_SPECS = (
     ("TURNSTILE_SECRET_KEY", "OCI_SECRET_TURNSTILE_SECRET_KEY_ID"),
     ("ORACLE_API_SESSION_KEY", "OCI_SECRET_ORACLE_API_SESSION_KEY_ID"),
 )
+MCP_SECRET_SPECS = (
+    ("MCP_SHARED_SECRET", "OCI_SECRET_MCP_SHARED_SECRET_ID"),
+)
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -156,6 +159,12 @@ def main() -> None:
     oracle_api_values["RUST_WORKER_SHARED_SECRET"] = data_processing_values[
         "RUST_WORKER_SHARED_SECRET"
     ]
+    # MCP is an opt-in Compose profile. Keep this optional for existing
+    # deployments, but materialize it whenever its Vault OCID is configured;
+    # mcp-service itself refuses to start without the secret.
+    for name, secret_id_key in MCP_SECRET_SPECS:
+        if config.get(secret_id_key):
+            oracle_api_values[name] = fetch_secret(client, config[secret_id_key], name)
     database_password_secret_id = config.get(
         "OCI_SECRET_ORACLE_DATABASE_PASSWORD_ID"
     )

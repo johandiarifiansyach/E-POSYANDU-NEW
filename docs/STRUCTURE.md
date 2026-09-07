@@ -30,10 +30,14 @@ E-POSYANDU/
 │   ├── oracle-api/           API gateway native dan proxy gRPC
 │   ├── oracle-domain/        Implementasi domain bersama selama migrasi kode
 │   ├── identity-service/     Microservice autentikasi dan administrasi akun
-│   ├── operations-service/   Microservice CRUD, cache, dan sinkronisasi
+│   ├── read-service/         Microservice read-only tabel/dashboard/analisis
+│   ├── write-service/        Microservice CRUD, outbox, dan invalidasi cache
+│   ├── operations-service/   Microservice legacy gabungan (rollback)
 │   ├── realtime-service/     Microservice stream perubahan data
 │   ├── monitoring-service/   Microservice metrik operasional admin
-│   ├── analysis-service/     Microservice Python kalkulasi WHO deterministik
+│   ├── mcp-service/          Adapter MCP internal dengan tools terkontrol
+│   ├── analysis-worker/      Service Rust/PyO3 (transport, health, queue loop)
+│   ├── analysis-service/     Modul Python kalkulasi WHO deterministik
 │   ├── neon-read-worker/    Gateway privat baca-only menuju replika Neon
 │   └── data-processing-service/ Worker job berat Rust dan pull consumer Queue
 ├── deploy/oracle/           Runtime terisolasi dan bootstrap worker Oracle

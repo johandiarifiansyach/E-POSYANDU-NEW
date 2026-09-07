@@ -1,9 +1,10 @@
 # Deployment Platform Oracle
 
 Cloudflare Pages menjalankan frontend, sedangkan Oracle menjalankan gateway
-`oracle-api`, `identity-service`, `operations-service`, `realtime-service`,
-`monitoring-service`, `data-processing-worker`, serta `analysis-service` Python sebagai
-origin backend produksi. `analysis-service` hanya menghitung indikator WHO
+`oracle-api`, `identity-service`, `read-service`, `write-service`, `realtime-service`,
+`monitoring-service`, `data-processing-worker`, serta `analysis-worker` Rust/PyO3 sebagai
+origin backend produksi. `mcp-service` adalah adapter MCP internal untuk asisten AI terkontrol.
+`analysis-worker` memuat modul Python dan hanya menghitung indikator WHO
 secara deterministik menggunakan tabel LMS yang dicheck-in, lalu menjalankan
 screening risiko logistic ringan, analisis tren grafik, dan deteksi anomali
 kualitas data. Screening ini advisory (bukan diagnosis) dan belum menjadi
@@ -40,8 +41,8 @@ dapat dirilis terpisah; deployment service tidak me-restart service lain yang
 sedang sehat.
 
 Untuk deployment microservice Oracle, argumen ketiga pada script menentukan
-target: `oracle-api`, `identity-service`, `operations-service`, `realtime-service`,
-`monitoring-service`, `data-processing-worker`, `analysis-service`, atau `all`.
+target: `oracle-api`, `identity-service`, `read-service`, `write-service`, `operations-service`, `realtime-service`,
+`monitoring-service`, `data-processing-worker`, `analysis-worker`, `mcp-service`, atau `all`.
 
 ```bash
 # Hanya API native Oracle
@@ -50,15 +51,23 @@ npm run oracle:deploy:api -- eposyandu-oracle nutrition.example.go.id
 # Hanya data-processing worker
 npm run oracle:deploy:data-processing -- eposyandu-oracle nutrition.example.go.id
 
-# Hanya kalkulator WHO Python
+# Hanya worker analisis Rust/PyO3 (kalkulasi tetap Python)
 npm run oracle:deploy:analysis -- eposyandu-oracle nutrition.example.go.id
 
 # Hanya satu domain service
 npm run oracle:deploy:identity -- eposyandu-oracle nutrition.example.go.id
+npm run oracle:deploy:read -- eposyandu-oracle nutrition.example.go.id
+npm run oracle:deploy:write -- eposyandu-oracle nutrition.example.go.id
 npm run oracle:deploy:operations -- eposyandu-oracle nutrition.example.go.id
 npm run oracle:deploy:realtime -- eposyandu-oracle nutrition.example.go.id
 npm run oracle:deploy:monitoring -- eposyandu-oracle nutrition.example.go.id
+npm run oracle:deploy:mcp -- eposyandu-oracle nutrition.example.go.id
 ```
+
+`mcp-service` berada pada Compose profile `mcp` dan tidak ikut start pada
+deployment `all` sampai `MCP_SHARED_SECRET` dimaterialisasi dari OCI Vault.
+Deploy target `mcp-service` setelah secret/OCID tersedia; service hanya
+diekspos di jaringan Compose internal, bukan melalui Caddy atau Cloudflare.
 
 Setiap service memakai Dockerfile dan image sendiri. Service yang berada pada
 VM yang sama berkomunikasi melalui gRPC di atas UDS pada volume
@@ -68,12 +77,26 @@ environment URL bila service dipindahkan ke server/platform lain. Compose hanya 
 ikut di-restart. Migration database dijalankan terpisah sebelum service yang
 membutuhkan skema baru dirilis.
 
-Pada rilis penuh, worker mengirim batch pengukuran ke `analysis-service` melalui
+Pada rilis penuh, worker mengirim batch pengukuran ke `analysis-worker` melalui
 `ANALYSIS_GRPC_URL=unix:///run/e-posyandu/analysis.sock` dan
 `ANALYSIS_GRPC_ENABLED=true`. Deploy worker saja boleh memakai
 `ANALYSIS_GRPC_ENABLED=false` ketika service analisis belum dirilis, tetapi
 job `nutrition_report` akan gagal-terkontrol (tanpa fallback kalkulator Rust)
 sampai health check kedua service berhasil.
+
+`analysis-worker` adalah service Rust terpisah yang memuat CPython melalui
+PyO3 (opsi 2). Rust menangani gRPC/UDS, autentikasi, batas pesan, health check,
+dan loop antrean; modul Python pada `services/analysis-service/analysis_service`
+tetap menjadi satu-satunya otoritas WHO, z-score, N/T/O/B, risiko, edukasi,
+statistik, grafik, dan penulisan proyeksi analisis ke PostgreSQL. Service Python
+gRPC lama dipertahankan sebagai sumber rollback, tetapi tidak dijalankan bersama
+worker baru karena keduanya memakai socket analisis yang sama.
+
+`read-service` dan `write-service` memakai envelope gRPC yang sama namun hak
+berbeda: read hanya membuka jalur GET dan analisis POST, sedangkan write hanya
+menerima POST/PATCH/DELETE mutasi serta membuat tugas outbox. `operations-service`
+berada pada Compose profile `legacy` dan hanya digunakan untuk rollback
+terkontrol.
 
 Frontend tidak dibangun atau dijalankan pada VM Oracle. `eposyandu.app` dan
 `www.eposyandu.app` dilayani oleh Cloudflare Pages; hanya hostname API dan

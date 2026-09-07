@@ -1,8 +1,8 @@
-# Analysis Service
+# Analysis Service (Python engine)
 
 Service Python privat untuk kalkulasi antropometri WHO secara deterministik,
 screening risiko berbasis model logistic ringan, analisis tren grafik pertumbuhan,
-dan deteksi anomali kualitas data. Service ini menjadi pemilik kalkulasi status
+dan deteksi anomali kualitas data. Modul ini menjadi pemilik kalkulasi status
 gizi; machine learning hanya memberikan prediksi/sinyal skrining tambahan dan
 tidak mengubah status WHO resmi.
 
@@ -39,7 +39,14 @@ memfilter ulang di browser. Saat Python tidak tersedia, UI melaporkan layanan
 belum tersedia atau menampilkan halaman Python yang telah di-cache; tidak ada
 fallback klasifikasi WHO/N/T/O/B lokal.
 
-## Menjalankan dengan Docker
+## Runtime produksi
+
+Pada deployment opsi PyO3, modul ini tidak membuka listener gRPC sendiri.
+`services/analysis-worker` (Rust) memuatnya melalui PyO3, mempertahankan kontrak
+gRPC/UDS yang sama, serta menjalankan loop outbox. Image Python/gRPC di bawah
+tetap dipertahankan untuk rollback dan pengujian kompatibilitas.
+
+## Menjalankan dengan Docker (legacy/kompatibilitas)
 
 ```bash
 docker build -f services/analysis-service/Dockerfile -t e-posyandu-analysis-service .
@@ -77,6 +84,17 @@ Pengaturan dapat disesuaikan melalui `ANALYSIS_DATASET_WORKERS`,
 `ANALYSIS_DASHBOARD_CACHE_SIZE`, `ANALYSIS_DASHBOARD_CACHE_TTL_SECONDS`,
 `ANALYSIS_ASSESSMENT_CACHE_SIZE`, dan `ANALYSIS_ASSESSMENT_CACHE_TTL_SECONDS`.
 
+Penulisan snapshot agregasi dashboard juga dipisahkan dari jalur request.
+Setelah Python menyelesaikan kalkulasi, hasil langsung dikembalikan dan hanya
+metadata periode/cakupan serta agregat ringkas yang dimasukkan ke antrean
+berbatas. Worker penulis menyimpan `dashboard_analysis` di PostgreSQL di latar
+belakang dan mencoba ulang kegagalan koneksi hingga tiga kali. Antrean penuh
+tidak menahan kader atau mengubah hasil kalkulasi; snapshot berikutnya akan
+menggantikannya. Kapasitas dan paralelisme dapat diatur dengan
+`ANALYSIS_DASHBOARD_WRITE_QUEUE_SIZE` (default 32) dan
+`ANALYSIS_DASHBOARD_WRITE_WORKERS` (default 1). Saat proses berhenti secara
+normal, item yang sudah diterima tetap dikuras terlebih dahulu.
+
 ### Proyeksi hasil ke PostgreSQL
 
 Dengan `ANALYSIS_PERSISTENCE_ENABLED=true`, service juga menjalankan worker
@@ -84,11 +102,23 @@ outbox. Trigger migration 037 menerima perubahan dari semua tabel balita,
 pengukuran, MPASI, PMT, riwayat, dan penghapusan; Rust tidak menunggu worker
 sebelum menyimpan data utama. Worker Python membaca riwayat lengkap child,
 menghitung ulang hanya child yang berubah, lalu menyimpan hasil ke
-`measurement_analysis` bersama fingerprint sumber, versi hasil, dan versi
-cakupan. Rust dapat membaca proyeksi itu langsung dari PostgreSQL/Redis tanpa
-mengulang kalkulasi WHO pada setiap request. Setel `ANALYSIS_DATABASE_URL`
+`measurement_analysis` bersama fingerprint sumber, `input_hash`, versi sumber,
+versi hasil, dan versi cakupan. Pada replay job, Python membandingkan hash
+input per pengukuran; baris yang sama tidak dihitung ulang dan
+`analysis_version`-nya dipertahankan. Baris pengukuran yang dihapus atau
+menjadi tidak lengkap tetap dibersihkan dari proyeksi. Rust dapat membaca
+proyeksi itu langsung dari PostgreSQL/Redis tanpa mengulang kalkulasi WHO pada
+setiap request. Setel `ANALYSIS_DATABASE_URL`
 (atau `ORACLE_DATABASE_URL`) dan `ANALYSIS_PERSISTENCE_INTERVAL_SECONDS` sesuai
 lingkungan. Grafik dan analisis pertumbuhan detail tetap melewati RPC Python.
+
+Operasi LMS yang berulang memakai cache numerik bounded di `who.py`. Renderer
+grafik menyimpan SVG identik secara process-local dengan TTL agar pembukaan
+ulang grafik tidak merender ulang kurva WHO; ukuran dan TTL diatur melalui
+`ANALYSIS_GRAPH_CACHE_SIZE` dan `ANALYSIS_GRAPH_CACHE_TTL_SECONDS`. Dependency
+NumPy/Pandas/Polars tidak dipasang pada image runtime—semuanya tersedia di
+`training/requirements.txt` untuk pembersihan ekspor, statistik, dan pelatihan
+offline saja.
 
 Setiap item mengembalikan `analysis_json` berisi `anomaly`, `risk`,
 `nutritionConcern`, `nutritionEducation`, `weightGainStatus`,
@@ -103,12 +133,12 @@ resmi Ayo Sehat Kemenkes yang diberikan sebagai rujukan web.
 Jika status WHO sudah menunjukkan masalah, `nutritionConcern` mengganti kartu
 prediksi dengan panduan yang dipilih berdasarkan status: gizi kurang/berat
 kurang, pendek/stunting, gizi buruk, atau gizi lebih/obesitas. Bagian ini
-menambahkan edukasi dan tindak lanjut dari materi tatalaksana yang diberikan,
+menambahkan edukasi dan rekomendasi tindak lanjut dari materi tatalaksana yang diberikan,
 menyertakan sumber lokal dan rujukan resmi, serta menjaga agar obat, formula
 terapi, dan dosis klinis tidak diresepkan oleh aplikasi.
 `graphAnalysis` membaca riwayat bertanggal yang sama dengan
 titik pada grafik, lalu mengembalikan ringkasan, tren berat/tinggi/LILA/lingkar
-kepala, perubahan rata-rata per bulan, kesimpulan, dan saran tindak lanjut.
+kepala, perubahan rata-rata per bulan, kesimpulan, dan rekomendasi tindak lanjut.
 Model `growth-trend-logistic-v1` adalah baseline logistic yang transparan dan
 ringan, bukan model klinis terlatih; hasilnya tetap harus dikonfirmasi oleh
 tenaga kesehatan.

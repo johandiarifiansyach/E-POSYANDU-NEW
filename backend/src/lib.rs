@@ -536,7 +536,8 @@ fn openapi_document() -> ApiResult<serde_json::Value> {
 }
 
 async fn read_data_processing_worker_health(env: &Env) -> Option<DataProcessingWorkerHealth> {
-    let stored = if let Some(current) = redis_get_text(env, DATA_PROCESSING_WORKER_HEALTH_KEY).await {
+    let stored = if let Some(current) = redis_get_text(env, DATA_PROCESSING_WORKER_HEALTH_KEY).await
+    {
         current
     } else {
         redis_get_text(env, LEGACY_NUTRITION_WORKER_HEALTH_KEY).await?

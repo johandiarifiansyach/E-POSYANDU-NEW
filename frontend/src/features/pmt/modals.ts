@@ -1,6 +1,7 @@
 // @ts-nocheck
 import * as Context from '../../shared/dashboardContext';
 import { errorMessage, type PageState } from '../../shared/pageState';
+import { automaticRecommendation, getMonitoringForWeek } from './pmtRules';
 
 const {
     Native, useState, useEffect, useMemo, useRef, collection, addDoc,
@@ -129,6 +130,8 @@ export const PmtMonitoringModal = ({ program, child, onClose }) => {
     const measureDate = new Date(data.tgl);
     const ageAtMeasure = getAgeInMonths(child.tglLahir, measureDate);
     const caraUkur = ageAtMeasure >= 24 ? 'Berdiri' : 'Terlentang';
+    const monitoringForWeek = getMonitoringForWeek(program, week);
+    const generatedRecommendation = automaticRecommendation(program, child, monitoringForWeek);
     useEffect(() => {
         if (program.monitorings && program.monitorings[week]) {
             const m = program.monitorings[week];
@@ -138,7 +141,7 @@ export const PmtMonitoringModal = ({ program, child, onClose }) => {
                 tb: m.tb.toString(),
                 days: m.days || [false, false, false, false, false, false, false],
                 pemantauanKesehatan: m.pemantauanKesehatan || 'Ada',
-                tindakLanjut: m.tindakLanjut || 'Dilanjutkan'
+                tindakLanjut: automaticRecommendation(program, child, m)
             });
         }
         else {
@@ -148,7 +151,7 @@ export const PmtMonitoringModal = ({ program, child, onClose }) => {
                 tb: '',
                 days: [false, false, false, false, false, false, false],
                 pemantauanKesehatan: 'Ada',
-                tindakLanjut: 'Dilanjutkan'
+                tindakLanjut: automaticRecommendation(program, child, null)
             });
         }
     }, [week, program.monitorings]);
@@ -175,7 +178,10 @@ export const PmtMonitoringModal = ({ program, child, onClose }) => {
                     caraUkur: caraUkur,
                     days: data.days,
                     pemantauanKesehatan: data.pemantauanKesehatan,
-                    tindakLanjut: data.tindakLanjut
+                    // Do not persist a cadre-selected code/text.  The
+                    // recommendation is generated from Python output (or the
+                    // conservative legacy category fallback) on every save.
+                    tindakLanjut: generatedRecommendation
                 }
             };
             await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'pmt_programs', program.id), { monitorings: updatedMonitorings, updatedAt: serverTimestamp() });
@@ -241,8 +247,9 @@ export const PmtMonitoringModal = ({ program, child, onClose }) => {
                     Native.createElement("div", { className: "ios-form-grid ios-form-grid-two" },
                         Native.createElement(InputGroup, { label: "Pemantauan Kesehatan" },
                             Native.createElement(Select, { className: "ios-liquid-control", value: data.pemantauanKesehatan, onChange: e => setData({ ...data, pemantauanKesehatan: e.target.value }), options: [{ value: 'Ada', label: 'Ada' }, { value: 'Tidak', label: 'Tidak' }] })),
-                        Native.createElement(InputGroup, { label: "Tindak Lanjut" },
-                            Native.createElement(Select, { className: "ios-liquid-control", value: data.tindakLanjut, onChange: e => setData({ ...data, tindakLanjut: e.target.value }), options: [{ value: 'Dilanjutkan', label: 'Dilanjutkan' }, { value: 'Selesai', label: 'Selesai' }, { value: 'Rujuk RS', label: 'Rujuk RS' }] })))),
+                        Native.createElement(InputGroup, { label: "Rekomendasi tindak lanjut (otomatis)" },
+                            Native.createElement("div", { className: "ios-liquid-control w-full rounded-xl p-2.5 text-slate-700", role: "status", "aria-live": "polite" }, generatedRecommendation),
+                            Native.createElement("p", { className: "mt-1 text-xs italic text-slate-500" }, "Dipilih sistem dari hasil analisis; kader tidak memilih kode rekomendasi.")))),
                 saveError && Native.createElement("div", { className: "rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700", role: "alert" }, saveError),
                 Native.createElement("div", { className: "ios-modal-actions" },
                     Native.createElement(Button, { variant: "secondary", onClick: onClose, className: "ios-modal-secondary flex-1" }, "Tutup"),

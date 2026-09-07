@@ -32,6 +32,7 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
     const pageLoading = resolvedState.status === 'loading';
     const pageError = resolvedState.status === 'error' ? resolvedState.message : null;
     const pageItems = resolvedState.status === 'success' ? resolvedState.data.items : paginatedData;
+    const readFallback = resolvedState.status === 'success' && resolvedState.data.readFallback;
     // The Python page response already contains the authoritative WHO,
     // N/T/O/B, ASI, and risk fields. The browser only maps those fields for
     // presentation; it never runs a second calculator or fetches history.
@@ -115,6 +116,8 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
         pageError && Native.createElement("div", { role: "alert", className: "ios-inline-notification ios-inline-notification-error" },
             "Gagal memuat data balita: ",
             pageError),
+        readFallback && Native.createElement("div", { role: "status", "aria-live": "polite", className: "ios-inline-notification ios-inline-notification-warning" },
+            "Menampilkan data tersimpan dari PostgreSQL. Kolom analisis akan diperbarui setelah layanan Python aktif."),
         Native.createElement(Card, { className: "ios-table-card overflow-hidden flex flex-col" },
             Native.createElement(DataTable, { className: "relative w-full overflow-y-visible", ariaLabel: "Daftar balita" },
                 Native.createElement("table", { className: "ios-data-table ios-children-table min-w-full" },

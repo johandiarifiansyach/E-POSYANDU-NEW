@@ -416,8 +416,10 @@ class WhoCalculatorTests(unittest.TestCase):
         self.assertIn('>0</text>', boys)
         # The mirrored right-axis values and SD labels occupy separate
         # columns so labels such as "28" and "+3" remain readable.
-        self.assertIn('x="1085.00" y="124.00" text-anchor="middle"', boys)
-        self.assertIn('x="1118.00" y="127.78" text-anchor="end"', boys)
+        self.assertIn('x="1125.00" y="124.00" text-anchor="middle"', boys)
+        self.assertIn('x="1055.00" y="127.78" text-anchor="middle"', boys)
+        self.assertIn('x="1021" y="120" width="69" height="530" fill="#ffffff"', boys)
+        self.assertIn('x1="309.60" y1="120.00" x2="309.60" y2="650.00" stroke="#666666" stroke-width="2.8"', boys)
         self.assertIn('width="1200" height="760" viewBox="0 0 1200 760"', boys)
         # One line per month plus the darker yearly boundaries creates the
         # dense horizontal/vertical WHO-style grid.
@@ -429,12 +431,27 @@ class WhoCalculatorTests(unittest.TestCase):
         )
         self.assertIn('stroke="#f2c94c"', bbtb)
         self.assertIn('>+1</text>', bbtb)
+        tbu = charts.render_growth_chart(
+            "tbu",
+            "L",
+            [{"age_months": 24, "height_cm": 86.0, "measurement_method": "Berdiri"}],
+        )
+        self.assertIn('stroke-dasharray="8 6"', tbu)
+        self.assertIn("Transisi PB ke TB pada usia 24 bulan", tbu)
         lilau = charts.render_growth_chart(
             "lilau",
             "P",
-            [{"age_months": 18, "lila_cm": 14.0}],
+            [
+                # LILA/U standards start at completed month 3; earlier
+                # observations are intentionally outside this chart.
+                {"age_months": 2, "lila_cm": 12.0, "measurement_date": "2026-07-01"},
+                {"age_months": 18, "lila_cm": 14.0, "measurement_date": "2026-08-01"},
+            ],
         )
         self.assertIn('stroke="#f2c94c"', lilau)
+        self.assertIn("3 bulan–5 tahun", lilau)
+        self.assertNotIn("2026-07-01: 12.00 cm", lilau)
+        self.assertIn('stroke-width="2.8"', lilau)
 
     def test_python_renderer_breaks_child_line_at_missing_month_and_status_o(self):
         svg = charts.render_growth_chart(
@@ -627,6 +644,23 @@ class WhoCalculatorTests(unittest.TestCase):
         explanation = result["risk"]["predictions"]["underweight"]["explanation"]
         self.assertIn("Riwayat z-score BB/U", explanation)
         self.assertIn("berstatus T", explanation)
+
+    def test_more_not_rising_results_raise_screening_signal(self):
+        assessment = {"bbu_z_score": 0, "tbu_z_score": 0, "bbtb_z_score": 0}
+        one = ml.predict_risks(
+            assessment,
+            {"detected": False, "items": []},
+            {"weightGain": {"statuses": ["T"], "recent": ["T"], "trailingNotRising": 1, "notRisingCount": 1, "notRisingRate": 1.0}},
+        )
+        many = ml.predict_risks(
+            assessment,
+            {"detected": False, "items": []},
+            {"weightGain": {"statuses": ["T", "T", "T"], "recent": ["T", "T", "T"], "trailingNotRising": 3, "notRisingCount": 3, "notRisingRate": 1.0}},
+        )
+        self.assertGreater(
+            many["predictions"]["underweight"]["probability"],
+            one["predictions"]["underweight"]["probability"],
+        )
 
     def test_problem_status_education_includes_history_summary(self):
         current = {

@@ -67,7 +67,7 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '035_native_admin_security_dual_run.sql');
+  assert.equal(files.at(-1), '044_read_path_indexes.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
@@ -577,7 +577,7 @@ test('data dinamis memakai primary dan cache Redis terversi dengan TTL terpisah'
   assert.match(worker, /dynamic_cache_key/);
   assert.match(worker, /redis_commands/);
   assert.match(worker, /\/api\/v1\/collections\//);
-  assert.match(dashboard, /e-posyandu:dashboard-stats:v4/);
+  assert.match(dashboard, /e-posyandu:dashboard-stats:v6-python/);
   assert.match(dashboard, /isDashboardTab/);
 });
 
@@ -639,12 +639,13 @@ test('GraphQL hanya untuk baca dan gRPC memakai kontrak internal terpisah', asyn
 });
 
 test('analisis pertumbuhan menerima riwayat dan mengembalikan screening serta anomali', async () => {
-  const [proto, who, model, dialog, charts, chartDialog, client, measurementPage] = await Promise.all([
+  const [proto, who, model, dialog, charts, pythonCharts, chartDialog, client, measurementPage] = await Promise.all([
     readFile(resolve(root, 'services/analysis-service/proto/analysis.proto'), 'utf8'),
     readFile(resolve(root, 'services/analysis-service/analysis_service/who.py'), 'utf8'),
     readFile(resolve(root, 'services/analysis-service/analysis_service/ml.py'), 'utf8'),
     readFile(resolve(root, 'frontend/src/features/measurements/MeasurementAnalysisDialog.ts'), 'utf8'),
     readFile(resolve(root, 'frontend/src/features/measurements/growthCharts.ts'), 'utf8'),
+    readFile(resolve(root, 'services/analysis-service/analysis_service/charts.py'), 'utf8'),
     readFile(resolve(root, 'frontend/src/features/measurements/GrowthChartsDialog.ts'), 'utf8'),
     readFile(resolve(root, 'frontend/src/api/analysisApi.ts'), 'utf8'),
     readFile(resolve(root, 'frontend/src/pages/MeasurementPage.ts'), 'utf8')
@@ -667,8 +668,9 @@ test('analisis pertumbuhan menerima riwayat dan mengembalikan screening serta an
   assert.match(dialog, /Skor-z/);
   assert.match(dialog, /Prediksi risiko/);
   assert.match(dialog, /Buka grafik pertumbuhan/);
-  assert.match(charts, /Anomali tinggi/);
-  assert.match(charts, /height_decreased/);
+  assert.match(charts, /GROWTH_CHART_TYPES/);
+  assert.match(pythonCharts, /def render_growth_chart/);
+  assert.match(pythonCharts, /_child_segments/);
   assert.match(chartDialog, /Analisis Pertumbuhan/);
   assert.match(measurementPage, /Analisis Pertumbuhan/);
   assert.match(chartDialog, /requestGrowthAnalysis/);
@@ -862,8 +864,9 @@ test('riwayat perubahan dimuat langsung, dibatasi, dan rincian diproses bertahap
     /resource == Resource::ChangeLogs\s*&& !export_request\s*&& first_query\(&query, "page"\)\.is_some\(\)/
   );
   assert.match(client, /export async function getChangeHistory/);
-  assert.match(client, /collections\/change_logs\?order=timestamp%7Cdesc&page=/);
-  assert.match(dashboard, /getChangeHistory\(changeHistoryPage, 10\)/);
+  assert.match(client, /collections\/change_logs\?/);
+  assert.match(client, /order=timestamp%7Cdesc/);
+  assert.match(dashboard, /getChangeHistory\(changeHistoryPage, 10, ageGroup/);
   assert.match(dashboard, /setChangeHistoryError/);
 });
 
@@ -947,7 +950,8 @@ test('oracle api hanya menjadi gateway dan domain service berjalan terpisah', as
   assert.match(proto, /service MonitoringService/);
   assert.match(gateway, /ORACLE_API_MICROSERVICES_ENABLED/);
   assert.match(gateway, /IdentityServiceClient/);
-  assert.match(gateway, /OperationsServiceClient/);
+  assert.match(gateway, /ReadServiceClient/);
+  assert.match(gateway, /WriteServiceClient/);
   assert.match(gateway, /RealtimeServiceClient/);
   assert.match(gateway, /MonitoringServiceClient/);
   assert.match(gateway, /unix:\/\/\/run\/e-posyandu/);
@@ -1048,6 +1052,11 @@ test('cache sensitif dienkripsi per akun dan login tidak melewati gerbang keaman
   assert.match(pagesProxy, /safeConfiguredOrigin/);
   assert.match(pagesProxy, /SAFE_RETRY_METHODS/);
   assert.match(pagesProxy, /RETRYABLE_GATEWAY_STATUSES/);
+  assert.match(pagesProxy, /MAINTENANCE_GATEWAY_STATUSES/);
+  assert.match(pagesProxy, /AUTO_MAINTENANCE_ON_HEALTH_FAILURE/);
+  assert.match(pagesProxy, /MAINTENANCE_MODE/);
+  assert.match(pagesProxy, /serveMaintenancePage/);
+  assert.match(pagesProxy, /X-E-Posyandu-Maintenance/);
   assert.match(pagesProxy, /X-E-Posyandu-Fallback/);
   assert.doesNotMatch(pagesProxy, /SAFE_RETRY_METHODS\.has\([^)]*POST/);
 });

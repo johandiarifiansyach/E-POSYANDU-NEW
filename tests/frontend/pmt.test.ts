@@ -30,15 +30,16 @@ test.describe('pmt feature', () => {
     expect(getMonitoringForWeek(program, 2)).toEqual({ week: 2, bb: '3,4', tb: '50,5' });
   });
 
-  test('marks a no-gain PMT program from consecutive weights', () => {
+  test('does not infer PMT N/T locally when Python has not returned a result', () => {
     const program = {
       category: 'TidakNaik',
       monitorings: [{ week: 1, bb: 3.1 }]
     };
     const baseline = { weight: 3.1 };
 
-    expect(monitoringStatus(program, {}, null, 0, baseline)).toBe('T');
-    expect(monitoringStatus(program, {}, { bb: 3.1 }, 1, baseline)).toBe('T');
-    expect(monitoringStatus(program, {}, { bb: 3.4 }, 1, baseline)).toBe('N');
+    expect(monitoringStatus(program, {}, null, 0, baseline)).toBe('-');
+    expect(monitoringStatus(program, {}, { bb: 3.1 }, 1, baseline)).toBe('-');
+    expect(monitoringStatus(program, {}, { pythonStatus: 'N' }, 1, baseline)).toBe('N');
+    expect(monitoringStatus(program, {}, { analysis: { status: 'T' } }, 1, baseline)).toBe('T');
   });
 });

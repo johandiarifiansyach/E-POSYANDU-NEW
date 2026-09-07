@@ -21,14 +21,17 @@ tests/                 Pengujian kontrak lintas komponen
 | Frontend utama | Container Caddy di Oracle Compute melalui Tunnel |
 | API utama | `oracle-api` Rust di Oracle Compute melalui Tunnel |
 | Service identity | `identity-service` gRPC privat untuk login, MFA, passkey, dan akun admin |
-| Service operasional | `operations-service` gRPC privat untuk CRUD, cache, dan sinkronisasi |
+| Service baca | `read-service` gRPC privat untuk tabel, dashboard, cache, dan analisis read-side |
+| Service tulis | `write-service` gRPC privat untuk CRUD, outbox analisis, dan invalidasi cache |
+| Service operasional legacy | `operations-service` gRPC rollback-only (Compose profile `legacy`) |
 | Service realtime | `realtime-service` gRPC streaming untuk SSE perubahan data |
 | Service monitoring | `monitoring-service` gRPC privat untuk metrik admin |
-| Service analisis | `analysis-service` Python gRPC privat untuk kalkulasi LMS deterministik, screening risiko logistic, analisis tren grafik, dan deteksi anomali |
+| Service analisis | `analysis-worker` Rust/PyO3 gRPC privat; modul Python tetap menjadi otoritas kalkulasi LMS deterministik, screening risiko logistic, analisis tren grafik, dan deteksi anomali |
+| MCP internal | `mcp-service` Rust/Streamable HTTP privat; tools terkontrol membaca ReadService dan mencatat rekomendasi tindak lanjut otomatis melalui WriteService |
 | Data utama | Oracle PostgreSQL native; Supabase tetap tersedia sebagai jalur legacy/rollback |
 | Sesi dan autentikasi | Identity service dengan PostgreSQL native + SQLite sesi terenkripsi |
 | Pekerjaan berat | Rust `data-processing-worker` di Oracle Compute + Cloudflare Queue |
-| Komunikasi internal | gRPC/HTTP2 privat antara gateway, identity, operations, realtime, monitoring, dan data-processing; Queue tetap untuk job asinkron |
+| Komunikasi internal | gRPC/HTTP2 privat antara gateway, identity, read, write, realtime, monitoring, dan data-processing; Queue tetap untuk job asinkron |
 | Rollback darurat | Cloudflare Pages + Worker lama, tetap tersedia tetapi bukan jalur normal |
 | File job privat | Cloudflare R2 |
 | Cache data dinamis (TTL umum 5 menit; dashboard 60 detik) | Redis |
@@ -54,11 +57,14 @@ npm run replica:check   # Periksa TypeScript private Neon Read Worker
 npm run replica:verify  # Verifikasi sinkronisasi HTTPS dan role read-only
 npm run oracle:deploy:api -- ALIAS_SSH DOMAIN_HEALTH # Deploy API Oracle saja
 npm run oracle:deploy:identity -- ALIAS_SSH DOMAIN_HEALTH # Deploy identity service saja
+npm run oracle:deploy:read -- ALIAS_SSH DOMAIN_HEALTH # Deploy read service saja
+npm run oracle:deploy:write -- ALIAS_SSH DOMAIN_HEALTH # Deploy write service saja
 npm run oracle:deploy:operations -- ALIAS_SSH DOMAIN_HEALTH # Deploy operations service saja
 npm run oracle:deploy:realtime -- ALIAS_SSH DOMAIN_HEALTH # Deploy realtime service saja
 npm run oracle:deploy:monitoring -- ALIAS_SSH DOMAIN_HEALTH # Deploy monitoring service saja
 npm run oracle:deploy:data-processing -- ALIAS_SSH DOMAIN_HEALTH # Deploy data processing worker saja
-npm run oracle:deploy:analysis -- ALIAS_SSH DOMAIN_HEALTH # Deploy analysis service Python saja
+npm run oracle:deploy:analysis -- ALIAS_SSH DOMAIN_HEALTH # Deploy analysis-worker Rust/PyO3 saja
+npm run oracle:deploy:mcp -- ALIAS_SSH DOMAIN_HEALTH # Deploy MCP internal saja
 npm run worker:deploy   # Deploy API ke Cloudflare Worker
 npm run worker:deploy:staging # Deploy API staging
 npm run pages:deploy    # Build dan deploy frontend ke Cloudflare Pages

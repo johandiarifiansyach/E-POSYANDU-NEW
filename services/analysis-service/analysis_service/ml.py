@@ -545,6 +545,8 @@ def _history_context(
     }
     gain_statuses = [point["weightGainStatus"] for point in points if point.get("weightGainStatus") in {"N", "T"}]
     recent_gain_statuses = gain_statuses[-3:]
+    not_rising_count = gain_statuses.count("T")
+    not_rising_rate = (not_rising_count / len(gain_statuses)) if gain_statuses else 0.0
     trailing_not_rising = 0
     for status in reversed(gain_statuses):
         if status != "T":
@@ -566,6 +568,8 @@ def _history_context(
             "statuses": gain_statuses,
             "recent": recent_gain_statuses,
             "trailingNotRising": trailing_not_rising,
+            "notRisingCount": not_rising_count,
+            "notRisingRate": round(not_rising_rate, 4),
             "current": current_point.get("weightGainStatus") if current_point else None,
             "currentMinimumGrams": current_point.get("weightGainMinimumGrams") if current_point else None,
         },
@@ -595,8 +599,21 @@ def _history_summary_for_education(context: dict[str, Any]) -> tuple[list[str], 
     recent = gain.get("recent", [])
     if recent:
         education.append("Kenaikan berat pada pengukuran berurutan: " + "–".join(recent) + " (N = naik, T = tidak naik).")
-    if gain.get("trailingNotRising", 0) >= 2:
-        follow_up.append("Berat tidak naik pada sedikitnya dua pengukuran terakhir; verifikasi cara ukur, telaah asupan dan penyakit, lalu konsultasikan ke kader/bidan/Ahli Gizi.")
+    not_rising_count = int(
+        gain.get("notRisingCount", gain.get("trailingNotRising", 0)) or 0
+    )
+    if not_rising_count:
+        education.append(
+            f"Terdapat {not_rising_count} pengukuran berstatus T (berat tidak naik); pastikan cara ukur dan pola makan sesuai usia."
+        )
+        if not_rising_count >= 2:
+            follow_up.append(
+                "Beberapa pengukuran menunjukkan berat tidak naik; verifikasi cara ukur, telaah asupan, dan konsultasikan ke kader/bidan/Ahli Gizi."
+            )
+        else:
+            follow_up.append(
+                "Satu pengukuran menunjukkan berat tidak naik; jadwalkan penimbangan berikutnya dan pantau pola makan tanpa menyimpulkan diagnosis dari satu hasil."
+            )
     for key, label in (("bbu", "BB/U"), ("tbu", "PB/TB/U"), ("bbtb", "BB/PB atau BB/TB")):
         trend = (context.get("zScores") or {}).get(key, {})
         if trend.get("direction") == "decreasing":
@@ -703,7 +720,7 @@ def nutrition_concern(
 
     return {
         "detected": True,
-        "title": "Edukasi singkat dan tindak lanjut",
+        "title": "Edukasi dan rekomendasi tindak lanjut",
         "summary": "Status gizi menunjukkan masalah yang sudah teridentifikasi; bagian prediksi risiko tidak ditampilkan.",
         "findings": findings,
         "historySummary": {
@@ -722,6 +739,9 @@ def nutrition_concern(
         ],
         "exclusiveBreastfeeding": asi,
         "education": education,
+        "recommendations": follow_up,
+        # Compatibility alias for clients released before the terminology
+        # change. UI should prefer `recommendations`.
         "followUp": follow_up,
         "urgency": "segera" if severe else "terjadwal",
         "disclaimer": "Informasi edukasi ini bukan diagnosis atau pengganti pemeriksaan tenaga kesehatan.",
@@ -758,6 +778,8 @@ def predict_risks(
     historical_problems = context.get("historicalProblems", {})
     trailing_t = int(gain.get("trailingNotRising", 0) or 0)
     recent_gain = list(gain.get("recent", []) or [])
+    not_rising_count = int(gain.get("notRisingCount", 0) or 0)
+    not_rising_rate = _number(gain.get("notRisingRate")) or 0.0
 
     def trend_bonus(key: str) -> float:
         trend = z_scores.get(key, {}) or {}
@@ -767,9 +789,14 @@ def predict_risks(
         delta = _number(trend.get("delta")) or 0.0
         return min(0.8, 0.25 + max(0.0, -delta - 0.25) * 0.35)
 
-    # Repeated T is a longitudinal warning only.  A single T can be normal
-    # measurement variation, so it receives a smaller bounded contribution.
-    gain_bonus = 0.45 if trailing_t >= 2 else 0.22 if recent_gain and recent_gain[-1] == "T" else 0.0
+    # Repeated T is a longitudinal warning.  The contribution grows with the
+    # number and proportion of T results, but remains bounded so this stays a
+    # screening signal rather than a clinical diagnosis. A single T still has
+    # a smaller contribution because measurement variation is possible.
+    count_bonus = min(1.2, 0.22 * not_rising_count + 0.12 * max(0, not_rising_count - 1))
+    rate_bonus = min(0.45, max(0.0, not_rising_rate - 0.25) * 0.8)
+    trailing_bonus = min(0.3, 0.1 * trailing_t)
+    gain_bonus = min(1.6, count_bonus + rate_bonus + trailing_bonus)
     underweight_history_bonus = trend_bonus("bbu") + gain_bonus
     stunting_history_bonus = trend_bonus("tbu")
     wasting_history_bonus = trend_bonus("bbtb") + gain_bonus
@@ -788,10 +815,12 @@ def predict_risks(
         if trend.get("direction") == "decreasing":
             messages.append(f"Riwayat z-score {label} menunjukkan kecenderungan menurun.")
         if include_gain and gain_bonus:
-            if trailing_t >= 2:
-                messages.append("Dua atau lebih kenaikan berat terakhir berstatus T (tidak naik).")
+            if not_rising_count >= 2:
+                messages.append(
+                    f"Sebanyak {not_rising_count} dari {len(gain.get('statuses', []) or [])} status kenaikan berat berstatus T (tidak naik); sinyal risiko dinaikkan bertahap."
+                )
             elif recent_gain and recent_gain[-1] == "T":
-                messages.append("Pengukuran berat terakhir berstatus T (tidak naik).")
+                messages.append("Pengukuran berat terakhir berstatus T (tidak naik); lakukan pemantauan ulang.")
         if historical_problems.get(key):
             messages.append("Status indikator ini pernah bermasalah pada riwayat sebelumnya.")
         if context.get("previousPoints", 0):

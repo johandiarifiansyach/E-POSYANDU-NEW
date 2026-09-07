@@ -19,6 +19,7 @@ from typing import Any
 
 MAX_BATCH_ITEMS = 10_000
 STANDARDS_VERSION = "WHO-2006-2007-LMS"
+LMS_CACHE_SIZE = 131_072
 
 
 def _repository_root() -> Path:
@@ -85,11 +86,23 @@ def circumference_standards() -> dict[str, dict[str, list[list[float]]]]:
     return _parse_circumference_typescript(path.read_text(encoding="utf-8"))
 
 
-def lms_z_score(value: float, reference: list[float] | tuple[float, float, float]) -> float:
-    l, median, spread = reference
+@lru_cache(maxsize=LMS_CACHE_SIZE)
+def _lms_z_score_cached(value: float, l: float, median: float, spread: float) -> float:
     if l == 0.0:
         return math.log(value / median) / spread
     return ((value / median) ** l - 1.0) / (l * spread)
+
+
+def lms_z_score(value: float, reference: list[float] | tuple[float, float, float]) -> float:
+    """Calculate an LMS z-score using a bounded numeric cache.
+
+    LMS rows are immutable and reused across thousands of children. Caching
+    the primitive calculation removes repeated logarithm/power work without
+    retaining any child identity or measurement record.
+    """
+
+    l, median, spread = (float(part) for part in reference)
+    return _lms_z_score_cached(float(value), l, median, spread)
 
 
 def adjusted_length_height(value: float, age_months: int, method: str) -> float:
@@ -141,6 +154,7 @@ def z_score(
     return None
 
 
+@lru_cache(maxsize=32_768)
 def circumference_z_score(
     value: float | None,
     indicator: str,
@@ -156,6 +170,17 @@ def circumference_z_score(
         if int(row[0]) == age_months:
             return lms_z_score(value, row[1:])
     return None
+
+
+def cache_stats() -> dict[str, Any]:
+    """Return bounded WHO-cache counters for local/operational diagnostics."""
+
+    return {
+        "lms": _lms_z_score_cached.cache_info()._asdict(),
+        "circumference": circumference_z_score.cache_info()._asdict(),
+        "standardsLoaded": standards.cache_info().currsize,
+        "circumferenceStandardsLoaded": circumference_standards.cache_info().currsize,
+    }
 
 
 def nutrition_status(score: float | None, growth_type: str) -> str:

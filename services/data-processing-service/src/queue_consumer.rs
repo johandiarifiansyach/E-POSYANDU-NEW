@@ -486,7 +486,17 @@ mod tests {
 
     #[test]
     fn accepts_current_and_legacy_job_id_fields() {
-        assert_eq!(queue_message(&json!({ "jobId": "current" })).unwrap().job_id, "current");
-        assert_eq!(queue_message(&json!({ "job_id": "legacy" })).unwrap().job_id, "legacy");
+        assert_eq!(
+            queue_message(&json!({ "jobId": "current" }))
+                .unwrap()
+                .job_id,
+            "current"
+        );
+        assert_eq!(
+            queue_message(&json!({ "job_id": "legacy" }))
+                .unwrap()
+                .job_id,
+            "legacy"
+        );
     }
 }

@@ -455,7 +455,7 @@ export const Dashboard = ({ user, onLogout }) => {
             setPagedMeasurements(measurementByChild);
             setPagedMpasiLogs(mpasiByChild);
             setPagedChildrenTotal(result.total);
-            setPagedChildrenPageState({ status: 'success', data: { items: mappedChildren, total: result.total } });
+            setPagedChildrenPageState({ status: 'success', data: { items: mappedChildren, total: result.total, readFallback: result.readFallback } });
             setErrorMsg(null);
         };
         const memoryCachedPage = peekCachedChildrenPage(request);

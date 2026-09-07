@@ -56,3 +56,35 @@ export function monitoringStatus(program, child, monitoring, week, baseline) {
     ?? monitoring?.analysis?.status
     ?? '-';
 }
+
+/**
+ * Recommends the next PMT action without exposing a picker to cadres.
+ *
+ * Python remains the authority for the underlying status/risk analysis.  The
+ * UI consumes a recommendation already attached to the analysis when one is
+ * available, and only uses this conservative category fallback for legacy
+ * records that predate the Python result fields.
+ */
+export function automaticRecommendation(program, child, monitoring) {
+  const candidates = [
+    monitoring?.pythonRecommendation,
+    monitoring?.recommendation,
+    monitoring?.analysis?.recommendation,
+    monitoring?.analysis?.recommendations?.[0],
+    monitoring?.analysis?.nutritionConcern?.recommendations?.[0],
+    monitoring?.analysis?.nutritionEducation?.recommendations?.[0],
+    program?.pythonRecommendation,
+    program?.recommendation,
+    child?.pythonRecommendation,
+  ];
+  const provided = candidates.find((value) => typeof value === 'string' && value.trim());
+  if (provided) return provided.trim();
+
+  if (program?.category === 'TidakNaik') {
+    return 'Berikan edukasi khusus status berat badan tidak naik dan jadwalkan pemantauan lebih dekat.';
+  }
+  if (program?.category === 'Wasting' || program?.category === 'Underweight') {
+    return 'Berikan edukasi gizi sesuai usia, lanjutkan PMT sesuai jadwal, dan pantau hasil pengukuran berikutnya.';
+  }
+  return 'Lanjutkan pemantauan pertumbuhan dan penimbangan berikutnya sesuai jadwal.';
+}

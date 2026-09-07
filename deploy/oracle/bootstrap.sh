@@ -24,7 +24,8 @@ fi
 
 case "$deployment_service" in
   nutrition-worker) deployment_service="data-processing-worker" ;;
-  all|oracle-api|identity-service|operations-service|realtime-service|monitoring-service|data-processing-worker|analysis-service) ;;
+  analysis-service) deployment_service="analysis-worker" ;; # kompatibilitas nama lama
+  all|oracle-api|identity-service|read-service|write-service|operations-service|realtime-service|monitoring-service|data-processing-worker|analysis-worker|mcp-service) ;;
   *)
     echo "Service Oracle tidak valid: $deployment_service" >&2
     exit 1
@@ -299,17 +300,26 @@ deployment_started=true
 
 if [[ "$deployment_service" == "all" && "$skip_build" != "true" ]]; then
   # Build satu per satu. VM Oracle Always Free hanya memiliki disk/CPU
-  # terbatas; membangun enam image Rust bersamaan membuat setiap target
+  # terbatas; membangun banyak image Rust bersamaan membuat setiap target
   # menyimpan artefak Cargo duplikat dan dapat menghabiskan disk sebelum
   # container baru dibuat. Container lama tetap berjalan selama tahap build.
-  for build_service in \
-    identity-service \
-    operations-service \
-    realtime-service \
-    monitoring-service \
-    data-processing-worker \
-    analysis-service \
-    oracle-api; do
+  build_services=(
+    identity-service
+    read-service
+    write-service
+    realtime-service
+    monitoring-service
+    data-processing-worker
+    analysis-worker
+    oracle-api
+  )
+  # MCP berada di compose profile opsional. podman-compose tidak melihat
+  # service ber-profile ketika COMPOSE_PROFILES kosong; jangan mencoba build
+  # service yang memang tidak diaktifkan pada deployment produksi biasa.
+  case ",${compose_profiles// /,}," in
+    *,mcp,*) build_services+=(mcp-service) ;;
+  esac
+  for build_service in "${build_services[@]}"; do
     echo "Membangun image $build_service secara berurutan ..."
     "${compose_command[@]}" \
       --project-name e-posyandu-oracle \
@@ -378,7 +388,14 @@ for attempt in $(seq 1 30); do
   if [[ "$deployment_service" == "all" || "$deployment_service" == "oracle-api" ]]; then
     "${api_health_check[@]}" 2>/dev/null | grep -Fq '"ok":true' || service_healthy=false
   fi
-  for internal_service in identity-service operations-service realtime-service monitoring-service; do
+  for internal_service in identity-service read-service write-service realtime-service monitoring-service mcp-service; do
+    # MCP is opt-in during this first rollout. Existing `all` deployments do
+    # not start it until the operator has materialized MCP_SHARED_SECRET from
+    # OCI Vault; targeting mcp-service explicitly still performs the health
+    # gate below.
+    if [[ "$internal_service" == "mcp-service" && "$deployment_service" == "all" ]]; then
+      continue
+    fi
     if [[ "$deployment_service" == "all" || "$deployment_service" == "$internal_service" ]]; then
       # podman-compose versi yang tersedia di Oracle Linux tidak menerima
       # nama service sebagai argumen `ps`. Periksa container yang dibuat
@@ -389,8 +406,8 @@ for attempt in $(seq 1 30); do
       [[ "$internal_status" == "running" ]] || service_healthy=false
     fi
   done
-  if [[ "$deployment_service" == "all" || "$deployment_service" == "analysis-service" ]]; then
-    analysis_container="e-posyandu-oracle_analysis-service_1"
+  if [[ "$deployment_service" == "all" || "$deployment_service" == "analysis-worker" ]]; then
+    analysis_container="e-posyandu-oracle_analysis-worker_1"
     analysis_status="$($container_engine inspect \
       --format '{{.State.Status}}' "$analysis_container" 2>/dev/null || true)"
     [[ "$analysis_status" == "running" ]] || service_healthy=false

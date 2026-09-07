@@ -32,6 +32,17 @@ service OperationsService {
   rpc Handle(ServiceRequest) returns (ServiceResponse);
 }
 
+// OperationsService is kept for rollback compatibility. New deployments use
+// the narrower read/write contracts so a read process can never mutate data
+// and a write process does not become a hidden read API.
+service ReadService {
+  rpc Handle(ServiceRequest) returns (ServiceResponse);
+}
+
+service WriteService {
+  rpc Handle(ServiceRequest) returns (ServiceResponse);
+}
+
 message RealtimeSubscribeRequest {
   string request_id = 1;
   repeated HttpHeader headers = 2;

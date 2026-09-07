@@ -180,8 +180,21 @@ def _history_signals(context: dict[str, Any] | None) -> tuple[list[str], list[st
     education: list[str] = []
     follow_up: list[str] = []
     gain = context.get("weightGain") if isinstance(context.get("weightGain"), dict) else {}
-    if int(gain.get("trailingNotRising", 0) or 0) >= 2:
-        follow_up.append("Dua atau lebih pengukuran berat terakhir berstatus T; verifikasi cara ukur, telaah asupan, dan konsultasikan bila pola berlanjut.")
+    not_rising_count = int(
+        gain.get("notRisingCount", gain.get("trailingNotRising", 0)) or 0
+    )
+    if not_rising_count:
+        education.append(
+            f"Terdapat {not_rising_count} pengukuran berstatus T (berat tidak naik); pastikan cara ukur, jadwal makan, dan kehadiran penimbangan tercatat dengan benar."
+        )
+        if not_rising_count >= 2:
+            follow_up.append(
+                "Beberapa pengukuran berstatus T; kader mengarahkan keluarga untuk meninjau asupan, memeriksa cara ukur, dan berkonsultasi dengan tenaga kesehatan bila pola berlanjut."
+            )
+        else:
+            follow_up.append(
+                "Satu pengukuran berstatus T; jadwalkan penimbangan berikutnya dan pantau pola makan tanpa menyimpulkan diagnosis dari satu hasil."
+            )
     recent = [str(value) for value in gain.get("recent", []) or []]
     if recent:
         education.append("Pola kenaikan berat terakhir: " + "–".join(recent) + " (N = naik, T = tidak naik).")
@@ -291,6 +304,9 @@ def build_normal_education(
         "riskPercentage": summary["percentage"],
         "riskPercentages": summary["percentages"],
         "education": education,
+        "recommendations": follow_up,
+        # Backwards-compatible alias for older frontend builds. New clients
+        # must display the Indonesian `recommendations` field instead.
         "followUp": follow_up,
         "exclusiveBreastfeeding": asi,
         "posterGuidance": poster,
@@ -311,6 +327,7 @@ def feeding_guidance_for_problem(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "ageGroup": band.get("label", "sesuai usia"),
         "education": list(band.get("education", []) or []),
+        "recommendations": list(band.get("followUp", []) or []),
         "followUp": list(band.get("followUp", []) or []),
         "posterGuidance": poster,
         "sources": sources,

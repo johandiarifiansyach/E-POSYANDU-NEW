@@ -1,5 +1,9 @@
 # Status Komponen Sistem
 
+Rujukan tahapan arsitektur Rust–Python yang disepakati ada di
+[`ARCHITECTURE-RECOMMENDATIONS.md`](ARCHITECTURE-RECOMMENDATIONS.md). Poin
+dikerjakan satu per satu dan diverifikasi lokal sebelum deployment.
+
 Dokumen ini membedakan komponen yang sudah aktif, fondasi yang sudah tersedia, dan fitur yang belum boleh diaktifkan sebelum kebutuhan produk serta perlindungan datanya jelas.
 
 | No. | Komponen | Status | Keterangan |
@@ -19,7 +23,7 @@ Dokumen ini membedakan komponen yang sudah aktif, fondasi yang sudah tersedia, d
 | 13 | PWA installable | Aktif | Manifest, standalone mode, icon, service worker, dan offline shell. |
 | 14 | Accessibility | Aktif dan diuji | Bahasa dokumen, label form, keyboard, skip link, fokus, live region, serta audit otomatis WCAG AA pada Chrome/Safari desktop dan ponsel tersedia; audit manual tetap berkala. |
 | 15 | Error tracking | Aktif | Error frontend terautentikasi masuk structured log backend tanpa data formulir. |
-| 16 | Background job/queue | Siap deploy Oracle | Cloudflare Queue dan `data-processing-worker` menangani validasi impor, ekspor, sinkronisasi, dan orkestrasi job; kalkulasi WHO sepenuhnya berada di `analysis-service` Python. |
+| 16 | Background job/queue | Siap deploy Oracle | Cloudflare Queue dan `data-processing-worker` menangani validasi impor, ekspor, sinkronisasi, dan orkestrasi job; kalkulasi WHO sepenuhnya berada di modul Python yang dimuat `analysis-worker` Rust/PyO3. |
 | 17 | Cloudflare R2 | Aktif | Upload/download privat, retensi 7 hari, dan pengaman kapasitas 9 GiB ke 8 GiB aktif. |
 | 18 | Notification system | Aktif terbatas | Peringatan worker tersedia untuk Ahli Gizi; webhook/email eksternal bersifat opsional. |
 | 19 | Webhook | Ditunda | Memerlukan sistem tujuan, signing secret, retry, dan allowlist. |
@@ -29,14 +33,15 @@ Dokumen ini membedakan komponen yang sudah aktif, fondasi yang sudah tersedia, d
 | 23 | Sesi HttpOnly | Siap diuji staging | BFF same-origin, cookie HttpOnly, Turnstile, rate limiter, dan penutupan RPC browser tersedia; verifikasi dua langkah tidak digunakan. |
 | 24 | Tata kelola privasi | Baseline siap disahkan | Inventaris data, akses, retensi 25 tahun RME, ekspor, hak subjek, dan respons insiden terdokumentasi; pengesahan Puskesmas/Dinas tetap wajib. |
 | 25 | Pelaporan CSP | Siap diuji staging | Endpoint same-origin membatasi ukuran/laju dan membuang query, referrer, script sample, serta IP mentah. |
-| 26 | Perhitungan dan analisis gizi Python | Tahap 2 diimplementasikan — belum deploy/validasi klinis | `analysis-service` Python menghitung indikator WHO dengan rumus LMS deterministik, lalu menambahkan screening risiko logistic ringan, analisis tren grafik, deteksi anomali kualitas data, popup hasil analisis, dan penanda anomali pada grafik pertumbuhan. Prediksi/tren bersifat advisory, bukan diagnosis, dan tetap menunggu evaluasi klinis sebelum dipakai sebagai keputusan kesehatan. |
+| 26 | Perhitungan dan analisis gizi Python | Tahap 2–5 diimplementasikan — belum deploy/validasi klinis | Modul Python yang dimuat `analysis-worker` Rust/PyO3 menghitung indikator WHO dengan rumus LMS deterministik, lalu menambahkan screening risiko logistic ringan, analisis tren grafik, deteksi anomali kualitas data, popup hasil analisis, dan penanda anomali pada grafik pertumbuhan. Proyeksi hasil per anak memakai `input_hash`/`source_version` agar replay outbox tidak menghitung ulang input yang sama dan hanya menulis baris yang berubah. Cache bounded untuk operasi LMS dan SVG grafik mencegah perhitungan/render identik berulang; NumPy/Pandas/Polars dipisahkan untuk batch/offline. Jalur Rust memakai pool PostgreSQL berbatas, prepared statement cache, pagination, serta indeks lookup untuk proyeksi `measurement_analysis`/`dashboard_analysis` (migration 044). Prediksi/tren bersifat advisory, bukan diagnosis, dan tetap menunggu evaluasi klinis sebelum dipakai sebagai keputusan kesehatan. |
 
 Prioritas berikutnya adalah mengisi secret backup/restore dan token akun uji pada GitHub Environment, menuntaskan project Supabase development dan staging yang terpisah, serta memperluas strict TypeScript secara bertahap. MQTT tetap ditunda sampai tersedia perangkat IoT nyata.
 
 ## Implementasi tahap 1–2 analisis gizi Python
 
 Kalkulator WHO tahap 1 sudah diimplementasikan sebagai container
-`services/analysis-service`. Service ini belum dideploy ke produksi pada tahap
+`services/analysis-worker` (Rust/PyO3) dan modul `services/analysis-service`.
+Service ini belum dideploy ke produksi pada tahap
 ini. Tahap 2 sudah ditanam dalam kode tetapi belum diaktifkan/di-rollout ke
 produksi pada dokumen ini. Evaluasi klinis, dataset berlabel, dan verifikasi
 staging tetap wajib sebelum hasil screening dipakai sebagai keputusan medis.
@@ -46,14 +51,14 @@ staging tetap wajib sebelum hasil screening dipakai sebagai keputusan medis.
 ```text
 Frontend
    |
-oracle-api --> data-processing-worker -- gRPC/UDS --> analysis-service Python
+oracle-api --> data-processing-worker -- gRPC/UDS --> analysis-worker Rust/PyO3
+                                                   |--> modul Python WHO/ML
    |                                             |
-   +--> PostgreSQL Oracle                       +--> tabel LMS lokal
-                                                 (tanpa akses database)
+   +--> PostgreSQL Oracle                       +--> tabel LMS lokal + persistence outbox
 ```
 
-- `analysis-service` memakai Python dengan gRPC privat sebagai pelaksana
-  kalkulasi status gizi WHO tahap 1. Akurasi ditentukan oleh implementasi
+- `analysis-worker` memakai Rust dengan gRPC/UDS privat dan memuat CPython melalui
+  PyO3; modul Python tetap menjadi pelaksana kalkulasi status gizi WHO tahap 1. Akurasi ditentukan oleh implementasi
   standar WHO, dataset uji, dan validasi Ahli Gizi—bukan semata-mata oleh
   bahasa pemrograman.
 - Kalkulasi WHO (BB/U, TB/U, BB/TB, IMT/U, LILA/LK, z-score, dan status gizi)
@@ -72,7 +77,7 @@ oracle-api --> data-processing-worker -- gRPC/UDS --> analysis-service Python
   waktu proses, serta catatan bahwa hasil bukan diagnosis medis. Saat Queue
   belum tersedia, deteksi cepat tinggi turun tetap ditampilkan dan status
   layanan diberi peringatan.
-- Grafik pertumbuhan pada popup dirender oleh `analysis-service` Python sebagai
+- Grafik pertumbuhan pada popup dirender oleh modul Python di `analysis-worker` sebagai
   SVG menggunakan tabel LMS WHO yang sama dengan kalkulasi status. Label
   berbahasa Indonesia, kurva -3/-2/median/+2/+3 SD, dan titik riwayat dikirim
   melalui endpoint terautentikasi. Browser memasang SVG secara aman; Canvas
@@ -120,7 +125,7 @@ oracle-api --> data-processing-worker -- gRPC/UDS --> analysis-service Python
 - Contoh kartu D (balita ditimbang) menampilkan jumlah dan persentase tiap
   bulan, pembanding sasaran/total balita, perubahan terhadap bulan sebelumnya,
   serta bulan yang datanya belum lengkap.
-- `analysis-service` Python menerima agregat yang sudah dibatasi scope akun,
+- Modul Python di `analysis-worker` menerima agregat yang sudah dibatasi scope akun,
   lalu mengembalikan ringkasan tren, perubahan bermakna, indikasi anomali,
   dan penjelasan bahasa sederhana untuk ditampilkan bersama chart.
 - Analisis agregat tidak boleh mengirim identitas balita ke Python dan tidak
@@ -139,7 +144,7 @@ mengubah role, desa, posyandu, atau hak akses akun.
 - Setelah pemisahan, layanan tersebut hanya menangani validasi impor, ekspor,
   dan pemrosesan job queue. Perhitungan/status gizi tidak lagi menjadi tanggung
   jawabnya.
-- `analysis-service` Python menjadi layanan khusus perhitungan gizi dan
+- `analysis-worker` menjadi layanan khusus perhitungan gizi dan
   analisis. Komunikasi internal tetap menggunakan gRPC melalui UDS pada host
   yang sama dan gRPC melalui TCP lintas server/platform.
 - Perubahan nama meliputi compose, health check, konfigurasi socket, proto,

@@ -31,7 +31,8 @@ risiko klinis masa depan.
 python services/analysis-service/training/train_growth_trend_models.py \
   --xlsx /path/Laporan-KOHORT.xlsx \
   --output-dir /tmp/eposyandu-ml-training-trend \
-  --year 2026
+  --year 2026 \
+  --workers 4
 ```
 
 ## Materi edukasi
@@ -59,7 +60,18 @@ antropometri generik.
 
 ## Menjalankan ulang secara lokal
 
-Gunakan environment offline yang memiliki `pandas`, `openpyxl`, `pypdf`, `scikit-learn`, dan `joblib` (bukan requirements runtime production):
+Gunakan environment offline yang memiliki dependency pada
+[`training/requirements.txt`](requirements.txt) (bukan requirements runtime
+production). Pandas menjadi backend utama trainer yang sudah ada; Polars boleh
+dipakai pada eksperimen/ETL batch yang besar tanpa menambahnya ke image online.
+
+```bash
+python -m venv .venv-training
+. .venv-training/bin/activate
+pip install -r services/analysis-service/training/requirements.txt
+```
+
+Kemudian jalankan:
 
 ```bash
 python services/analysis-service/training/train_growth_models.py \
@@ -91,3 +103,20 @@ sebagai fitur. Promosi artefak ke production harus melalui telaah ahli gizi,
 validasi split per anak, metrik, dan persetujuan eksplisit. Dengan demikian
 analisis dan pengumpulan batch latihan dapat berjalan bersamaan tanpa model
 belajar otomatis dari data klinis yang belum ditinjau.
+
+## Optimasi tahap 4
+
+Kalkulasi online tetap deterministik dan ringan. `who.py` menggunakan cache
+numerik terbatas untuk operasi LMS berulang, sedangkan `charts.py` menyimpan
+SVG yang identik di cache proses terbatas (`ANALYSIS_GRAPH_CACHE_SIZE`, default
+256; TTL `ANALYSIS_GRAPH_CACHE_TTL_SECONDS`, default 900 detik). Cache ini
+volatile, tidak menulis data kesehatan ke disk, dan dapat dikosongkan saat
+standar WHO atau rilis berubah.
+
+NumPy, Pandas, dan Polars hanya dipakai untuk batch/offline: pembersihan ekspor,
+statistik, eksperimen, dan pelatihan kandidat. Jangan mengimpor DataFrame pada
+jalur request kader. Parser kohort menyediakan `--workers N` dengan process
+pool bounded untuk dataset besar; default `1` sehingga tidak membuat proses
+tambahan. Batas CPU/RAM harus ditetapkan agar pekerjaan offline tidak
+mengganggu service online. Artefak model dan indeks materi disimpan di
+direktori output eksperimen, bukan di container produksi secara otomatis.

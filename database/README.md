@@ -111,6 +111,43 @@ dan grafik. Filter umur pada halaman MPASI dihapus dari UI dan API memaksa
 cohort program 6--23 bulan; halaman ASI hanya menerima cohort 0--5 bulan atau
 tepat 6 bulan.
 
+Migration `042_read_snapshot_fallback.sql` menambahkan pembacaan snapshot
+dashboard terakhir untuk jalur fallback Rust. Jika versi cakupan terbaru
+belum selesai diproses Python atau layanan analisis sedang tidak tersedia,
+Rust tetap mengembalikan hasil persisten terakhir dengan penanda `snapshotStale`
+agar UI dapat memberi tahu pengguna; snapshot lama tidak menggantikan proses
+penyegaran Python.
+
+Migration `043_incremental_analysis_fingerprints.sql` menambahkan kontrak
+`input_hash` dan `source_version` pada `measurement_analysis`. Worker Python
+memakai hash per pengukuran untuk melewati WHO/ML yang inputnya identik,
+mempertahankan `analysis_version` untuk replay idempoten, dan hanya menghapus
+baris yang memang tidak lagi memiliki pengukuran valid. Versi sumber mencakup
+child, riwayat pengukuran, ASI/MPASI, dan PMT child tersebut sehingga perubahan
+tercatat tanpa menginvalidasi anak lain.
+
+Migration `044_read_path_indexes.sql` mengoptimalkan jalur baca Rust tanpa
+mengubah sumber kebenaran Python. PostgreSQL menambah indeks partial untuk
+daftar balita aktif, indeks urutan/pencarian nama, indeks lookup pengukuran dan
+MPASI per child, indeks riwayat/PMT, serta indeks versi hasil
+`measurement_analysis` dan periode `dashboard_analysis`. Semua halaman tetap
+wajib memakai `page`/`size`; tabel hasil Python dan snapshot dashboard dibaca
+langsung oleh Rust melalui query terparameterisasi. Planner PostgreSQL hanya
+diberi `ANALYZE` setelah indeks dibuat—tidak ada perhitungan WHO ulang pada
+migrasi.
+
+Migration `045_fix_materialized_children_page_total.sql` memperbaiki fallback
+`total` pada fungsi halaman materialized. Nilai JSONB kini memakai fallback
+JSONB yang benar, sehingga fungsi tidak gagal saat dipanggil dan Rust dapat
+membaca hasil status gizi Python tanpa menandai seluruh halaman sebagai
+`analysisPending`.
+
+Penulisan snapshot dashboard dari RPC Python tidak menghambat request. Hasil
+agregasi dimasukkan ke antrean worker berbatas dan ditulis ke
+`dashboard_analysis` secara asinkron; kegagalan koneksi dicoba ulang secara
+terbatas. Jika antrean sedang penuh, respons kalkulasi tetap dikirim dan
+snapshot akan diperbarui pada permintaan berikutnya.
+
 ASI eksklusif diproses Python sebagai konteks progresif: usia 0 bulan tanpa
 jawaban dicatat sebagai `Ya`, jawaban `Ya` pada bulan berikutnya mengisi
 bulan-bulan sebelumnya secara turunan, sedangkan jawaban `Tidak` eksplisit

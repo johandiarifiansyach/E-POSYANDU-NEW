@@ -12,7 +12,7 @@ if [[ ! -f "$source_env" && -f "$HOME/.config/e-posyandu/nutrition-grpc.env" ]];
 fi
 
 if [[ -z "$ssh_host" || -z "$health_site" ]]; then
-  echo "Penggunaan: npm run data-processing:deploy:oracle -- ALIAS_SSH DOMAIN_HEALTH [all|oracle-api|identity-service|operations-service|realtime-service|monitoring-service|data-processing-worker|analysis-service]" >&2
+  echo "Penggunaan: npm run data-processing:deploy:oracle -- ALIAS_SSH DOMAIN_HEALTH [all|oracle-api|identity-service|read-service|write-service|operations-service|realtime-service|monitoring-service|data-processing-worker|analysis-worker|mcp-service]" >&2
   echo "Contoh: npm run data-processing:deploy:oracle -- eposyandu-oracle nutrition.example.go.id data-processing-worker" >&2
   exit 1
 fi
@@ -30,7 +30,8 @@ fi
 
 case "$deploy_service" in
   nutrition-worker) deploy_service="data-processing-worker" ;;
-  all|oracle-api|identity-service|operations-service|realtime-service|monitoring-service|data-processing-worker|analysis-service) ;;
+  analysis-service) deploy_service="analysis-worker" ;; # kompatibilitas nama lama
+  all|oracle-api|identity-service|read-service|write-service|operations-service|realtime-service|monitoring-service|data-processing-worker|analysis-worker|mcp-service) ;;
   *)
     echo "Service Oracle tidak valid: $deploy_service" >&2
     exit 1
@@ -93,6 +94,8 @@ if [[ "$deploy_service" == "all" ]]; then
     && $1 != "GRPC_ADDR" \
     && $1 != "ORACLE_API_DATA_PROCESSING_GRPC_URL" \
     && $1 != "ORACLE_API_IDENTITY_GRPC_URL" \
+    && $1 != "ORACLE_API_READ_GRPC_URL" \
+    && $1 != "ORACLE_API_WRITE_GRPC_URL" \
     && $1 != "ORACLE_API_OPERATIONS_GRPC_URL" \
     && $1 != "ORACLE_API_REALTIME_GRPC_URL" \
     && $1 != "ORACLE_API_MONITORING_GRPC_URL" \
@@ -109,6 +112,8 @@ ORACLE_API_NATIVE_WRITES_ENABLED=true
 DATA_PROCESSING_GRPC_ADDR=unix:///run/e-posyandu/data-processing.sock
 ORACLE_API_DATA_PROCESSING_GRPC_URL=unix:///run/e-posyandu/data-processing.sock
 ORACLE_API_IDENTITY_GRPC_URL=unix:///run/e-posyandu/identity.sock
+ORACLE_API_READ_GRPC_URL=unix:///run/e-posyandu/read.sock
+ORACLE_API_WRITE_GRPC_URL=unix:///run/e-posyandu/write.sock
 ORACLE_API_OPERATIONS_GRPC_URL=unix:///run/e-posyandu/operations.sock
 ORACLE_API_REALTIME_GRPC_URL=unix:///run/e-posyandu/realtime.sock
 ORACLE_API_MONITORING_GRPC_URL=unix:///run/e-posyandu/monitoring.sock
@@ -128,8 +133,9 @@ case "$deploy_service" in
   all)
     archive_paths+=(
       services/eposyandu-proto services/oracle-domain services/identity-service
-      services/operations-service services/realtime-service services/monitoring-service
-      services/data-processing-service services/analysis-service services/oracle-api "$who_growth_lms_path" backend/openapi.json
+      services/read-service services/write-service services/operations-service
+      services/realtime-service services/monitoring-service
+      services/data-processing-service services/analysis-service services/analysis-worker services/mcp-service services/oracle-api "$who_growth_lms_path" backend/openapi.json
       backend/graphql-schema.graphql
     )
     ;;
@@ -141,6 +147,12 @@ case "$deploy_service" in
     ;;
   identity-service)
     archive_paths+=(services/eposyandu-proto services/oracle-domain services/identity-service services/oracle-api/src services/data-processing-service/proto services/analysis-service/proto)
+    ;;
+  read-service)
+    archive_paths+=(services/eposyandu-proto services/oracle-domain services/read-service services/oracle-api/src services/data-processing-service/proto services/analysis-service/proto)
+    ;;
+  write-service)
+    archive_paths+=(services/eposyandu-proto services/oracle-domain services/write-service services/oracle-api/src services/data-processing-service/proto services/analysis-service/proto)
     ;;
   operations-service)
     archive_paths+=(services/eposyandu-proto services/oracle-domain services/operations-service services/oracle-api/src services/data-processing-service/proto services/analysis-service/proto)
@@ -154,8 +166,11 @@ case "$deploy_service" in
   data-processing-worker)
     archive_paths+=(services/eposyandu-proto services/data-processing-service services/analysis-service/proto)
     ;;
-  analysis-service)
-    archive_paths+=(services/analysis-service "$who_growth_lms_path")
+  analysis-worker)
+    archive_paths+=(services/analysis-worker services/analysis-service services/eposyandu-proto services/data-processing-service/proto services/analysis-service/proto "$who_growth_lms_path")
+    ;;
+  mcp-service)
+    archive_paths+=(services/mcp-service services/eposyandu-proto services/oracle-domain services/oracle-api/src services/data-processing-service/proto services/analysis-service/proto)
     ;;
 esac
 COPYFILE_DISABLE=1 tar \
@@ -167,6 +182,7 @@ COPYFILE_DISABLE=1 tar \
   --exclude='services/data-processing-service/.env' \
   --exclude='services/oracle-api/target' \
   --exclude='services/oracle-domain/target' \
+  --exclude='services/analysis-worker/target' \
   --exclude='services/*-service/target' \
   -czf "$archive_file" \
   -C "$project_root" \

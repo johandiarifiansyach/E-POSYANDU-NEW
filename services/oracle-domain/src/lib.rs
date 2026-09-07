@@ -17,7 +17,7 @@ mod realtime;
 #[path = "../../oracle-api/src/system_metrics.rs"]
 mod system_metrics;
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, future::Future, sync::Arc, time::Duration};
 
 use axum::{
     body::{Body, to_bytes},
@@ -33,6 +33,7 @@ use e_posyandu_proto::proto::platform::v1::{HttpHeader, ServiceRequest, ServiceR
 use reqwest::{Client, redirect::Policy};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tonic::{
     Request as GrpcRequest,
     metadata::{Ascii, MetadataValue},
@@ -42,6 +43,7 @@ use tonic::{
 
 use native_api::NativeApi;
 use native_auth::NativeAuth;
+use native_cache::{DASHBOARD_CACHE_TTL_SECONDS, DYNAMIC_CACHE_TTL_SECONDS, NativeCache};
 use native_db::NativeDatabase;
 use realtime::{RealtimeEvent, RealtimeHub};
 use system_metrics::SystemMetricsSampler;
@@ -129,11 +131,62 @@ fn dashboard_cache_key(
     )
 }
 
+fn stale_snapshot_result(snapshot: &Value) -> Option<Value> {
+    if snapshot.get("hit").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let mut result = snapshot.get("result").cloned()?;
+    let Some(object) = result.as_object_mut() else {
+        return Some(result);
+    };
+    object.insert("snapshotStale".to_owned(), Value::Bool(true));
+    if let Some(value) = snapshot.get("sourceVersion") {
+        object.insert("snapshotSourceVersion".to_owned(), value.clone());
+    }
+    if let Some(value) = snapshot.get("currentVersion") {
+        object.insert("snapshotCurrentVersion".to_owned(), value.clone());
+    }
+    if let Some(value) = snapshot.get("calculatedAt") {
+        object.insert("snapshotCalculatedAt".to_owned(), value.clone());
+    }
+    Some(result)
+}
+
+/// Annotate a direct PostgreSQL page used during a rolling migration or a
+/// temporary Python outage. The raw page remains read-only and keeps the
+/// persisted values intact; measurement rows are marked pending so the UI
+/// does not present missing derived fields as a completed analysis.
+fn mark_page_read_fallback(mut page: Value) -> Value {
+    let Some(object) = page.as_object_mut() else {
+        return page;
+    };
+    object.insert("readFallback".to_owned(), json!("postgresql"));
+    if let Some(rows) = object.get_mut("measurements").and_then(Value::as_array_mut) {
+        for row in rows {
+            if let Some(data) = row.get_mut("data").and_then(Value::as_object_mut) {
+                data.insert("analysisPending".to_owned(), Value::Bool(true));
+            }
+        }
+    }
+    page
+}
+
 fn valid_age_group(value: &str) -> bool {
     matches!(
         value,
-        "0-59" | "newborn" | "newborn_premature" | "0-5" | "6" | "0-11"
-            | "0-23" | "6-11" | "6-23" | "12-23" | "6-59" | "12-59" | "24-59"
+        "0-59"
+            | "newborn"
+            | "newborn_premature"
+            | "0-5"
+            | "6"
+            | "0-11"
+            | "0-23"
+            | "6-11"
+            | "6-23"
+            | "12-23"
+            | "6-59"
+            | "12-59"
+            | "24-59"
     )
 }
 
@@ -583,13 +636,22 @@ pub struct OperationsDomain {
     api: Arc<NativeApi>,
     auth: Arc<NativeAuth>,
     analysis: Option<AnalysisClient>,
+    cache: Option<NativeCache>,
 }
 
 impl OperationsDomain {
     pub async fn from_env() -> Result<Self, String> {
+        Self::from_env_with_modes(true, true, "operations-service").await
+    }
+
+    async fn from_env_with_modes(
+        reads_enabled: bool,
+        writes_enabled: bool,
+        service_name: &str,
+    ) -> Result<Self, String> {
         let database = required_database()?;
         let auth = NativeAuth::from_env(client()?, Some(database.clone()))?.ok_or_else(|| {
-            "ORACLE_API_NATIVE_AUTH_ENABLED wajib true pada operations-service.".to_owned()
+            format!("ORACLE_API_NATIVE_AUTH_ENABLED wajib true pada {service_name}.")
         })?;
         let realtime = RealtimeHub::new();
         let auth = Arc::new(auth);
@@ -598,40 +660,164 @@ impl OperationsDomain {
             auth.clone(),
             database.clone(),
             realtime,
-            true,
-            true,
+            reads_enabled,
+            writes_enabled,
         )
         .await?;
+        let cache = api.cache_handle();
         Ok(Self {
             database,
             api: Arc::new(api),
             auth,
-            analysis: AnalysisClient::from_env()?,
+            // Only the read-side owns synchronous analysis requests. Keeping
+            // this absent in WriteService lets writes commit to PostgreSQL and
+            // enqueue work even when the Python worker is restarting.
+            analysis: if reads_enabled {
+                AnalysisClient::from_env()?
+            } else {
+                None
+            },
+            cache,
         })
     }
 
     pub async fn handle(&self, request: Request) -> Response {
+        self.handle_mode(request, true, true).await
+    }
+
+    async fn handle_read(&self, request: Request) -> Response {
+        self.handle_mode(request, true, false).await
+    }
+
+    async fn handle_write(&self, request: Request) -> Response {
+        self.handle_mode(request, false, true).await
+    }
+
+    async fn handle_mode(
+        &self,
+        request: Request,
+        allow_reads: bool,
+        allow_writes: bool,
+    ) -> Response {
         let (method, path) = method_path(&request);
-        if method == Method::POST && path == "/api/v1/analysis/anthropometry" {
+        // Analysis endpoints use POST for payload size and are still strictly
+        // read-side operations: they never mutate the raw tables. Keep them
+        // behind ReadService so WriteService cannot accidentally expose them.
+        if allow_reads && method == Method::POST && path == "/api/v1/analysis/anthropometry" {
             return self.calculate_anthropometry(request).await;
         }
-        if method == Method::POST && path == "/api/v1/analysis/dashboard-stats" {
-            return self.analyze_dashboard_stats(request).await;
+        if allow_reads && method == Method::POST && path == "/api/v1/analysis/dashboard-stats" {
+            return self
+                .cached_response(request, DASHBOARD_CACHE_TTL_SECONDS, |request| {
+                    self.analyze_dashboard_stats(request)
+                })
+                .await;
         }
-        if method == Method::POST && path == "/api/v1/analysis/growth-chart" {
+        if allow_reads && method == Method::POST && path == "/api/v1/analysis/growth-chart" {
             return self.render_growth_chart(request).await;
         }
-        if method == Method::GET && path == "/api/v1/children/page" {
-            return self.children_page_python(request).await;
+        if allow_reads && method == Method::GET && path == "/api/v1/children/page" {
+            return self
+                .cached_response(request, DYNAMIC_CACHE_TTL_SECONDS, |request| {
+                    self.children_page_python(request)
+                })
+                .await;
         }
-        if method == Method::GET && path == "/api/v1/exclusive-breastfeeding/page" {
-            return self.exclusive_breastfeeding_page_python(request).await;
+        if allow_reads && method == Method::GET && path == "/api/v1/exclusive-breastfeeding/page" {
+            return self
+                .cached_response(request, DYNAMIC_CACHE_TTL_SECONDS, |request| {
+                    self.exclusive_breastfeeding_page_python(request)
+                })
+                .await;
         }
-        if self.api.handles(&request) {
+        let mode_matches =
+            (allow_reads && method == Method::GET) || (allow_writes && method != Method::GET);
+        if mode_matches && self.api.handles(&request) {
             self.api.handle(request).await
         } else {
             not_found()
         }
+    }
+
+    /// Cache successful, scope-authorized operation reads in Redis. The
+    /// handler still revalidates the session because it owns the complete
+    /// request flow; a cache miss therefore cannot bypass authorization.
+    async fn cached_response<F, Fut>(
+        &self,
+        request: Request,
+        ttl_seconds: u64,
+        handler: F,
+    ) -> Response
+    where
+        F: FnOnce(Request) -> Fut,
+        Fut: Future<Output = Response>,
+    {
+        let (cache, key, request) = if let Some(cache) = self.cache.as_ref() {
+            // Dashboard filters arrive in the POST body, so include a digest
+            // of that body in the cache target. Without it, two different
+            // months/cohorts could share one Redis entry.
+            let (parts, body) = request.into_parts();
+            let body = match to_bytes(body, MAX_SERVICE_BODY_BYTES).await {
+                Ok(body) => body,
+                Err(_) => {
+                    return response_json(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        json!({"error": {"code": "payload_too_large", "message": "Permintaan terlalu besar."}}),
+                    );
+                }
+            };
+            let mut target = parts
+                .uri
+                .path_and_query()
+                .map(|value| value.as_str())
+                .unwrap_or(parts.uri.path())
+                .to_owned();
+            if !body.is_empty() {
+                target.push_str("|body:");
+                target.push_str(&hex::encode(Sha256::digest(&body)));
+            }
+            let scope = match self.auth.authorize_scope(parts.headers.clone()).await {
+                Ok(scope) => scope,
+                Err(response) => return response,
+            };
+            let key = cache
+                .request_key(
+                    &scope.role,
+                    scope.desa.as_deref(),
+                    scope.posyandu.as_deref(),
+                    &target,
+                )
+                .await;
+            (
+                Some(cache.clone()),
+                key,
+                Request::from_parts(parts, Body::from(body)),
+            )
+        } else {
+            (None, None, request)
+        };
+
+        if let (Some(cache), Some(key)) = (cache.as_ref(), key.as_deref())
+            && let Some(value) = cache.get(key).await
+        {
+            return response_json(StatusCode::OK, value);
+        }
+
+        let response = handler(request).await;
+        if !response.status().is_success() {
+            return response;
+        }
+        let (parts, body) = response.into_parts();
+        let bytes = match to_bytes(body, MAX_SERVICE_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(_) => return Response::from_parts(parts, Body::empty()),
+        };
+        if let (Some(cache), Some(key)) = (cache.as_ref(), key.as_deref())
+            && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+        {
+            cache.put(key, &value, ttl_seconds).await;
+        }
+        Response::from_parts(parts, Body::from(bytes))
     }
 
     async fn calculate_anthropometry(&self, request: Request) -> Response {
@@ -724,7 +910,7 @@ impl OperationsDomain {
         };
         let input = match serde_json::from_slice::<DashboardAnalysisInput>(&body) {
             Ok(input)
-            if valid_iso_date(&input.month_start)
+                if valid_iso_date(&input.month_start)
                     && valid_iso_date(&input.month_end)
                     && valid_iso_date(&input.previous_month_start)
                     && valid_iso_date(&input.previous_month_end)
@@ -772,29 +958,27 @@ impl OperationsDomain {
         // raw mutation the version changes and this intentionally falls
         // through to Python until the outbox worker publishes a fresh result.
         let snapshot_scope = dashboard_scope_key(village.as_deref(), posyandu.as_deref());
+        let snapshot_request = json!({
+            "p_cache_key": dashboard_cache_key(
+                &snapshot_scope,
+                &input.month_start,
+                &input.month_end,
+                &input.previous_month_start,
+                &input.previous_month_end,
+                &input.age_group,
+            ),
+            "p_scope_key": snapshot_scope,
+            "p_month_start": input.month_start,
+            "p_month_end": input.month_end,
+            "p_previous_month_start": input.previous_month_start,
+            "p_previous_month_end": input.previous_month_end,
+            "p_age_group": input.age_group,
+            "p_village": village,
+            "p_posyandu": posyandu,
+        });
         let snapshot = self
             .database
-            .rpc(
-                "eposyandu_dashboard_snapshot",
-                json!({
-                    "p_cache_key": dashboard_cache_key(
-                        &snapshot_scope,
-                        &input.month_start,
-                        &input.month_end,
-                        &input.previous_month_start,
-                        &input.previous_month_end,
-                        &input.age_group,
-                    ),
-                    "p_scope_key": snapshot_scope,
-                    "p_month_start": input.month_start,
-                    "p_month_end": input.month_end,
-                    "p_previous_month_start": input.previous_month_start,
-                    "p_previous_month_end": input.previous_month_end,
-                    "p_age_group": input.age_group,
-                    "p_village": village,
-                    "p_posyandu": posyandu,
-                }),
-            )
+            .rpc("eposyandu_dashboard_snapshot", snapshot_request.clone())
             .await;
         if let Ok(value) = snapshot
             && value.get("hit").and_then(Value::as_bool) == Some(true)
@@ -802,6 +986,17 @@ impl OperationsDomain {
         {
             return response_json(StatusCode::OK, result);
         }
+
+        // Keep the last persisted result available while Python catches up
+        // after a write or during a temporary analysis-service outage.  The
+        // exact dashboard key and filter dates still match; only the scope
+        // version check is relaxed by this fallback function.
+        let stale_snapshot = self
+            .database
+            .rpc("eposyandu_dashboard_snapshot_latest", snapshot_request)
+            .await
+            .ok()
+            .and_then(|value| stale_snapshot_result(&value));
 
         let input_request = json!({
             "p_month_start": input.month_start,
@@ -873,6 +1068,9 @@ impl OperationsDomain {
                 let children = match children {
                     Ok(result) => result.value,
                     Err(_) => {
+                        if let Some(result) = stale_snapshot.clone() {
+                            return response_json(StatusCode::OK, result);
+                        }
                         return response_json(
                             StatusCode::SERVICE_UNAVAILABLE,
                             json!({"error": {"code": "database_unavailable", "message": "Data balita untuk analisis dashboard tidak tersedia."}}),
@@ -882,6 +1080,9 @@ impl OperationsDomain {
                 let measurements = match measurements {
                     Ok(result) => result.value,
                     Err(_) => {
+                        if let Some(result) = stale_snapshot.clone() {
+                            return response_json(StatusCode::OK, result);
+                        }
                         return response_json(
                             StatusCode::SERVICE_UNAVAILABLE,
                             json!({"error": {"code": "database_unavailable", "message": "Data pengukuran untuk analisis dashboard tidak tersedia."}}),
@@ -941,6 +1142,9 @@ impl OperationsDomain {
             "technical": technical,
         });
         let Some(client) = client else {
+            if let Some(result) = stale_snapshot {
+                return response_json(StatusCode::OK, result);
+            }
             return response_json(
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({
@@ -950,9 +1154,14 @@ impl OperationsDomain {
         };
         match client.analyze_dataset(dataset).await {
             Ok(result) => response_json(StatusCode::OK, result),
-            Err(error) => response_json(
-                StatusCode::BAD_GATEWAY,
-                json!({"error": {"code": "analysis_unavailable", "message": format!("Analisis dashboard Python tidak dapat dijangkau: {error}")}}),
+            Err(error) => stale_snapshot.map_or_else(
+                || {
+                    response_json(
+                        StatusCode::BAD_GATEWAY,
+                        json!({"error": {"code": "analysis_unavailable", "message": format!("Analisis dashboard Python tidak dapat dijangkau: {error}")}}),
+                    )
+                },
+                |result| response_json(StatusCode::OK, result),
             ),
         }
     }
@@ -1157,10 +1366,7 @@ impl OperationsDomain {
             .get("measurementEnd")
             .map(String::as_str)
             .unwrap_or_default();
-        let requested_age_group = query
-            .get("ageGroup")
-            .map(String::as_str)
-            .unwrap_or("0-59");
+        let requested_age_group = query.get("ageGroup").map(String::as_str).unwrap_or("0-59");
         if !valid_iso_date(as_of)
             || !valid_iso_date(measurement_start)
             || !valid_iso_date(measurement_end)
@@ -1216,7 +1422,11 @@ impl OperationsDomain {
         // MPASI is a fixed 6–23-month programme cohort; the frontend hides
         // the age selector, and the API enforces the same rule for callers
         // that bypass the UI.
-        let age_group = if view == "mpasi" { "6-23" } else { requested_age_group };
+        let age_group = if view == "mpasi" {
+            "6-23"
+        } else {
+            requested_age_group
+        };
         let sort = query.get("sort").map(String::as_str).unwrap_or("recent");
         let allowed_sorts = [
             "recent",
@@ -1273,9 +1483,8 @@ impl OperationsDomain {
         // supported cohort is 6–23 months; this prevents a rolling migration
         // or a temporary materialized-read miss from sending the entire
         // child population to Python.
-        let page_limited =
-            (age_group == "0-59" && matches!(view, "data" | "recent" | "recycle"))
-                || view == "mpasi";
+        let page_limited = (age_group == "0-59" && matches!(view, "data" | "recent" | "recycle"))
+            || view == "mpasi";
         // Once migration 037 is present, reads use the PostgreSQL materialized
         // projection directly.  Python has already populated each row after
         // the raw write; a pending row is explicitly marked by SQL rather than
@@ -1312,6 +1521,83 @@ impl OperationsDomain {
         {
             return response_json(StatusCode::OK, value);
         }
+
+        // If the materialized projection is unavailable, keep table reads
+        // independent from Python. PostgreSQL still performs scope, age,
+        // ordering, status filtering, and page selection. Problem tabs have
+        // their own RPC; normal tabs use the read-replica RPC. The legacy
+        // arities are tried only during a rolling migration.
+        let read_fallback = if view.starts_with("problem_") {
+            let problem_payload = json!({
+                "p_month_start": measurement_start,
+                "p_month_end": measurement_end,
+                "p_problem": view,
+                "p_page": page,
+                "p_size": size,
+                "p_search": query.get("search"),
+                "p_sort": sort,
+                "p_village": village,
+                "p_posyandu": posyandu,
+                "p_role": if is_full_access_role(&scope.role) { "Ahli Gizi" } else { scope.role.as_str() },
+                "p_scope_village": scoped_village,
+                "p_scope_posyandu": scoped_posyandu,
+                "p_age_group": age_group,
+            });
+            match self
+                .database
+                .rpc("eposyandu_problem_children_page", problem_payload.clone())
+                .await
+            {
+                Ok(value) => Some(value),
+                Err(_) => self
+                    .database
+                    .rpc("eposyandu_problem_children_page_legacy", problem_payload)
+                    .await
+                    .ok(),
+            }
+        } else {
+            let replica_payload = json!({
+                "p_as_of": as_of,
+                "p_measurement_start": measurement_start,
+                "p_measurement_end": measurement_end,
+                "p_page": page,
+                "p_size": size,
+                "p_sort": sort,
+                "p_view": view,
+                "p_search": query.get("search"),
+                "p_village": village,
+                "p_posyandu": posyandu,
+                "p_role": if is_full_access_role(&scope.role) { "Ahli Gizi" } else { scope.role.as_str() },
+                "p_scope_village": scoped_village,
+                "p_scope_posyandu": scoped_posyandu,
+                "p_age_group": age_group,
+            });
+            match self
+                .database
+                .rpc("eposyandu_replica_children_page", replica_payload.clone())
+                .await
+            {
+                Ok(value) => Some(value),
+                Err(_) if age_group == "0-59" => self
+                    .database
+                    .rpc("eposyandu_replica_children_page_legacy", replica_payload)
+                    .await
+                    .ok(),
+                Err(_) => None,
+            }
+        };
+        if let Some(value) = read_fallback.filter(|value| {
+            value
+                .as_object()
+                .is_some_and(|object| object.get("items").is_some())
+        }) {
+            return if view.starts_with("problem_") {
+                response_json(StatusCode::OK, value)
+            } else {
+                response_json(StatusCode::OK, mark_page_read_fallback(value))
+            };
+        }
+
         // A materialized read does not require a live Python connection.  Only
         // the rolling-migration fallback below needs the analysis client.
         let Some(client) = self.analysis.as_ref() else {
@@ -1556,6 +1842,36 @@ impl OperationsDomain {
         {
             return response_json(StatusCode::OK, value);
         }
+
+        // Keep the ASI page readable from PostgreSQL during a rolling
+        // migration or while Python is restarting. The legacy SQL function
+        // is read-only; once the materialized projection is available it is
+        // still the preferred path above.
+        if let Ok(value) = self
+            .database
+            .rpc(
+                "eposyandu_exclusive_breastfeeding_page",
+                json!({
+                    "p_measurement_start": start,
+                    "p_measurement_end": end,
+                    "p_age_group": age_group,
+                    "p_page": page,
+                    "p_size": size,
+                    "p_village": village,
+                    "p_posyandu": posyandu,
+                    "p_role": if is_full_access_role(&scope.role) { "Ahli Gizi" } else { scope.role.as_str() },
+                    "p_scope_village": scoped_village,
+                    "p_scope_posyandu": scoped_posyandu,
+                }),
+            )
+            .await
+            && value
+                .as_object()
+                .is_some_and(|object| object.get("items").is_some())
+        {
+            return response_json(StatusCode::OK, mark_page_read_fallback(value));
+        }
+
         let Some(client) = self.analysis.as_ref() else {
             return response_json(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1708,6 +2024,49 @@ impl OperationsDomain {
     }
 }
 
+/// Read-only domain used by the gateway's read service. It shares the audited
+/// handlers with the legacy operations domain but constructs NativeApi with
+/// writes disabled, making the boundary enforceable in-process as well as at
+/// the gRPC level.
+pub struct ReadDomain {
+    inner: OperationsDomain,
+}
+
+impl ReadDomain {
+    pub async fn from_env() -> Result<Self, String> {
+        Ok(Self {
+            inner: OperationsDomain::from_env_with_modes(true, false, "read-service").await?,
+        })
+    }
+
+    pub async fn handle(&self, request: Request) -> Response {
+        self.inner.handle_read(request).await
+    }
+}
+
+/// Write-only domain used by the gateway's write service. Read routes are
+/// rejected before reaching NativeApi; writes still use the same transactional
+/// outbox and realtime invalidation path as the legacy operations service.
+pub struct WriteDomain {
+    inner: OperationsDomain,
+}
+
+impl WriteDomain {
+    pub async fn from_env() -> Result<Self, String> {
+        Ok(Self {
+            inner: OperationsDomain::from_env_with_modes(false, true, "write-service").await?,
+        })
+    }
+
+    pub async fn handle(&self, request: Request) -> Response {
+        self.inner.handle_write(request).await
+    }
+
+    pub async fn cleanup_retention(&self) -> bool {
+        self.inner.cleanup_retention().await
+    }
+}
+
 pub struct MonitoringDomain {
     auth: Arc<NativeAuth>,
     database: Arc<NativeDatabase>,
@@ -1765,6 +2124,22 @@ pub struct RealtimeDomain {
 #[cfg(test)]
 mod analysis_contract_tests {
     use super::*;
+
+    #[test]
+    fn stale_snapshot_is_marked_without_changing_metrics() {
+        let result = stale_snapshot_result(&json!({
+            "hit": true,
+            "result": {"S": 10, "D": 9},
+            "sourceVersion": 4,
+            "currentVersion": 5,
+            "calculatedAt": "2026-09-06T00:00:00Z"
+        }))
+        .expect("snapshot result");
+        assert_eq!(result["S"], 10);
+        assert_eq!(result["snapshotStale"], true);
+        assert_eq!(result["snapshotSourceVersion"], 4);
+        assert_eq!(result["snapshotCurrentVersion"], 5);
+    }
 
     #[test]
     fn chart_request_accepts_camel_case_frontend_payload() {

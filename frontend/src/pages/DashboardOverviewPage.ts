@@ -26,6 +26,7 @@ export default function DashboardOverviewPage({ stats: providedStats, pageState,
     const pageLoading = resolvedState.status === 'loading';
     const pageError = resolvedState.status === 'error' ? resolvedState.message : null;
     const stats = resolvedState.status === 'success' ? resolvedState.data : providedStats;
+    const snapshotStale = !pageLoading && Boolean(stats.snapshotStale);
     // Do not render the initial empty stats object as real zeros. The parent
     // starts with an empty object while the dashboard request is in flight;
     // showing it makes a healthy dashboard briefly look empty. Keep the
@@ -80,6 +81,8 @@ export default function DashboardOverviewPage({ stats: providedStats, pageState,
             pageLoading && Native.createElement(Activity, { className: "w-5 h-5 animate-spin text-emerald-600", "aria-label": "Memuat ringkasan" })),
         pageError && Native.createElement("div", { role: "alert", className: "ios-inline-notification ios-inline-notification-error system-health-notice" },
             pageError),
+        snapshotStale && !pageError && Native.createElement("div", { role: "status", "aria-live": "polite", className: "ios-inline-notification ios-inline-notification-warning system-health-notice" },
+            "Menampilkan snapshot dashboard terakhir. Data akan disegarkan setelah analisis Python selesai."),
         monitoringMessage && Native.createElement("div", { role: "status", "aria-live": "polite", className: `ios-inline-notification ${workerStatus === 'down' ? 'ios-inline-notification-error' : 'ios-inline-notification-warning'} system-health-notice flex items-start gap-3` },
             Native.createElement(AlertTriangle, { className: "w-5 h-5 flex-shrink-0" }),
             Native.createElement("div", null,

@@ -12,9 +12,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import threading
 import time
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
@@ -74,6 +76,32 @@ def _notify_interval() -> float:
     return max(0.25, configured)
 
 
+def _dashboard_workers() -> int:
+    """Return the number of short dashboard-snapshot writer threads.
+
+    Snapshot writes are intentionally kept separate from child projection
+    workers.  One writer is normally enough because each write is a small
+    aggregate row; the upper bound prevents a busy dashboard from consuming
+    all PostgreSQL connections on a constrained host.
+    """
+
+    try:
+        configured = int(os.environ.get("ANALYSIS_DASHBOARD_WRITE_WORKERS", "1"))
+    except ValueError:
+        configured = 1
+    return max(1, min(4, configured))
+
+
+def _dashboard_queue_size() -> int:
+    """Return a bounded queue capacity for non-blocking snapshot writes."""
+
+    try:
+        configured = int(os.environ.get("ANALYSIS_DASHBOARD_WRITE_QUEUE_SIZE", "32"))
+    except ValueError:
+        configured = 32
+    return max(1, min(256, configured))
+
+
 def _scope_key(child: dict[str, Any] | None) -> str:
     if not child:
         return "global"
@@ -115,6 +143,76 @@ def _as_measurement(child: dict[str, Any], row: dict[str, Any]) -> dict[str, Any
     return analytics._measurement_for_analysis(child, row)
 
 
+def _row_version(row: dict[str, Any] | None) -> int:
+    """Read the monotonic source version added by the sync-versioning schema."""
+
+    if not row:
+        return 0
+    try:
+        value = int(row.get("version") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, value)
+
+
+def _source_version(
+    child: dict[str, Any],
+    measurements: list[dict[str, Any]],
+    source_context: dict[str, Any] | None,
+) -> int:
+    """Return the newest raw version participating in one child projection.
+
+    The version is scoped to the child rather than the global dashboard.  A
+    write for another child therefore cannot invalidate this child's rows.
+    The input hash below remains the source of truth for deciding whether a
+    calculation can be reused; this version is persisted for observability,
+    replay diagnostics, and idempotent writes.
+    """
+
+    versions = [_row_version(child)]
+    versions.extend(_row_version(row) for row in measurements)
+    for key in ("mpasi", "pmtPrograms", "pmtMonitorings"):
+        versions.extend(_row_version(row) for row in (source_context or {}).get(key, []))
+    return max(1, max(versions, default=0))
+
+
+def _source_context_hash(source_context: dict[str, Any] | None) -> str:
+    """Fingerprint child-scoped ASI/MPASI/PMT inputs once per worker job."""
+
+    if not source_context:
+        return payload_fingerprint({})
+    # Keep the full child-scoped rows in the hash so a changed MPASI/PMT
+    # answer invalidates the projection even when its row count is unchanged.
+    return payload_fingerprint(source_context)
+
+
+def _analysis_input_hash(
+    child: dict[str, Any],
+    item: dict[str, Any],
+    history: list[dict[str, Any]],
+    source_context_hash: str,
+) -> str:
+    """Build the deterministic, non-identifying input key for one result."""
+
+    child_context = {
+        "id": child.get("id"),
+        "birthDate": child.get("birth_date", child.get("birthDate", child.get("tglLahir"))),
+        "sex": child.get("sex", child.get("jk")),
+        "gestationalAgeWeeks": child.get(
+            "gestational_age_weeks",
+            child.get("gestationalAgeWeeks", child.get("usiaKehamilan")),
+        ),
+    }
+    return payload_fingerprint(
+        {
+            "child": child_context,
+            "measurement": item,
+            "history": history,
+            "sourceContext": source_context_hash,
+        }
+    )
+
+
 class AnalysisPersistenceWorker:
     """Small bounded poller; PostgreSQL owns the durable queue.
 
@@ -131,18 +229,42 @@ class AnalysisPersistenceWorker:
         dsn: str | None = None,
         interval: float | None = None,
         workers: int | None = None,
+        dashboard_workers: int | None = None,
+        dashboard_queue_size: int | None = None,
     ) -> None:
         self.dsn = (dsn or _dsn()).strip()
         self.interval = interval if interval is not None else _interval()
         self.workers = max(1, min(8, int(workers or _workers())))
+        self.dashboard_workers = max(
+            1,
+            min(4, int(dashboard_workers if dashboard_workers is not None else _dashboard_workers())),
+        )
+        self.dashboard_queue_size = max(
+            1,
+            min(
+                256,
+                int(
+                    dashboard_queue_size
+                    if dashboard_queue_size is not None
+                    else _dashboard_queue_size()
+                ),
+            ),
+        )
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+        self._dashboard_threads: list[threading.Thread] = []
+        self._dashboard_queue: queue.Queue[tuple[dict[str, Any], dict[str, Any]]] = queue.Queue(
+            maxsize=self.dashboard_queue_size
+        )
         self._counter_lock = threading.Lock()
         self._notify_lock = threading.Lock()
         self._last_notify = 0.0
         self.notify_interval = _notify_interval()
         self.processed = 0
         self.failed = 0
+        self.dashboard_enqueued = 0
+        self.dashboard_dropped = 0
+        self.dashboard_failed = 0
 
     @classmethod
     def from_env(cls) -> "AnalysisPersistenceWorker | None":
@@ -154,7 +276,7 @@ class AnalysisPersistenceWorker:
         return cls(workers=_workers())
 
     def start(self) -> None:
-        if self._threads:
+        if self._threads or self._dashboard_threads:
             return
         self._stop.clear()
         self._threads = [
@@ -165,22 +287,107 @@ class AnalysisPersistenceWorker:
             )
             for index in range(1, self.workers + 1)
         ]
+        self.start_dashboard_writers()
         for thread in self._threads:
             thread.start()
         LOGGER.info(
-            "worker persistence Python aktif; workers=%s interval=%ss",
+            "worker persistence Python aktif; workers=%s interval=%ss dashboard_writers=%s dashboard_queue=%s",
             self.workers,
             self.interval,
+            self.dashboard_workers,
+            self.dashboard_queue_size,
         )
+
+    def start_dashboard_writers(self) -> None:
+        """Start only dashboard snapshot writers for the embedded PyO3 mode.
+
+        In the Rust/PyO3 deployment Rust owns the durable outbox polling loop;
+        starting the full Python worker here would create a second scheduler
+        competing for the same jobs.  Dashboard snapshots still need a
+        background writer, so the embedded bridge starts this smaller subset.
+        """
+
+        if self._dashboard_threads:
+            return
+        self._stop.clear()
+        self._dashboard_threads = [
+            threading.Thread(
+                target=self._dashboard_run,
+                name=f"analysis-dashboard-writer-{index}",
+                daemon=True,
+            )
+            for index in range(1, self.dashboard_workers + 1)
+        ]
+        for thread in self._dashboard_threads:
+            thread.start()
 
     def stop(self) -> None:
         self._stop.set()
         for thread in self._threads:
             thread.join(timeout=5)
+        for thread in self._dashboard_threads:
+            thread.join(timeout=5)
+        if not self._dashboard_queue.empty():
+            LOGGER.warning(
+                "%s snapshot dashboard masih berada di antrean saat worker dihentikan",
+                self._dashboard_queue.qsize(),
+            )
         self._threads = []
+        self._dashboard_threads = []
 
     def stats(self) -> dict[str, int]:
-        return {"processed": self.processed, "failed": self.failed, "workers": self.workers}
+        return {
+            "processed": self.processed,
+            "failed": self.failed,
+            "workers": self.workers,
+            "dashboardWorkers": self.dashboard_workers,
+            "dashboardQueueSize": self.dashboard_queue_size,
+            "dashboardQueueDepth": self._dashboard_queue.qsize(),
+            "dashboardEnqueued": self.dashboard_enqueued,
+            "dashboardDropped": self.dashboard_dropped,
+            "dashboardFailed": self.dashboard_failed,
+        }
+
+    def enqueue_dashboard(self, dataset: dict[str, Any], result: dict[str, Any]) -> bool:
+        """Queue a dashboard snapshot without delaying the gRPC response.
+
+        Only the metadata needed by ``persist_dashboard`` is copied.  The
+        potentially large child/measurement arrays are therefore released as
+        soon as the request returns instead of being retained by a background
+        task.  A full queue is treated as a soft failure: the calculated
+        response remains valid and a later request can enqueue a fresh
+        snapshot.
+        """
+
+        if not self._dashboard_threads:
+            LOGGER.warning("worker snapshot dashboard belum dimulai")
+            with self._counter_lock:
+                self.dashboard_dropped += 1
+            return False
+        snapshot_dataset = {
+            key: dataset.get(key)
+            for key in (
+                "village",
+                "posyandu",
+                "monthStart",
+                "monthEnd",
+                "previousMonthStart",
+                "previousMonthEnd",
+                "ageGroup",
+            )
+        }
+        try:
+            self._dashboard_queue.put_nowait((snapshot_dataset, deepcopy(result)))
+        except queue.Full:
+            with self._counter_lock:
+                self.dashboard_dropped += 1
+            LOGGER.warning(
+                "antrean snapshot dashboard penuh; hasil tetap dikirim tanpa menunggu penulisan PostgreSQL"
+            )
+            return False
+        with self._counter_lock:
+            self.dashboard_enqueued += 1
+        return True
 
     def persist_dashboard(self, dataset: dict[str, Any], result: dict[str, Any]) -> None:
         """Store a Python dashboard response for direct Rust reads."""
@@ -218,6 +425,43 @@ class AnalysisPersistenceWorker:
                         json.dumps(result, ensure_ascii=False, separators=(",", ":")), version,
                     ),
                 )
+
+    def _dashboard_run(self) -> None:
+        """Drain queued dashboard snapshots in the background.
+
+        The queue is drained after the stop event is set so a normal process
+        shutdown does not discard snapshots that were already accepted.  A
+        short, bounded retry handles transient database/network failures while
+        keeping the request path completely non-blocking.
+        """
+
+        while not self._stop.is_set() or not self._dashboard_queue.empty():
+            try:
+                dataset, result = self._dashboard_queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            try:
+                for attempt in range(1, 4):
+                    try:
+                        self.persist_dashboard(dataset, result)
+                        break
+                    except Exception:
+                        if attempt >= 3:
+                            with self._counter_lock:
+                                self.dashboard_failed += 1
+                            LOGGER.exception(
+                                "snapshot dashboard Python tidak dapat disimpan setelah %s percobaan",
+                                attempt,
+                            )
+                            break
+                        LOGGER.warning(
+                            "snapshot dashboard gagal (percobaan %s/3), mencoba lagi",
+                            attempt,
+                            exc_info=True,
+                        )
+                        self._stop.wait(0.25 * attempt)
+            finally:
+                self._dashboard_queue.task_done()
 
     def _notify_analysis_updated(self, cur, child: dict[str, Any] | None) -> None:
         """Tell Rust/browser readers that a Python projection became fresh.
@@ -437,11 +681,6 @@ class AnalysisPersistenceWorker:
         measurements: list[dict[str, Any]],
         source_context: dict[str, Any] | None = None,
     ) -> None:
-        # Rebuild the complete child projection atomically for every queued
-        # child job.  This also removes a previously stored result when a
-        # measurement is deleted or becomes incomplete, preventing stale WHO
-        # or N/T/O/B values from surviving a raw-data edit.
-        cur.execute("delete from public.measurement_analysis where child_id = %s", (child["id"],))
         # Normalize each historical row once.  The old implementation called
         # ``_as_measurement`` once for every pair of rows, which made a child
         # with a long history needlessly quadratic before WHO calculation even
@@ -478,9 +717,54 @@ class AnalysisPersistenceWorker:
         )
         cur.execute("select version from public.analysis_scope_versions where scope_key = %s", (scope,))
         scope_version = (cur.fetchone() or {"version": 1})["version"]
+
+        # Read the existing projection before writing.  A replayed outbox job
+        # now becomes a cheap comparison instead of deleting and recalculating
+        # every historical row for the child.  ``source_fingerprint`` is kept
+        # as a compatibility fallback for rows created before input_hash was
+        # introduced by migration 043.
+        cur.execute(
+            """
+            select measurement_id, input_hash, source_fingerprint,
+                   source_version, analysis_version
+            from public.measurement_analysis
+            where child_id = %s
+            """,
+            (child["id"],),
+        )
+        existing = {
+            str(result["measurement_id"]): result
+            for result in cur.fetchall()
+        }
+        source_version = _source_version(child, measurements, source_context)
+        source_context_hash = _source_context_hash(source_context)
+        current_ids: set[str] = set()
         for row, item, history in prepared:
+            measurement_id = str(row["id"])
+            current_ids.add(measurement_id)
+            fingerprint = _analysis_input_hash(child, item, history, source_context_hash)
+            previous = existing.get(measurement_id)
+            previous_hash = (previous or {}).get("input_hash") or (previous or {}).get("source_fingerprint")
+
+            if previous is not None and previous_hash == fingerprint:
+                # The raw source version may move because a non-clinical field
+                # changed. Keep the projection's version metadata current but
+                # preserve analysis_version and, most importantly, skip the
+                # WHO/ML calculation entirely.
+                if (previous.get("source_version") or 0) != source_version:
+                    cur.execute(
+                        """
+                        update public.measurement_analysis
+                        set source_version = %s, source_updated_at = %s
+                        where measurement_id = %s and child_id = %s
+                        """,
+                        (source_version, _updated_at(row), row["id"], child["id"]),
+                    )
+                continue
+
             result = ml.analyze_item(item, history)
             result["analysisScopeVersion"] = scope_version
+            result["analysisSourceVersion"] = source_version
             # MPASI/PMT and change-history writes trigger the same child job.
             # Keep a compact, non-identifying context marker with the derived
             # result so downstream education/ML versions can consume it
@@ -491,7 +775,6 @@ class AnalysisPersistenceWorker:
                     "pmtPrograms": len(source_context.get("pmtPrograms", [])),
                     "pmtMonitorings": len(source_context.get("pmtMonitorings", [])),
                 }
-            fingerprint = payload_fingerprint({"child": child["id"], "measurement": row, "history": history})
             cur.execute(
                 """
                 insert into public.measurement_analysis(
@@ -500,10 +783,11 @@ class AnalysisPersistenceWorker:
                   bbtb_z_score, imtu_z_score, lila_z_score, lk_z_score,
                   weight_gain_status, weight_gain_minimum_grams,
                   exclusive_breastfeeding_status, result_json, source_fingerprint,
-                  source_updated_at, analysis_version, calculated_at
+                  input_hash, source_version, source_updated_at,
+                  analysis_version, calculated_at
                 ) values (
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s::jsonb, %s, %s,
+                  %s, %s, %s, %s::jsonb, %s, %s, %s, %s,
                   nextval('public.analysis_result_version_seq'), timezone('utc', now())
                 )
                 on conflict (measurement_id) do update set
@@ -517,8 +801,9 @@ class AnalysisPersistenceWorker:
                   weight_gain_minimum_grams = excluded.weight_gain_minimum_grams,
                   exclusive_breastfeeding_status = excluded.exclusive_breastfeeding_status,
                   result_json = excluded.result_json, source_fingerprint = excluded.source_fingerprint,
-                  source_updated_at = excluded.source_updated_at, analysis_version = excluded.analysis_version,
-                  calculated_at = excluded.calculated_at
+                  input_hash = excluded.input_hash, source_version = excluded.source_version,
+                  source_updated_at = excluded.source_updated_at,
+                  analysis_version = excluded.analysis_version, calculated_at = excluded.calculated_at
                 """,
                 (
                     row["id"], child["id"], result.get("bbu_status"), result.get("tbu_status"),
@@ -528,9 +813,24 @@ class AnalysisPersistenceWorker:
                     result.get("lk_z_score"), result.get("weight_gain_status"),
                     result.get("weight_gain_minimum_grams"), result.get("exclusive_breastfeeding_status"),
                     json.dumps(result, ensure_ascii=False, separators=(",", ":")), fingerprint,
-                    _updated_at(row),
+                    fingerprint, source_version, _updated_at(row),
                 ),
             )
+
+        # Remove projections for deleted/incomplete measurements, but leave
+        # unchanged valid rows untouched. This keeps the materialized table
+        # exact without the previous delete-and-rebuild write amplification.
+        if current_ids:
+            cur.execute(
+                """
+                delete from public.measurement_analysis
+                where child_id = %s
+                  and not (measurement_id = any(%s::text[]))
+                """,
+                (child["id"], list(current_ids)),
+            )
+        else:
+            cur.execute("delete from public.measurement_analysis where child_id = %s", (child["id"],))
 
 
 def start_persistence_worker() -> AnalysisPersistenceWorker | None:

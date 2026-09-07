@@ -57,6 +57,8 @@ export default function MeasurementAnalysisDialog({ child, measurement, state, o
   const predictions = risk.predictions || {};
   const concern = analysis.nutritionConcern || null;
   const education = analysis.nutritionEducation || null;
+  const concernRecommendations = concern?.recommendations || concern?.followUp || [];
+  const educationRecommendations = education?.recommendations || education?.followUp || [];
   const pending = state?.status === 'loading';
   const failed = state?.status === 'error';
   return Native.createElement('div', {
@@ -124,8 +126,8 @@ export default function MeasurementAnalysisDialog({ child, measurement, state, o
             Native.createElement('div', { className: 'measurement-analysis-card-heading' },
               Native.createElement(AlertTriangle, { className: 'h-5 w-5' }),
               Native.createElement('div', null,
-                Native.createElement('h3', null, concern.title || 'Edukasi dan tindak lanjut'),
-                Native.createElement('p', null, concern.summary || 'Status gizi memerlukan tindak lanjut tenaga kesehatan.')
+                Native.createElement('h3', null, concern.title || 'Edukasi dan rekomendasi tindak lanjut'),
+                Native.createElement('p', null, concern.summary || 'Status gizi memerlukan rekomendasi tindak lanjut dari tenaga kesehatan.')
               )
             ),
             concern.findings?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-findings' },
@@ -142,9 +144,9 @@ export default function MeasurementAnalysisDialog({ child, measurement, state, o
               Native.createElement('strong', null, 'Edukasi singkat'),
               Native.createElement('ul', null, concern.education.map((value, index) => Native.createElement('li', { key: `education-${index}` }, value)))
             ),
-            concern.followUp?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
-              Native.createElement('strong', null, concern.urgency === 'segera' ? 'Tindak lanjut segera' : 'Tindak lanjut'),
-              Native.createElement('ul', null, concern.followUp.map((value, index) => Native.createElement('li', { key: `follow-up-${index}` }, value)))
+            concernRecommendations.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
+              Native.createElement('strong', null, concern.urgency === 'segera' ? 'Rekomendasi tindak lanjut segera' : 'Rekomendasi tindak lanjut'),
+              Native.createElement('ul', null, concernRecommendations.map((value, index) => Native.createElement('li', { key: `recommendation-${index}` }, value)))
             ),
             concern.disclaimer && Native.createElement('small', { className: 'measurement-analysis-guidance-disclaimer' }, concern.disclaimer)
           )
@@ -179,9 +181,9 @@ export default function MeasurementAnalysisDialog({ child, measurement, state, o
             Native.createElement('strong', null, 'Edukasi sesuai usia dan persentase skrining'),
             Native.createElement('ul', null, education.education.map((value, index) => Native.createElement('li', { key: `normal-education-${index}` }, value)))
           ),
-          education.followUp?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
-            Native.createElement('strong', null, 'Pemantauan'),
-            Native.createElement('ul', null, education.followUp.map((value, index) => Native.createElement('li', { key: `normal-follow-up-${index}` }, value)))
+          educationRecommendations.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
+            Native.createElement('strong', null, 'Rekomendasi tindak lanjut'),
+            Native.createElement('ul', null, educationRecommendations.map((value, index) => Native.createElement('li', { key: `normal-recommendation-${index}` }, value)))
           ),
           education.disclaimer && Native.createElement('small', { className: 'measurement-analysis-guidance-disclaimer' }, education.disclaimer)
         )

@@ -12,9 +12,8 @@ use axum::{
 use e_posyandu_proto::proto::platform::v1::{
     HttpHeader, RealtimeSubscribeRequest, ServiceRequest, ServiceResponse,
     identity_service_client::IdentityServiceClient,
-    monitoring_service_client::MonitoringServiceClient,
-    operations_service_client::OperationsServiceClient,
-    realtime_service_client::RealtimeServiceClient,
+    monitoring_service_client::MonitoringServiceClient, read_service_client::ReadServiceClient,
+    realtime_service_client::RealtimeServiceClient, write_service_client::WriteServiceClient,
 };
 use futures_util::stream;
 use serde_json::Value;
@@ -29,13 +28,15 @@ use tonic_health::pb::{
 };
 
 const DEFAULT_IDENTITY_URL: &str = "unix:///run/e-posyandu/identity.sock";
-const DEFAULT_OPERATIONS_URL: &str = "unix:///run/e-posyandu/operations.sock";
+const DEFAULT_READ_URL: &str = "unix:///run/e-posyandu/read.sock";
+const DEFAULT_WRITE_URL: &str = "unix:///run/e-posyandu/write.sock";
 const DEFAULT_REALTIME_URL: &str = "unix:///run/e-posyandu/realtime.sock";
 const DEFAULT_MONITORING_URL: &str = "unix:///run/e-posyandu/monitoring.sock";
 const TOKEN_HEADER: &str = "x-eposyandu-service-token";
 const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 const IDENTITY_SERVICE_NAME: &str = "eposyandu.platform.v1.IdentityService";
-const OPERATIONS_SERVICE_NAME: &str = "eposyandu.platform.v1.OperationsService";
+const READ_SERVICE_NAME: &str = "eposyandu.platform.v1.ReadService";
+const WRITE_SERVICE_NAME: &str = "eposyandu.platform.v1.WriteService";
 const REALTIME_SERVICE_NAME: &str = "eposyandu.platform.v1.RealtimeService";
 const MONITORING_SERVICE_NAME: &str = "eposyandu.platform.v1.MonitoringService";
 
@@ -56,7 +57,8 @@ impl Interceptor for ServiceTokenInterceptor {
 #[derive(Clone)]
 pub(crate) struct PlatformGrpcClients {
     identity: Channel,
-    operations: Channel,
+    read: Channel,
+    write: Channel,
     realtime: Channel,
     monitoring: Channel,
     token: MetadataValue<Ascii>,
@@ -77,7 +79,8 @@ impl PlatformGrpcClients {
             .map_err(|_| "RUST_WORKER_SHARED_SECRET harus berupa metadata ASCII.".to_owned())?;
         Ok(Some(Self {
             identity: endpoint("ORACLE_API_IDENTITY_GRPC_URL", DEFAULT_IDENTITY_URL)?,
-            operations: endpoint("ORACLE_API_OPERATIONS_GRPC_URL", DEFAULT_OPERATIONS_URL)?,
+            read: endpoint("ORACLE_API_READ_GRPC_URL", DEFAULT_READ_URL)?,
+            write: endpoint("ORACLE_API_WRITE_GRPC_URL", DEFAULT_WRITE_URL)?,
             realtime: endpoint("ORACLE_API_REALTIME_GRPC_URL", DEFAULT_REALTIME_URL)?,
             monitoring: endpoint("ORACLE_API_MONITORING_GRPC_URL", DEFAULT_MONITORING_URL)?,
             token,
@@ -101,36 +104,38 @@ impl PlatformGrpcClients {
         }
     }
 
-    pub(crate) async fn operations(&self, request: Request) -> Response {
+    pub(crate) async fn read(&self, request: Request) -> Response {
         let input = match request_to_proto(request).await {
             Ok(value) => value,
             Err(response) => return response,
         };
-        let mut client = OperationsServiceClient::with_interceptor(
-            self.operations.clone(),
+        let mut client = ReadServiceClient::with_interceptor(
+            self.read.clone(),
             ServiceTokenInterceptor {
                 token: self.token.clone(),
             },
         );
         match client.handle(GrpcRequest::new(input)).await {
             Ok(response) => response_from_proto(response.into_inner()),
-            Err(error) => unavailable(format!("Operations service tidak tersedia: {error}")),
+            Err(error) => unavailable(format!("Read service tidak tersedia: {error}")),
         }
     }
 
-    /// Check every domain service through the standard gRPC health protocol.
-    /// The gateway uses this for readiness so a running process with a dead
-    /// domain service is not reported as healthy.
-    pub(crate) async fn health_check(&self) -> Result<(), String> {
-        for (service, reachable, healthy, _) in self.health_statuses().await {
-            if !reachable {
-                return Err(format!("{service}: service tidak dapat dijangkau"));
-            }
-            if !healthy {
-                return Err(format!("{service}: service tidak sehat"));
-            }
+    pub(crate) async fn write(&self, request: Request) -> Response {
+        let input = match request_to_proto(request).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        let mut client = WriteServiceClient::with_interceptor(
+            self.write.clone(),
+            ServiceTokenInterceptor {
+                token: self.token.clone(),
+            },
+        );
+        match client.handle(GrpcRequest::new(input)).await {
+            Ok(response) => response_from_proto(response.into_inner()),
+            Err(error) => unavailable(format!("Write service tidak tersedia: {error}")),
         }
-        Ok(())
     }
 
     /// Returns an independent status for every gRPC domain service. Keeping
@@ -138,17 +143,14 @@ impl PlatformGrpcClients {
     /// identify exactly which service is offline without changing request
     /// routing or authentication behaviour.
     pub(crate) async fn health_statuses(&self) -> Vec<(&'static str, bool, bool, u128)> {
-        let (identity, operations, realtime, monitoring) = tokio::join!(
+        let (identity, read, write, realtime, monitoring) = tokio::join!(
             service_health_status(
                 self.identity.clone(),
                 self.token.clone(),
                 IDENTITY_SERVICE_NAME,
             ),
-            service_health_status(
-                self.operations.clone(),
-                self.token.clone(),
-                OPERATIONS_SERVICE_NAME,
-            ),
+            service_health_status(self.read.clone(), self.token.clone(), READ_SERVICE_NAME),
+            service_health_status(self.write.clone(), self.token.clone(), WRITE_SERVICE_NAME),
             service_health_status(
                 self.realtime.clone(),
                 self.token.clone(),
@@ -162,9 +164,15 @@ impl PlatformGrpcClients {
         );
         vec![
             ("identity-service", identity.0, identity.1, identity.2),
-            ("operations-service", operations.0, operations.1, operations.2),
+            ("read-service", read.0, read.1, read.2),
+            ("write-service", write.0, write.1, write.2),
             ("realtime-service", realtime.0, realtime.1, realtime.2),
-            ("monitoring-service", monitoring.0, monitoring.1, monitoring.2),
+            (
+                "monitoring-service",
+                monitoring.0,
+                monitoring.1,
+                monitoring.2,
+            ),
         ]
     }
 
@@ -362,27 +370,6 @@ fn forwardable_header(name: &HeaderName) -> bool {
             | "host"
             | "content-length"
     )
-}
-
-async fn service_health(
-    channel: Channel,
-    token: MetadataValue<Ascii>,
-    service: &'static str,
-) -> Result<(), String> {
-    let mut client = HealthClient::with_interceptor(channel, ServiceTokenInterceptor { token });
-    let response = client
-        .check(GrpcRequest::new(HealthCheckRequest {
-            service: service.to_owned(),
-        }))
-        .await
-        .map_err(|error| format!("{service}: {error}"))?;
-    let status =
-        ServingStatus::try_from(response.into_inner().status).unwrap_or(ServingStatus::Unknown);
-    if status == ServingStatus::Serving {
-        Ok(())
-    } else {
-        Err(format!("{service}: gRPC health status {status:?}"))
-    }
 }
 
 async fn service_health_status(

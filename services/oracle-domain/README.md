@@ -7,7 +7,9 @@ memiliki lifecycle, container, port gRPC, dan deployment target sendiri:
 | Binary | Batas domain | Port internal |
 | --- | --- | --- |
 | `identity-service` | login, MFA, passkey, sesi, akun admin | 50052 |
-| `operations-service` | CRUD, cache, sinkronisasi, retensi | 50053 |
+| `read-service` | Read-only tabel/dashboard/analisis dan cache | 50056 |
+| `write-service` | Mutasi CRUD, outbox analisis, retensi | 50057 |
+| `operations-service` | Legacy gabungan CRUD + read (rollback saja) | 50053 |
 | `realtime-service` | PostgreSQL `NOTIFY` dan subscription SSE | 50054 |
 | `monitoring-service` | snapshot metrik admin | 50055 |
 
@@ -19,6 +21,7 @@ keamanan, serta body dari response. Semua RPC internal memerlukan metadata
 lintas server atau platform. Port gRPC tidak dipublish ke host.
 
 Source domain masih direferensikan dari modul teruji di `oracle-api/src` selama
-migrasi agar perilaku autentikasi dan scope tetap identik. Pemisahan runtime
-sudah aktif; pemindahan source per bounded context dapat dilakukan setelah
-cutover dan uji kontrak tanpa mengubah kontrak protobuf.
+migrasi agar perilaku autentikasi dan scope tetap identik. Gateway mengarahkan
+GET serta endpoint analisis POST ke `read-service`, sedangkan mutasi POST/PATCH/
+DELETE ke `write-service`. `operations-service` diberi Compose profile `legacy`
+dan tidak ikut jalur produksi; ia dipertahankan untuk rollback terkontrol.

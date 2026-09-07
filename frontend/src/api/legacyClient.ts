@@ -124,6 +124,8 @@ type SyncChangeSet = {
   items: ApiDocument[];
   deletedIds?: string[];
   cursor?: string;
+  /** True when another page is available during a bounded full sync. */
+  hasMore?: boolean;
 };
 
 type SyncResponse = {
@@ -164,6 +166,8 @@ export type ChildrenPageResponse = {
   total: number;
   /** True when Rust already selected this page before Python analysis. */
   pageLimited?: boolean;
+  /** True when the page came directly from PostgreSQL during a read fallback. */
+  readFallback?: string;
 };
 
 // Keep the most recently resolved page in memory so switching tabs can paint
@@ -259,6 +263,11 @@ export type DashboardStatsResponse = {
   perUnderweight: string;
   perStunting: string;
   perWasting: string;
+  /** True when the response is the latest persisted snapshot, not the current scope version. */
+  snapshotStale?: boolean;
+  snapshotSourceVersion?: number;
+  snapshotCurrentVersion?: number;
+  snapshotCalculatedAt?: string;
 };
 
 export type MonitoringStatus = {
@@ -1318,7 +1327,7 @@ export async function getCachedChildrenPage(request: ChildrenPageRequest): Promi
   // Offline reads may only reuse a complete page previously produced by
   // Python. Re-filtering raw encrypted documents here would create a second
   // source of truth for scope, age, sorting, and status classification.
-  throw new Error('Cache halaman Python belum tersedia. Sambungkan kembali untuk memuat data.');
+  throw new Error('Cache lokal halaman belum tersedia. Sambungkan kembali untuk memuat data.');
 }
 
 function matchesQuery(data: DocumentData, ref: QueryRef) {
@@ -1394,8 +1403,30 @@ async function executeFastApiQuery(ref: QueryRef): Promise<QuerySnapshot<Documen
     });
     response = synced.changes[ref.tableName] || { items: [], cursor: synced.cursor };
   } else {
-    const suffix = params.size ? `?${params.toString()}` : '';
-    response = await apiRequest<SyncChangeSet>(`/collections/${encodeURIComponent(ref.tableName)}${suffix}`);
+    // A first sync is deliberately paginated so a slow kader connection or
+    // PostgreSQL never has to transfer tens of thousands of rows in one
+    // response. The backend caps this page size at 500 and advertises
+    // `hasMore`; only the explicitly requested full sync loops through pages.
+    const pageSize = 500;
+    const items: ApiDocument[] = [];
+    const deletedIds: string[] = [];
+    let page = 1;
+    let lastPage: SyncChangeSet = { items: [] };
+    while (true) {
+      params.set('page', String(page));
+      params.set('size', String(pageSize));
+      const suffix = `?${params.toString()}`;
+      const pageResponse = await apiRequest<SyncChangeSet>(
+        `/collections/${encodeURIComponent(ref.tableName)}${suffix}`
+      );
+      items.push(...pageResponse.items);
+      deletedIds.push(...(pageResponse.deletedIds || []));
+      lastPage = pageResponse;
+      if (!pageResponse.hasMore) break;
+      page += 1;
+      if (page > 20_000) throw new Error('Sinkronisasi penuh melebihi batas halaman.');
+    }
+    response = { ...lastPage, items, deletedIds, hasMore: false };
   }
   const cacheEntries = response.items.map((document) => ({
     id: document.id,

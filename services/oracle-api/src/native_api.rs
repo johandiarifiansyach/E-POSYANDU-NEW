@@ -386,11 +386,43 @@ fn dashboard_cache_key(
     )
 }
 
+fn stale_snapshot_result(snapshot: &Value) -> Option<Value> {
+    if snapshot.get("hit").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let mut result = snapshot.get("result").cloned()?;
+    let Some(object) = result.as_object_mut() else {
+        return Some(result);
+    };
+    object.insert("snapshotStale".to_owned(), Value::Bool(true));
+    if let Some(value) = snapshot.get("sourceVersion") {
+        object.insert("snapshotSourceVersion".to_owned(), value.clone());
+    }
+    if let Some(value) = snapshot.get("currentVersion") {
+        object.insert("snapshotCurrentVersion".to_owned(), value.clone());
+    }
+    if let Some(value) = snapshot.get("calculatedAt") {
+        object.insert("snapshotCalculatedAt".to_owned(), value.clone());
+    }
+    Some(result)
+}
+
 fn valid_age_group(value: &str) -> bool {
     matches!(
         value,
-        "0-59" | "newborn" | "newborn_premature" | "0-5" | "6" | "0-11"
-            | "0-23" | "6-11" | "6-23" | "12-23" | "6-59" | "12-59" | "24-59"
+        "0-59"
+            | "newborn"
+            | "newborn_premature"
+            | "0-5"
+            | "6"
+            | "0-11"
+            | "0-23"
+            | "6-11"
+            | "6-23"
+            | "12-23"
+            | "6-59"
+            | "12-59"
+            | "24-59"
     )
 }
 
@@ -3030,14 +3062,19 @@ impl NativeApi {
         let history = resource == Resource::ChangeLogs
             && !export
             && pairs.iter().any(|(key, _)| key == "page");
+        // Every full collection read is bounded. Incremental pulls identified
+        // by `since` remain cursor-based and are intentionally not split here;
+        // this keeps the sync cursor semantics intact while preventing any
+        // first request from transferring the complete population.
+        let paged = since.is_none();
         let mut page_size = 0;
-        if export || history {
+        if export || history || paged {
             let page = positive_integer(query, "page", 1, 1_000_000)?;
             page_size = positive_integer(
                 query,
                 "size",
-                if export { 500 } else { 10 },
-                if export { 500 } else { 50 },
+                if history { 10 } else { 500 },
+                if history { 50 } else { 500 },
             )?;
             parameters.push(("limit".into(), page_size.to_string()));
             parameters.push(("offset".into(), ((page - 1) * page_size).to_string()));
@@ -3090,13 +3127,17 @@ impl NativeApi {
         if !valid_age_group(age_group) {
             return Err(ApiError::validation("Kelompok umur tidak valid."));
         }
-        let as_of = value(query, "asOf").map(ToOwned::to_owned).unwrap_or_else(|| {
-            // A missing report date is only a rolling-migration safeguard;
-            // the frontend always sends the selected month end.
-            time::OffsetDateTime::now_utc().date().to_string()
-        });
+        let as_of = value(query, "asOf")
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| {
+                // A missing report date is only a rolling-migration safeguard;
+                // the frontend always sends the selected month end.
+                time::OffsetDateTime::now_utc().date().to_string()
+            });
         if !is_date(&as_of) {
-            return Err(ApiError::validation("Periode riwayat perubahan tidak valid."));
+            return Err(ApiError::validation(
+                "Periode riwayat perubahan tidak valid.",
+            ));
         }
         let page = positive_integer(query, "page", 1, 1_000_000)?;
         let size = positive_integer(query, "size", 10, 50)?;
@@ -3126,7 +3167,10 @@ impl NativeApi {
             // Keep rolling deployments readable until migration 039 reaches
             // this instance. The legacy collection path is still scoped by
             // PostgreSQL RLS; it simply cannot apply the new age cohort.
-            Err(_) => self.collection_list(scope, Resource::ChangeLogs, query, pairs).await,
+            Err(_) => {
+                self.collection_list(scope, Resource::ChangeLogs, query, pairs)
+                    .await
+            }
         }
     }
 
@@ -3169,7 +3213,7 @@ impl NativeApi {
         query: &BTreeMap<String, String>,
         pairs: &[(String, String)],
     ) -> Result<Value, ApiError> {
-        let (parameters, export, history, page_size) =
+        let (parameters, _export, history, page_size) =
             Self::collection_parameters(resource, query, pairs, scope)?;
         let (payload, content_range) = self.rest_get(resource.name(), &parameters, history).await?;
         let rows = payload.as_array().ok_or_else(|| {
@@ -3222,7 +3266,7 @@ impl NativeApi {
             "items": items,
             "deletedIds": deleted_ids,
             "cursor": time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).unwrap_or_else(|_| "1970-01-01T00:00:00Z".into()),
-            "hasMore": export && rows.len() == page_size,
+            "hasMore": page_size > 0 && rows.len() == page_size,
             "page": if history { query.get("page").and_then(|value| value.parse::<usize>().ok()) } else { None },
             "size": if history { Some(page_size) } else { None },
             "total": total
@@ -3325,7 +3369,11 @@ impl NativeApi {
         let page = positive_integer(query, "page", 1, 1_000_000)?;
         let size = positive_integer(query, "size", 10, 50)?;
         let view = value(query, "view").unwrap_or("data");
-        let age_group = if view == "mpasi" { "6-23" } else { requested_age_group };
+        let age_group = if view == "mpasi" {
+            "6-23"
+        } else {
+            requested_age_group
+        };
         let sort = value(query, "sort").unwrap_or("recent");
         if !matches!(
             sort,
@@ -3370,7 +3418,7 @@ impl NativeApi {
             "problem_underweight" | "problem_stunting" | "problem_wasting" | "problem_tidak_naik"
         ) {
             (
-            "eposyandu_problem_children_page_legacy",
+                "eposyandu_problem_children_page_legacy",
                 json!({
                     "p_month_start": start,
                     "p_month_end": end,
@@ -3487,39 +3535,39 @@ impl NativeApi {
         let village = scoped_value(scope, value(query, "village"), true);
         let posyandu = scoped_value(scope, value(query, "posyandu"), false);
         let scope_key = dashboard_scope_key(village.as_deref(), posyandu.as_deref());
+        let snapshot_request = json!({
+            "p_cache_key": dashboard_cache_key(
+                &scope_key,
+                &month_start,
+                &month_end,
+                &previous_month_start,
+                &previous_month_end,
+                age_group,
+            ),
+            "p_scope_key": scope_key,
+            "p_month_start": month_start,
+            "p_month_end": month_end,
+            "p_previous_month_start": previous_month_start,
+            "p_previous_month_end": previous_month_end,
+            "p_age_group": age_group,
+            "p_village": village,
+            "p_posyandu": posyandu,
+        });
         let snapshot = self
-            .rpc(
-                "eposyandu_dashboard_snapshot",
-                json!({
-                    "p_cache_key": dashboard_cache_key(
-                        &scope_key,
-                        &month_start,
-                        &month_end,
-                        &previous_month_start,
-                        &previous_month_end,
-                        age_group,
-                    ),
-                    "p_scope_key": scope_key,
-                    "p_month_start": month_start,
-                    "p_month_end": month_end,
-                    "p_previous_month_start": previous_month_start,
-                    "p_previous_month_end": previous_month_end,
-                    "p_age_group": age_group,
-                    "p_village": village,
-                    "p_posyandu": posyandu,
-                }),
-            )
-            .await
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "analysis_pending",
-                    "Analisis dashboard Python belum tersedia.",
-                )
-            })?;
-        if snapshot.get("hit").and_then(Value::as_bool) == Some(true)
-            && let Some(result) = snapshot.get("result").cloned()
+            .rpc("eposyandu_dashboard_snapshot", snapshot_request.clone())
+            .await;
+        if let Ok(value) = snapshot
+            && value.get("hit").and_then(Value::as_bool) == Some(true)
+            && let Some(result) = value.get("result").cloned()
         {
+            return Ok(result);
+        }
+        let stale_snapshot = self
+            .rpc("eposyandu_dashboard_snapshot_latest", snapshot_request)
+            .await
+            .ok()
+            .and_then(|value| stale_snapshot_result(&value));
+        if let Some(result) = stale_snapshot {
             return Ok(result);
         }
         Err(ApiError::new(
@@ -3561,6 +3609,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stale_snapshot_result_preserves_result_and_marks_staleness() {
+        let result = stale_snapshot_result(&json!({
+            "hit": true,
+            "result": {"S": 8},
+            "sourceVersion": 2,
+            "currentVersion": 3
+        }))
+        .expect("snapshot result");
+        assert_eq!(result["S"], 8);
+        assert_eq!(result["snapshotStale"], true);
+        assert_eq!(result["snapshotSourceVersion"], 2);
+        assert_eq!(result["snapshotCurrentVersion"], 3);
+    }
+
+    #[test]
     fn validates_dates_strictly() {
         assert!(is_date("2026-08-21"));
         assert!(!is_date("21-08-2026"));
@@ -3595,6 +3658,47 @@ mod tests {
             dynamic_cache_ttl_seconds("/api/v1/collections/measurements"),
             300
         );
+    }
+
+    #[test]
+    fn full_collection_reads_are_bounded_and_incremental_reads_keep_cursor_semantics() {
+        let scope = AccessScope {
+            user_id: "user-1".into(),
+            email: None,
+            role: "Ahli Gizi".into(),
+            desa: None,
+            posyandu: None,
+            access_mode: "write".into(),
+        };
+        let empty_query = BTreeMap::new();
+        let (parameters, export, history, page_size) =
+            NativeApi::collection_parameters(Resource::Measurements, &empty_query, &[], &scope)
+                .expect("full read parameters");
+        assert!(!export);
+        assert!(!history);
+        assert_eq!(page_size, 500);
+        assert!(
+            parameters
+                .iter()
+                .any(|(key, value)| key == "limit" && value == "500")
+        );
+        assert!(
+            parameters
+                .iter()
+                .any(|(key, value)| key == "offset" && value == "0")
+        );
+
+        let cursor_query = BTreeMap::from([("since".into(), "2026-08-01T00:00:00Z".into())]);
+        let cursor_pairs = vec![("since".into(), "2026-08-01T00:00:00Z".into())];
+        let (parameters, _, _, page_size) = NativeApi::collection_parameters(
+            Resource::Measurements,
+            &cursor_query,
+            &cursor_pairs,
+            &scope,
+        )
+        .expect("incremental read parameters");
+        assert_eq!(page_size, 0);
+        assert!(!parameters.iter().any(|(key, _)| key == "limit"));
     }
 
     #[test]

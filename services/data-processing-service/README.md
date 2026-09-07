@@ -10,7 +10,7 @@ memprosesnya tanpa membebani endpoint login dan CRUD.
 | Job | RPC | Hasil |
 | --- | --- | --- |
 | `import_validation` | `ValidateImport` | Pemeriksaan NIK, tanggal, BB, TB, umur, duplikat, dan cakupan wilayah |
-| `nutrition_report` | `ProcessJob` | Job diteruskan ke `analysis-service` Python untuk kalkulasi WHO |
+| `nutrition_report` | `ProcessJob` | Job diteruskan ke `analysis-worker` Rust/PyO3 (modul Python) untuk kalkulasi WHO |
 | `export_file` | `PrepareExport` | Berkas XLSX atau PDF beserta checksum SHA-256 |
 | `system_sync` | `NormalizeSyncBatch` | Data sinkronisasi yang sudah dinormalisasi dan divalidasi |
 
@@ -19,7 +19,7 @@ ini tidak menghitung status gizi; ia hanya memvalidasi, menormalisasi,
 mengekspor, dan mengorkestrasi job ke service pemrosesan yang tepat.
 
 Job `nutrition_report` mendelegasikan seluruh kalkulasi WHO ke
-`analysis-service` Python melalui gRPC/UDS (`ANALYSIS_GRPC_ENABLED=true`).
+`analysis-worker` Rust/PyO3 melalui gRPC/UDS (`ANALYSIS_GRPC_ENABLED=true`).
 Tidak ada fallback kalkulator lokal di service ini; bila analysis service belum
 aktif, job gagal dengan status `failed_precondition` agar tidak ada hasil gizi
 yang dihitung oleh komponen yang salah.

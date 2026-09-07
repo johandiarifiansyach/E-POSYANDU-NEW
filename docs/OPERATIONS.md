@@ -46,7 +46,7 @@ Salin template frontend yang sesuai menjadi file lokal tanpa akhiran `.example`.
 ## Platform utama di Oracle
 
 Cloudflare Pages menjalankan frontend. Oracle Compute menjalankan `oracle-api`,
-domain services, `data-processing-worker`, `analysis-service` Python, dan PostgreSQL
+domain services, `data-processing-worker`, `analysis-worker` Rust/PyO3, dan PostgreSQL
 native sebagai origin serta primary writable untuk data inti. Cloudflare tetap
 menjadi edge dan pemilik Queue/R2;
 Worker/Pages lama dipertahankan sebagai rollback darurat. Supabase tetap

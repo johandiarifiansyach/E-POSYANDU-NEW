@@ -55,6 +55,8 @@ const serviceLabel = (key: string) => ({
     nativeCore: 'Backend Native', migrationProxy: 'Jalur Migrasi',
     'oracle-api': 'Oracle API Gateway',
     'identity-service': 'Identity Service',
+    'read-service': 'Read Service',
+    'write-service': 'Write Service',
     'operations-service': 'Operations Service',
     'realtime-service': 'Realtime Service',
     'monitoring-service': 'Monitoring Service',
@@ -71,6 +73,8 @@ const serviceLabel = (key: string) => ({
 const serviceIcon = (key: string) => ({
     'oracle-api': Activity,
     'identity-service': UserRound,
+    'read-service': ClipboardCheck,
+    'write-service': Pencil,
     'operations-service': ClipboardCheck,
     'realtime-service': Activity,
     'monitoring-service': TrendingUp,
@@ -90,6 +94,8 @@ const serviceIcon = (key: string) => ({
 const serviceTone = (key: string) => ({
     'oracle-api': 'blue',
     'identity-service': 'cyan',
+    'read-service': 'indigo',
+    'write-service': 'blue',
     'operations-service': 'indigo',
     'realtime-service': 'pink',
     'monitoring-service': 'orange',

@@ -13,7 +13,7 @@ use axum::{
     Router,
     body::{Body, to_bytes},
     extract::{DefaultBodyLimit, Path, Request, State},
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
@@ -35,20 +35,20 @@ use tracing::{error, info, warn};
 
 type HmacSha256 = Hmac<sha2::Sha256>;
 
+mod data_processing_client;
 mod native_api;
 mod native_auth;
 mod native_cache;
 mod native_db;
-mod data_processing_client;
 mod platform_client;
 mod realtime;
 mod system_metrics;
 
+use data_processing_client::DataProcessingGrpcClient;
 use native_api::NativeApi;
 use native_auth::NativeAuth;
 use native_cache::{DASHBOARD_CACHE_TTL_SECONDS, DYNAMIC_CACHE_TTL_SECONDS};
 use native_db::NativeDatabase;
-use data_processing_client::DataProcessingGrpcClient;
 use platform_client::PlatformGrpcClients;
 use realtime::{RealtimeEvent, RealtimeHub};
 use system_metrics::SystemMetricsSampler;
@@ -217,6 +217,17 @@ fn allowed_proxy_path(path: &str) -> bool {
 
 fn is_legacy_background_job_path(path: &str) -> bool {
     path == "/api/v1/jobs" || path.starts_with("/api/v1/jobs/")
+}
+
+fn is_legacy_background_file_path(path: &str) -> bool {
+    is_legacy_background_job_path(path) && path.ends_with("/file")
+}
+
+/// Analysis requests use POST to carry a JSON payload, but are read-side
+/// operations: they calculate/render and do not mutate PostgreSQL. All other
+/// GETs are reads; mutations are sent to WriteService.
+fn is_read_service_request(method: &Method, path: &str) -> bool {
+    *method == Method::GET || (method == Method::POST && path.starts_with("/api/v1/analysis/"))
 }
 
 fn hop_by_hop_header(name: &HeaderName) -> bool {
@@ -502,24 +513,20 @@ async fn check_platform_services(state: &AppState) -> OperationalCheck {
         };
     };
     let started_at = Instant::now();
-    let statuses = match tokio::time::timeout(
-        OPERATIONAL_CHECK_TIMEOUT,
-        platform.health_statuses(),
-    )
-    .await
-    {
-        Ok(statuses) => statuses,
-        Err(error_value) => {
-            error!(error = %error_value, "domain microservices gRPC tidak dapat dijangkau");
-            return OperationalCheck {
-                reachable: false,
-                ok: false,
-                status: "unavailable".into(),
-                latency_ms: started_at.elapsed().as_millis(),
-                payload: None,
-            };
-        }
-    };
+    let statuses =
+        match tokio::time::timeout(OPERATIONAL_CHECK_TIMEOUT, platform.health_statuses()).await {
+            Ok(statuses) => statuses,
+            Err(error_value) => {
+                error!(error = %error_value, "domain microservices gRPC tidak dapat dijangkau");
+                return OperationalCheck {
+                    reachable: false,
+                    ok: false,
+                    status: "unavailable".into(),
+                    latency_ms: started_at.elapsed().as_millis(),
+                    payload: None,
+                };
+            }
+        };
     let mut details = serde_json::Map::new();
     let mut all_reachable = true;
     let mut all_healthy = true;
@@ -987,8 +994,11 @@ async fn monitoring_stream_payload(
             _ => false,
         }
     };
-    let (database_online, cache_online, data_processing) =
-        tokio::join!(database_check, cache_check, check_data_processing_worker(state));
+    let (database_online, cache_online, data_processing) = tokio::join!(
+        database_check,
+        cache_check,
+        check_data_processing_worker(state)
+    );
     json!({
         "sequence": sequence,
         "timestamp": system.timestamp.clone(),
@@ -1027,7 +1037,9 @@ fn complete_monitoring_payload(
                 .cloned()
         })
         .unwrap_or_else(|| json!(ADMIN_MONITORING_INTERVAL.as_secs_f64()));
-    object.entry("intervalSeconds".to_owned()).or_insert(interval);
+    object
+        .entry("intervalSeconds".to_owned())
+        .or_insert(interval);
     let services = object
         .entry("services".to_owned())
         .or_insert_with(|| json!({}));
@@ -1037,7 +1049,11 @@ fn complete_monitoring_payload(
         services.insert("api".to_owned(), json!("online"));
         services.insert(
             "dataProcessingWorker".to_owned(),
-            json!(if data_processing_online { "online" } else { "offline" }),
+            json!(if data_processing_online {
+                "online"
+            } else {
+                "offline"
+            }),
         );
     }
     payload
@@ -1067,7 +1083,14 @@ async fn admin_monitoring_stream(State(state): State<Arc<AppState>>, request: Re
             );
         };
         let events = stream::unfold(
-            (platform.clone(), headers, 0_u64, true, connection, state.clone()),
+            (
+                platform.clone(),
+                headers,
+                0_u64,
+                true,
+                connection,
+                state.clone(),
+            ),
             |(platform, headers, mut sequence, first, connection, state)| async move {
                 tokio::time::sleep(if first {
                     Duration::from_secs(1)
@@ -1081,7 +1104,9 @@ async fn admin_monitoring_stream(State(state): State<Arc<AppState>>, request: Re
                     check_data_processing_worker(state.as_ref())
                 );
                 let payload = payload_result
-                    .map(|payload| complete_monitoring_payload(payload, sequence, data_processing.ok))
+                    .map(|payload| {
+                        complete_monitoring_payload(payload, sequence, data_processing.ok)
+                    })
                     .unwrap_or_else(|error| {
                         json!({
                             "sequence": sequence,
@@ -1433,7 +1458,7 @@ async fn api_dispatch(State(state): State<Arc<AppState>>, request: Request) -> R
     // native API is enabled. This keeps job creation/status checks on the
     // same encrypted browser-session authorization as the rest of the app;
     // file downloads still fall back to the legacy R2 bridge below.
-    if is_legacy_background_job_path(request.uri().path()) {
+    if is_legacy_background_file_path(request.uri().path()) {
         if let Some(api) = state.native_api.as_ref()
             && api.handles(&request)
         {
@@ -1442,7 +1467,11 @@ async fn api_dispatch(State(state): State<Arc<AppState>>, request: Request) -> R
         return migration_proxy(State(state), request).await;
     }
     if let Some(platform) = state.microservices.as_ref() {
-        return platform.operations(request).await;
+        let path = request.uri().path().to_owned();
+        if is_read_service_request(request.method(), &path) {
+            return platform.read(request).await;
+        }
+        return platform.write(request).await;
     }
     if let Some(api) = state.native_api.as_ref()
         && api.handles(&request)
@@ -1461,7 +1490,13 @@ fn verify_internal_signature(
         .get("X-EPosyandu-Timestamp")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<i64>().ok())
-        .ok_or_else(|| failure(StatusCode::UNAUTHORIZED, "invalid_worker_request", "Permintaan Worker tidak valid."))?;
+        .ok_or_else(|| {
+            failure(
+                StatusCode::UNAUTHORIZED,
+                "invalid_worker_request",
+                "Permintaan Worker tidak valid.",
+            )
+        })?;
     let now = OffsetDateTime::now_utc().unix_timestamp();
     if (now - timestamp).abs() > INTERNAL_REQUEST_MAX_AGE_SECONDS {
         return Err(failure(
@@ -1474,7 +1509,13 @@ fn verify_internal_signature(
         .get("X-EPosyandu-Signature")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| hex::decode(value).ok())
-        .ok_or_else(|| failure(StatusCode::UNAUTHORIZED, "invalid_worker_request", "Permintaan Worker tidak valid."))?;
+        .ok_or_else(|| {
+            failure(
+                StatusCode::UNAUTHORIZED,
+                "invalid_worker_request",
+                "Permintaan Worker tidak valid.",
+            )
+        })?;
     let secret = env::var("RUST_WORKER_SHARED_SECRET").map_err(|_| {
         failure(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1509,9 +1550,21 @@ async fn internal_dispatch(State(state): State<Arc<AppState>>, request: Request)
     let body = match to_bytes(request.into_body(), INTERNAL_JOB_MAX_BODY_BYTES).await {
         Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
             Ok(body) => body,
-            Err(_) => return failure(StatusCode::UNPROCESSABLE_ENTITY, "invalid_worker_request", "Data job Worker tidak valid."),
+            Err(_) => {
+                return failure(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "invalid_worker_request",
+                    "Data job Worker tidak valid.",
+                );
+            }
         },
-        Err(_) => return failure(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", "Data job Worker terlalu besar."),
+        Err(_) => {
+            return failure(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload_too_large",
+                "Data job Worker terlalu besar.",
+            );
+        }
     };
     if let Err(response) = verify_internal_signature(&method, &headers, &body) {
         return response;
@@ -1624,9 +1677,9 @@ async fn main() {
     // Keep a read-only probe available for the admin status page even when
     // the gateway itself is still using the legacy Cloudflare auth path.
     // Domain services remain responsible for application reads and writes.
-    let health_database = native_database.clone().or_else(|| {
-        NativeDatabase::from_env().ok().map(Arc::new)
-    });
+    let health_database = native_database
+        .clone()
+        .or_else(|| NativeDatabase::from_env().ok().map(Arc::new));
     let native_auth = NativeAuth::from_env(client.clone(), native_database.clone())
         .expect("konfigurasi autentikasi native Oracle tidak valid")
         .map(Arc::new);
@@ -1674,10 +1727,7 @@ async fn main() {
 
     if let Some(database) = state.native_database.clone() {
         let hub = realtime.clone();
-        let cache = state
-            .native_api
-            .as_ref()
-            .and_then(|api| api.cache_handle());
+        let cache = state.native_api.as_ref().and_then(|api| api.cache_handle());
         tokio::spawn(async move {
             database.listen_realtime(hub, cache).await;
         });
@@ -1797,9 +1847,43 @@ mod tests {
     #[test]
     fn background_jobs_stay_on_the_legacy_queue_route_during_migration() {
         assert!(is_legacy_background_job_path("/api/v1/jobs"));
-        assert!(is_legacy_background_job_path("/api/v1/jobs/01234567-89ab-cdef-0123-456789abcdef"));
-        assert!(is_legacy_background_job_path("/api/v1/jobs/01234567-89ab-cdef-0123-456789abcdef/file"));
-        assert!(!is_legacy_background_job_path("/api/v1/collections/children"));
+        assert!(is_legacy_background_job_path(
+            "/api/v1/jobs/01234567-89ab-cdef-0123-456789abcdef"
+        ));
+        assert!(is_legacy_background_job_path(
+            "/api/v1/jobs/01234567-89ab-cdef-0123-456789abcdef/file"
+        ));
+        assert!(!is_legacy_background_job_path(
+            "/api/v1/collections/children"
+        ));
+    }
+
+    #[test]
+    fn read_write_router_keeps_analysis_on_read_service() {
+        assert!(is_read_service_request(
+            &Method::GET,
+            "/api/v1/children/page"
+        ));
+        assert!(is_read_service_request(
+            &Method::POST,
+            "/api/v1/analysis/dashboard-stats"
+        ));
+        assert!(!is_read_service_request(&Method::POST, "/api/v1/sync"));
+        assert!(!is_read_service_request(
+            &Method::PATCH,
+            "/api/v1/collections/children/1"
+        ));
+    }
+
+    #[test]
+    fn only_job_files_use_the_legacy_file_bridge() {
+        assert!(!is_legacy_background_file_path("/api/v1/jobs"));
+        assert!(!is_legacy_background_file_path(
+            "/api/v1/jobs/01234567-89ab-cdef-0123-456789abcdef"
+        ));
+        assert!(is_legacy_background_file_path(
+            "/api/v1/jobs/01234567-89ab-cdef-0123-456789abcdef/file"
+        ));
     }
 
     #[test]

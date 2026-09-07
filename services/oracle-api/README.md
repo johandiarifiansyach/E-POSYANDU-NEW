@@ -7,7 +7,7 @@ tetap tersedia di source untuk rollback darurat, tetapi dinonaktifkan pada
 deployment production microservices-only.
 
 Pada arsitektur microservices, `oracle-api` hanya menjadi API gateway. Domain
-identity, operations, realtime, monitoring, dan nutrition berjalan sebagai
+identity, read, write, realtime, monitoring, dan nutrition berjalan sebagai
 container terpisah. Browser tetap memakai HTTPS ke gateway; semua komunikasi
 antarservice native di jaringan Oracle memakai gRPC/HTTP2 dengan kontrak
 protobuf bersama. Queue Cloudflare hanya digunakan sebagai transport durable
@@ -23,14 +23,24 @@ Konfigurasi:
   Port internal tidak dipublish ke host. Metadata
   `x-eposyandu-service-token` memakai secret Vault `RUST_WORKER_SHARED_SECRET`.
 - `ORACLE_API_MICROSERVICES_ENABLED`: aktifkan delegasi gateway ke service
-  identity, operations, realtime, dan monitoring (default Compose `true`).
-- `ORACLE_API_IDENTITY_GRPC_URL`, `ORACLE_API_OPERATIONS_GRPC_URL`,
+  identity, read, write, realtime, dan monitoring (default Compose `true`).
+- `ORACLE_API_IDENTITY_GRPC_URL`, `ORACLE_API_READ_GRPC_URL`,
+  `ORACLE_API_WRITE_GRPC_URL`, `ORACLE_API_OPERATIONS_GRPC_URL` (rollback),
   `ORACLE_API_REALTIME_GRPC_URL`, dan `ORACLE_API_MONITORING_GRPC_URL`:
   default ke socket UDS masing-masing di `/run/e-posyandu`. Gunakan URL
   `http://HOST:PORT` untuk domain service lintas server/platform.
 - `ORACLE_API_MIGRATION_PROXY_ENABLED`: harus `false` pada production
   microservices-only. Hanya aktifkan saat rollback terencana.
 - `ORACLE_API_LISTEN_ADDR`: default `0.0.0.0:8081`.
+- `ORACLE_DATABASE_POOL_SIZE`: batas koneksi PostgreSQL per service (default
+  `5`, maksimum `10`). Pool memakai antrean FIFO dan statement cache per
+  koneksi agar request tidak membuat koneksi/parse SQL baru setiap kali.
+- `ORACLE_DATABASE_POOL_WAIT_TIMEOUT_SECONDS`: batas menunggu slot pool
+  (default `2`). `0` menonaktifkan batas waktu.
+- `ORACLE_DATABASE_POOL_CREATE_TIMEOUT_SECONDS`: batas membuat koneksi baru
+  (default `5`). `0` menonaktifkan batas waktu.
+- `ORACLE_DATABASE_POOL_RECYCLE_TIMEOUT_SECONDS`: batas pemeriksaan koneksi
+  saat dikembalikan ke pool (default `2`). `0` menonaktifkan batas waktu.
 - `GET /api/v1/realtime/stream`: SSE perubahan data aplikasi. Event hanya
   memuat metadata perubahan; Oracle menerbitkannya lewat PostgreSQL `NOTIFY`
   dan memfilter cakupan desa/posyandu sebelum dikirim ke browser.
@@ -43,6 +53,21 @@ Redis bersifat cache sementara, bukan sumber data. Mutasi data menaikkan versi
 cache dan PostgreSQL native tetap menjadi satu-satunya sumber kebenaran. Kegagalan
 operasi Redis setelah proses berjalan tidak menggagalkan baca/tulis PostgreSQL;
 readiness berubah menjadi `degraded` agar gangguan cache tetap terlihat.
+
+## Jalur baca PostgreSQL
+
+`native_db.rs` menggunakan pool `deadpool-postgres` berbatas. Query REST, RPC,
+enrichment, dan transaksi tulis memakai prepared statement (dengan cache per
+koneksi), sedangkan nilai pengguna tetap dikirim sebagai parameter—tidak ada
+interpolasi nilai ke SQL. Halaman balita, ASI, MPASI, riwayat, dan dashboard
+selalu dipaginasi; Rust membaca fungsi PostgreSQL yang mengambil proyeksi
+`measurement_analysis`/`dashboard_analysis` yang telah dihitung Python.
+
+Migration `044_read_path_indexes.sql` menambahkan indeks jalur panas untuk
+scope/umur balita, urutan terbaru, lookup pengukuran/MPASI per child, riwayat,
+serta versi hasil Python. Indeks ini hanya mempercepat baca dan tidak mengubah
+perhitungan WHO atau status gizi. `ANALYZE` dijalankan di akhir migrasi agar
+planner memiliki statistik terbaru.
 
 Saat PostgreSQL native aktif, `oracle-api` menjalankan `eposyandu_cleanup_retention`
 setiap 24 jam. Item Recycle Bin yang lebih lama dari 30 hari dihapus permanen;

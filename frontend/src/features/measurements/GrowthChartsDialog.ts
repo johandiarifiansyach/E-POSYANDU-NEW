@@ -6,6 +6,7 @@ import { showError, showSuccess } from '../../ui/notifications';
 import { requestGrowthAnalysis, requestPythonGrowthChart } from '../../api/analysisApi';
 import { GROWTH_CHART_LABELS, GROWTH_CHART_TYPES, safeChildFileName } from './growthCharts';
 import { GrowthAnalysisSkeleton, GrowthChartSkeleton } from '../../ui/skeleton';
+import { jsPDF } from 'jspdf';
 
 function downloadBlob(blob, fileName) {
   const url = URL.createObjectURL(blob);
@@ -16,6 +17,70 @@ function downloadBlob(blob, fileName) {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+function childChartIdentity(child) {
+  const name = String(child?.nama || 'Balita');
+  const posyandu = String(child?.posyandu || '').trim();
+  const desa = String(child?.desa || child?.village || '').trim();
+  return [name, posyandu ? `Posyandu: ${posyandu}` : '', desa ? `Desa: ${desa}` : '']
+    .filter(Boolean)
+    .join(' • ');
+}
+
+function childChartHeader(child) {
+  const gender = child?.jk === 'P' ? 'Perempuan' : 'Laki-laki';
+  const posyandu = String(child?.posyandu || '').trim();
+  const desa = String(child?.desa || child?.village || '').trim();
+  return [
+    String(child?.nama || 'Balita'),
+    posyandu ? `Posyandu: ${posyandu}` : '',
+    desa ? `Desa: ${desa}` : '',
+    gender,
+    'usia lahir–5 tahun',
+  ].filter(Boolean).join(' • ');
+}
+
+function rasterizeSvg(svg, scale = 2) {
+  return new Promise((resolve, reject) => {
+    if (typeof document === 'undefined' || typeof Image === 'undefined') {
+      reject(new Error('Browser tidak mendukung ekspor grafik.'));
+      return;
+    }
+    const objectUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+    const image = new Image();
+    const cleanup = () => URL.revokeObjectURL(objectUrl);
+    image.onload = () => {
+      const width = Number(image.naturalWidth || image.width || 1200);
+      const height = Number(image.naturalHeight || image.height || 760);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      const context = canvas.getContext('2d');
+      if (!context) {
+        cleanup();
+        reject(new Error('Canvas ekspor grafik tidak tersedia.'));
+        return;
+      }
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/png');
+      canvas.toBlob((blob) => {
+        cleanup();
+        if (!blob) {
+          reject(new Error('PNG grafik tidak dapat dibuat.'));
+          return;
+        }
+        resolve({ blob, dataUrl, width, height });
+      }, 'image/png');
+    };
+    image.onerror = () => {
+      cleanup();
+      reject(new Error('SVG grafik tidak dapat dirasterisasi menjadi PNG.'));
+    };
+    image.src = objectUrl;
+  });
 }
 
 function parseSafeSvg(markup) {
@@ -95,6 +160,8 @@ function GrowthAnalysisPanel({ state }) {
   const recommendations = Array.isArray(analysis.recommendations) ? analysis.recommendations : [];
   const concern = analysis.nutritionConcern || null;
   const education = analysis.nutritionEducation || null;
+  const concernRecommendations = concern?.recommendations || concern?.followUp || [];
+  const educationRecommendations = education?.recommendations || education?.followUp || [];
   return Native.createElement('section', { className: 'growth-chart-analysis', 'aria-label': 'Analisis Pertumbuhan' },
     Native.createElement('div', { className: 'growth-chart-analysis-header' },
       Native.createElement('div', null,
@@ -106,8 +173,8 @@ function GrowthAnalysisPanel({ state }) {
     Native.createElement('p', { className: 'growth-chart-analysis-summary' }, analysis.summary || 'Belum ada kesimpulan tren.'),
     concern && Native.createElement('section', { className: 'measurement-analysis-guidance' },
       Native.createElement('div', { className: 'growth-chart-analysis-list' },
-        Native.createElement('strong', null, concern.title || 'Edukasi singkat dan tindak lanjut'),
-        Native.createElement('p', null, concern.summary || 'Status gizi memerlukan tindak lanjut tenaga kesehatan.')
+        Native.createElement('strong', null, concern.title || 'Edukasi dan rekomendasi tindak lanjut'),
+        Native.createElement('p', null, concern.summary || 'Status gizi memerlukan rekomendasi tindak lanjut dari tenaga kesehatan.')
       ),
       concern.findings?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-findings' },
         concern.findings.map((finding, index) => Native.createElement('span', { key: `growth-finding-${index}` }, `${finding.indicator}: ${finding.status}`))
@@ -123,9 +190,9 @@ function GrowthAnalysisPanel({ state }) {
         Native.createElement('strong', null, 'Edukasi singkat'),
         Native.createElement('ul', null, concern.education.map((value, index) => Native.createElement('li', { key: `growth-education-${index}` }, value)))
       ),
-      concern.followUp?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
-        Native.createElement('strong', null, concern.urgency === 'segera' ? 'Tindak lanjut segera' : 'Tindak lanjut'),
-        Native.createElement('ul', null, concern.followUp.map((value, index) => Native.createElement('li', { key: `growth-follow-up-${index}` }, value)))
+      concernRecommendations.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
+        Native.createElement('strong', null, concern.urgency === 'segera' ? 'Rekomendasi tindak lanjut segera' : 'Rekomendasi tindak lanjut'),
+        Native.createElement('ul', null, concernRecommendations.map((value, index) => Native.createElement('li', { key: `growth-recommendation-${index}` }, value)))
       ),
       concern.disclaimer && Native.createElement('small', { className: 'measurement-analysis-guidance-disclaimer' }, concern.disclaimer)
     ),
@@ -139,9 +206,9 @@ function GrowthAnalysisPanel({ state }) {
         Native.createElement('strong', null, 'Edukasi sesuai usia dan persentase skrining'),
         Native.createElement('ul', null, education.education.map((value, index) => Native.createElement('li', { key: `growth-normal-education-${index}` }, value)))
       ),
-      education.followUp?.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
-        Native.createElement('strong', null, 'Pemantauan'),
-        Native.createElement('ul', null, education.followUp.map((value, index) => Native.createElement('li', { key: `growth-normal-follow-up-${index}` }, value)))
+      educationRecommendations.length > 0 && Native.createElement('div', { className: 'measurement-analysis-guidance-list' },
+        Native.createElement('strong', null, 'Rekomendasi tindak lanjut'),
+        Native.createElement('ul', null, educationRecommendations.map((value, index) => Native.createElement('li', { key: `growth-normal-recommendation-${index}` }, value)))
       ),
       education.disclaimer && Native.createElement('small', { className: 'measurement-analysis-guidance-disclaimer' }, education.disclaimer)
     ),
@@ -218,17 +285,57 @@ export default function GrowthChartsDialog({ child, history, onClose }) {
     };
   }, [onClose, exporting]);
 
-  const downloadPythonSvg = async () => {
-    setExporting('svg');
+  const requestChartSvg = async (chartType) => {
+    if (chartType === activeType && chartState.status === 'success' && chartState.svg) {
+      return chartState.svg;
+    }
+    const response = await requestPythonGrowthChart(child, history, chartType);
+    if (!response?.svg) throw new Error(`Grafik ${GROWTH_CHART_LABELS[chartType]} belum selesai dirender.`);
+    return response.svg;
+  };
+
+  const downloadActivePng = async () => {
+    setExporting('png');
     try {
-      if (chartState.status !== 'success' || !chartState.svg) {
-        throw new Error('Grafik Python belum selesai dirender.');
-      }
-      const blob = new Blob([chartState.svg], { type: 'image/svg+xml;charset=utf-8' });
-      downloadBlob(blob, `grafik-${activeType}-${safeChildFileName(child)}.svg`);
-      showSuccess(`Grafik ${GROWTH_CHART_LABELS[activeType]} berhasil diunduh dari Python.`);
+      const svg = await requestChartSvg(activeType);
+      const image = await rasterizeSvg(svg, 2);
+      downloadBlob(image.blob, `grafik-${activeType}-${safeChildFileName(child)}.png`);
+      showSuccess(`Grafik ${GROWTH_CHART_LABELS[activeType]} berhasil diunduh sebagai PNG.`);
     } catch (error) {
-      showError(error instanceof Error ? error.message : 'Grafik Python belum dapat diunduh.');
+      showError(error instanceof Error ? error.message : 'PNG grafik belum dapat diunduh.');
+    } finally {
+      setExporting('');
+    }
+  };
+
+  const downloadAllPdf = async () => {
+    setExporting('pdf');
+    try {
+      const documentPdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4', compress: true });
+      const pageWidth = documentPdf.internal.pageSize.getWidth();
+      const pageHeight = documentPdf.internal.pageSize.getHeight();
+      const margin = 6;
+      for (let index = 0; index < GROWTH_CHART_TYPES.length; index += 1) {
+        const chartType = GROWTH_CHART_TYPES[index];
+        const svg = await requestChartSvg(chartType);
+        const image = await rasterizeSvg(svg, 2);
+        if (index > 0) documentPdf.addPage();
+        const maxWidth = pageWidth - margin * 2;
+        const maxHeight = pageHeight - margin * 2;
+        const ratio = image.width / image.height;
+        let width = maxWidth;
+        let height = width / ratio;
+        if (height > maxHeight) {
+          height = maxHeight;
+          width = height * ratio;
+        }
+        documentPdf.addImage(image.dataUrl, 'PNG', (pageWidth - width) / 2, (pageHeight - height) / 2, width, height, undefined, 'FAST');
+      }
+      documentPdf.setProperties({ title: `Grafik Pertumbuhan WHO - ${childChartIdentity(child)}` });
+      documentPdf.save(`grafik-pertumbuhan-who-${safeChildFileName(child)}.pdf`);
+      showSuccess('Semua grafik pertumbuhan berhasil diunduh sebagai PDF.');
+    } catch (error) {
+      showError(error instanceof Error ? error.message : 'PDF grafik belum dapat diunduh.');
     } finally {
       setExporting('');
     }
@@ -250,7 +357,7 @@ export default function GrowthChartsDialog({ child, history, onClose }) {
       Native.createElement('header', { className: 'growth-chart-header' },
         Native.createElement('div', null,
           Native.createElement('h2', { id: 'growth-chart-dialog-title' }, 'Grafik Pertumbuhan WHO'),
-          Native.createElement('p', null, `${child?.nama || 'Balita'} • ${child?.jk === 'P' ? 'Perempuan' : 'Laki-laki'} • usia 0–60 bulan`)
+          Native.createElement('p', null, childChartHeader(child))
         ),
         Native.createElement('button', {
           type: 'button',
@@ -288,18 +395,18 @@ export default function GrowthChartsDialog({ child, history, onClose }) {
         Native.createElement(Button, {
           type: 'button',
           variant: 'secondary',
-          onClick: downloadPythonSvg,
+          onClick: downloadActivePng,
           disabled: Boolean(exporting),
-        }, exporting === 'svg' ? Native.createElement(Loader2, { className: 'h-4 w-4 animate-spin' }) : Native.createElement(FileDown, { className: 'h-4 w-4' }),
-          exporting === 'svg' ? 'Menyiapkan SVG...' : `Unduh ${GROWTH_CHART_LABELS[activeType]} (SVG)`
+        }, exporting === 'png' ? Native.createElement(Loader2, { className: 'h-4 w-4 animate-spin' }) : Native.createElement(FileDown, { className: 'h-4 w-4' }),
+          exporting === 'png' ? 'Menyiapkan PNG...' : `Unduh ${GROWTH_CHART_LABELS[activeType]} (PNG)`
         ),
         Native.createElement(Button, {
           type: 'button',
           variant: 'primary',
-          onClick: downloadPythonSvg,
+          onClick: downloadAllPdf,
           disabled: Boolean(exporting),
-        }, exporting === 'svg' ? Native.createElement(Loader2, { className: 'h-4 w-4 animate-spin' }) : Native.createElement(FileDown, { className: 'h-4 w-4' }),
-          exporting === 'svg' ? 'Menyiapkan SVG...' : 'Unduh Grafik Python (SVG)'
+        }, exporting === 'pdf' ? Native.createElement(Loader2, { className: 'h-4 w-4 animate-spin' }) : Native.createElement(FileDown, { className: 'h-4 w-4' }),
+          exporting === 'pdf' ? 'Menyiapkan PDF...' : 'Unduh Semua Grafik (PDF)'
         )
       )
     )

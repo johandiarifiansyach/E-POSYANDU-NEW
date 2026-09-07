@@ -386,7 +386,7 @@ begin
       'analysis', a.result_json, 'analysisPending', false
     ) end) order by elem.ordinality) from jsonb_array_elements(coalesce(v_result->'measurements', '[]'::jsonb)) with ordinality elem(value, ordinality)
       left join public.measurement_analysis a on a.measurement_id = elem.value->>'id'), '[]'::jsonb),
-    'mpasiLogs', coalesce(v_result->'mpasiLogs', '[]'::jsonb), 'total', coalesce(v_result->'total', 0), 'pageLimited', true,
+    'mpasiLogs', coalesce(v_result->'mpasiLogs', '[]'::jsonb), 'total', coalesce(v_result->'total', '0'::jsonb), 'pageLimited', true,
     'calculator', 'python-deterministic-lms', 'analytics', 'postgresql-read-python-write-v1', 'standardsVersion', 'WHO-2006-2007-LMS',
     'analysisVersion', (select coalesce(max(analysis_version), 0) from public.measurement_analysis)
   );

@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import html
 import math
+import os
 import re
 from typing import Any
 
 from . import ml, who
+from .runtime import TtlLruCache, payload_fingerprint
 
 
 WIDTH = 1200
@@ -41,6 +43,42 @@ CURVE_COLORS = {
     3: "#262626",
 }
 CHART_TYPES = ("bbu", "tbu", "bbtb", "imtu", "lilau", "lku")
+
+
+def _cache_size() -> int:
+    try:
+        value = int(os.environ.get("ANALYSIS_GRAPH_CACHE_SIZE", "256"))
+    except (TypeError, ValueError):
+        value = 256
+    return max(1, min(2_000, value))
+
+
+def _cache_ttl() -> float:
+    try:
+        value = float(os.environ.get("ANALYSIS_GRAPH_CACHE_TTL_SECONDS", "900"))
+    except (TypeError, ValueError):
+        value = 900.0
+    return max(0.0, value)
+
+
+# A chart is deterministic for the complete request payload and the checked-in
+# WHO standards. Keep a bounded, process-local cache so reopening a chart does
+# not rerender all LMS curves. It is deliberately volatile (no health data is
+# written to disk) and the key includes every point, sex, chart type, language,
+# and displayed name to prevent cross-input reuse.
+_GRAPH_CACHE: TtlLruCache[str] = TtlLruCache(_cache_size(), _cache_ttl())
+
+
+def clear_graph_cache() -> None:
+    """Clear rendered chart SVGs after a standards or release change."""
+
+    _GRAPH_CACHE.clear()
+
+
+def graph_cache_stats() -> dict[str, int]:
+    """Expose bounded, non-sensitive chart-cache counters for diagnostics."""
+
+    return _GRAPH_CACHE.stats()
 
 
 def _escape(value: Any) -> str:
@@ -216,9 +254,23 @@ def _chart_spec(chart_type: str, sex: str, points: list[dict[str, Any]]) -> tupl
     reference = who.standards()
     normalized_sex = "P" if str(sex).upper() == "P" else "L"
     if chart_type == "bbu":
-        return "Berat Badan menurut Umur (BB/U)", "Umur (bulan)", "Berat badan (kg)", "kg", [(float(i), row) for i, row in enumerate(reference["weightForAge"][normalized_sex])], [(float(_age_months(p)), _positive_value(p, "weight"), _measurement_date(p), _weight_gain_status(p)) for p in points if _age_months(p) is not None and _positive_value(p, "weight") is not None]
+        return "Berat Badan menurut Umur (BB/U)", "Umur (bulan dan tahun selesai)", "Berat badan (kg)", "kg", [(float(i), row) for i, row in enumerate(reference["weightForAge"][normalized_sex])], [(float(_age_months(p)), _positive_value(p, "weight"), _measurement_date(p), _weight_gain_status(p)) for p in points if _age_months(p) is not None and _positive_value(p, "weight") is not None]
     if chart_type == "tbu":
-        return "Panjang/Tinggi Badan menurut Umur (PB atau TB/U)", "Umur (bulan)", "Panjang/tinggi badan (cm)", "cm", [(float(i), row) for i, row in enumerate(reference["lengthHeightForAge"][normalized_sex])], [(float(_age_months(p)), _positive_value(p, "height"), _measurement_date(p), _weight_gain_status(p)) for p in points if _age_months(p) is not None and _positive_value(p, "height") is not None]
+        chart_points = []
+        for point in points:
+            age, height = _age_months(point), _positive_value(point, "height")
+            if age is None or height is None:
+                continue
+            method = str(point.get("measurement_method", point.get("measurementMethod", "")) or "")
+            chart_points.append(
+                (
+                    age,
+                    who.adjusted_length_height(height, int(round(age)), method),
+                    _measurement_date(point),
+                    _weight_gain_status(point),
+                )
+            )
+        return "Panjang/Tinggi Badan menurut Umur (PB atau TB/U)", "Umur (bulan dan tahun selesai)", "Panjang/tinggi badan (cm)", "cm", [(float(i), row) for i, row in enumerate(reference["lengthHeightForAge"][normalized_sex])], chart_points
     if chart_type == "imtu":
         rows = [(float(i), row) for i, row in enumerate(reference["bmiForAge"][normalized_sex])]
         chart_points = []
@@ -228,15 +280,21 @@ def _chart_spec(chart_type: str, sex: str, points: list[dict[str, Any]]) -> tupl
                 adjusted = who.adjusted_length_height(height, int(round(age)), str(point.get("measurement_method", point.get("measurementMethod", "")) or ""))
                 if adjusted > 0:
                     chart_points.append((age, weight / (adjusted / 100) ** 2, _measurement_date(point), _weight_gain_status(point)))
-        return "Indeks Massa Tubuh menurut Umur (IMT/U)", "Umur (bulan)", "IMT (kg/m²)", "kg/m²", rows, chart_points
+        return "Indeks Massa Tubuh menurut Umur (IMT/U)", "Umur (bulan dan tahun selesai)", "IMT (kg/m²)", "kg/m²", rows, chart_points
     if chart_type in ("lilau", "lku"):
         indicator = "lila" if chart_type == "lilau" else "lk"
         value_key = "lila" if chart_type == "lilau" else "head"
         label = "Lingkar Lengan Atas menurut Umur (LILA/U)" if chart_type == "lilau" else "Lingkar Kepala menurut Umur (LK/U)"
         y_label = "Lingkar lengan atas (cm)" if chart_type == "lilau" else "Lingkar kepala (cm)"
         rows = [(float(row[0]), row[1:]) for row in who.circumference_standards().get(indicator, {}).get(normalized_sex, [])]
-        chart_points = [(float(_age_months(p)), _positive_value(p, value_key), _measurement_date(p), _weight_gain_status(p)) for p in points if _age_months(p) is not None and _positive_value(p, value_key) is not None]
-        return label, "Umur (bulan)", y_label, "cm", rows, chart_points
+        chart_points = [
+            (float(_age_months(p)), _positive_value(p, value_key), _measurement_date(p), _weight_gain_status(p))
+            for p in points
+            if _age_months(p) is not None
+            and (chart_type != "lilau" or _age_months(p) >= 3)
+            and _positive_value(p, value_key) is not None
+        ]
+        return label, "Umur (bulan dan tahun selesai)", y_label, "cm", rows, chart_points
     if chart_type == "bbtb":
         ages = [_age_months(p) for p in points if _age_months(p) is not None]
         use_length = not ages or max(ages) <= 24
@@ -260,7 +318,13 @@ def _chart_spec(chart_type: str, sex: str, points: list[dict[str, Any]]) -> tupl
     raise ValueError("Jenis grafik pertumbuhan tidak didukung.")
 
 
-def render_growth_chart(chart_type: str, sex: str, points: list[dict[str, Any]], child_name: str = "", language: str = "id") -> str:
+def _render_growth_chart_uncached(
+    chart_type: str,
+    sex: str,
+    points: list[dict[str, Any]],
+    child_name: str = "",
+    language: str = "id",
+) -> str:
     """Return an Indonesian WHO-style chart with a dense reference grid.
 
     The LMS values are exactly the same values used by ``who.py``.  The
@@ -289,18 +353,26 @@ def render_growth_chart(chart_type: str, sex: str, points: list[dict[str, Any]],
     y_min = math.floor(raw_y_min / y_step) * y_step
     y_max = math.ceil(raw_y_max / y_step) * y_step
     age_axis = chart_type in {"bbu", "tbu", "imtu", "lilau", "lku"}
-    # Keep every age-based chart on the common birth–60 month axis.  LILA/U
-    # reference values start at month 3, but the chart still needs to show the
-    # birth origin and the same monthly grid as the other WHO sheets.
-    x_min, x_max = (0.0, 60.0) if age_axis else (reference[0][0], reference[-1][0])
+    # WHO LILA/U standards begin at 3 completed months. Starting that chart
+    # at month 3 keeps every SD curve anchored to the plot border instead of
+    # leaving a visually cut-off segment between birth and the first standard.
+    x_min, x_max = (
+        (3.0, 60.0) if chart_type == "lilau" else (0.0, 60.0)
+    ) if age_axis else (reference[0][0], reference[-1][0])
 
     # The coloured frame leaves the plot white, like the supplied WHO sheets.
     panel_left, panel_top = 72.0, 96.0
-    panel_right, panel_bottom = WIDTH - 72.0, 704.0
+    panel_right, panel_bottom = WIDTH - 40.0, 704.0
     plot_left, plot_top = 132.0, 120.0
-    plot_right, plot_bottom = WIDTH - 132.0, 650.0
+    plot_right, plot_bottom = WIDTH - 180.0, 650.0
     plot_width = plot_right - plot_left
     plot_height = plot_bottom - plot_top
+    # Reserve a white strip for the coloured SD labels, then a separate
+    # coloured strip for the mirrored numeric y-axis ticks. This reproduces
+    # the spacing in the supplied WHO sheets and prevents labels from
+    # colliding with values such as 22/23.
+    sd_strip_right = plot_right + 70.0
+    right_axis_x = sd_strip_right + (panel_right - sd_strip_right) / 2.0
 
     def sx(value: float) -> float:
         return plot_left + (value - x_min) / max(1e-9, x_max - x_min) * plot_width
@@ -314,12 +386,13 @@ def render_growth_chart(chart_type: str, sex: str, points: list[dict[str, Any]],
         # other browsers when CSS sets the responsive width and height:auto.
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="title desc">',
         f'<title id="title">{_escape(title)}</title>',
-        f'<desc id="desc">Grafik standar pertumbuhan WHO 0 sampai 60 bulan untuk {sex_label}, dengan kurva {curve_description} SD dan titik pengukuran balita.</desc>',
+        f'<desc id="desc">Grafik standar pertumbuhan WHO {"3 bulan sampai 5 tahun" if chart_type == "lilau" else "lahir sampai 5 tahun"} untuk {sex_label}, dengan kurva {curve_description} SD dan titik pengukuran balita.</desc>',
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#ffffff"/>',
         f'<rect x="{panel_left:.0f}" y="{panel_top:.0f}" width="{panel_right - panel_left:.0f}" height="{panel_bottom - panel_top:.0f}" rx="2" fill="{sex_color}"/>',
+        f'<rect x="{plot_right + 1:.0f}" y="{plot_top:.0f}" width="{sd_strip_right - plot_right - 1:.0f}" height="{plot_height:.0f}" fill="#ffffff"/>',
         f'<rect x="{plot_left:.0f}" y="{plot_top:.0f}" width="{plot_width:.0f}" height="{plot_height:.0f}" fill="#ffffff" stroke="#4b4b4b" stroke-width="1.4"/>',
         f'<text x="{WIDTH / 2:.0f}" y="44" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" font-weight="700" fill="{sex_color}">{_escape(title)}</text>',
-        f'<text x="{WIDTH / 2:.0f}" y="70" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" fill="#252525">{_escape(sex_label)} • Standar Pertumbuhan Anak WHO 0–5 tahun{(" • " + _escape(child_name)) if child_name else ""}</text>',
+        f'<text x="{WIDTH / 2:.0f}" y="70" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" fill="#252525">{_escape(sex_label)} • Standar Pertumbuhan Anak WHO {"3 bulan–5 tahun" if chart_type == "lilau" else "lahir–5 tahun"}{(" • " + _escape(child_name)) if child_name else ""}</text>',
         f'<text x="{panel_left + 26:.0f}" y="{plot_top - 10:.0f}" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#ffffff">{_escape(y_label)}</text>',
     ]
 
@@ -335,23 +408,35 @@ def render_growth_chart(chart_type: str, sex: str, points: list[dict[str, Any]],
         if major:
             label = f"{y_value:g}"
             parts.append(f'<text x="{panel_left + 43:.2f}" y="{y + 4:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#ffffff">{label}</text>')
-            parts.append(f'<text x="{panel_right - 43:.2f}" y="{y + 4:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#ffffff">{label}</text>')
+            parts.append(f'<text x="{right_axis_x:.2f}" y="{y + 4:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#ffffff">{label}</text>')
         y_value += y_minor
         y_count += 1
 
     # Dense vertical grid.  Age charts use monthly lines and darker yearly
     # boundaries; size-based BB/PB and BB/TB use centimetres with 5-unit major
-    # intervals.
+    # intervals.  PB/TB-U also marks the WHO measurement-method transition at
+    # 24 completed months with a dashed annual-grid boundary.
     x_minor = 1.0 if age_axis else 1.0
     x_major = 12.0 if age_axis else (5.0 if x_max - x_min <= 40 else 10.0)
     x_value = x_min
     x_count = 0
     while x_value <= x_max + x_minor * 0.01 and x_count < 500:
         x = sx(x_value)
-        major = abs(((x_value - x_min) / x_major) - round((x_value - x_min) / x_major)) < 1e-6
-        parts.append(f'<line x1="{x:.2f}" y1="{plot_top:.2f}" x2="{x:.2f}" y2="{plot_bottom:.2f}" stroke="{("#666666" if major else "#a7a7a7")}" stroke-width="{("1.35" if major else "0.72")}"/>')
+        # Age grids are anchored to the real month number.  This matters for
+        # LILA/U, whose standards begin at month 3: yearly boundaries must
+        # still land at 12, 24, 36, 48, and 60 rather than at 15, 27, ... .
+        x_origin = 0.0 if age_axis else x_min
+        major = abs(((x_value - x_origin) / x_major) - round((x_value - x_origin) / x_major)) < 1e-6
+        # WHO sheets use a clearly heavier boundary for each completed year;
+        # keep monthly lines light while making the annual structure visible
+        # on both the screen chart and the downloaded image/PDF.
+        major_width = "2.8" if age_axis and major else "1.35" if major else "0.72"
+        transition = chart_type == "tbu" and abs(x_value - 24.0) < 1e-6
+        dash = ' stroke-dasharray="8 6"' if transition else ""
+        title = '<title>Transisi PB ke TB pada usia 24 bulan</title>' if transition else ""
+        parts.append(f'<line x1="{x:.2f}" y1="{plot_top:.2f}" x2="{x:.2f}" y2="{plot_bottom:.2f}" stroke="{("#666666" if major else "#a7a7a7")}" stroke-width="{major_width}"{dash}>{title}</line>')
         if age_axis:
-            month = int(round(x_value - x_min))
+            month = int(round(x_value))
             if month == 0 and not major:
                 label = "Lahir"
             elif month % 2 == 0 and not major:
@@ -361,10 +446,10 @@ def render_growth_chart(chart_type: str, sex: str, points: list[dict[str, Any]],
             if label:
                 parts.append(f'<text x="{x:.2f}" y="{plot_bottom + 18:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#ffffff">{label}</text>')
             if major:
-                year = int(round((x_value - x_min) / 12))
+                year = int(round(x_value / 12))
                 year_label = "Lahir" if year == 0 else f"{year} tahun"
                 parts.append(f'<text x="{x:.2f}" y="{plot_bottom + 39:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#ffffff">{year_label}</text>')
-        elif abs(((x_value - x_min) / x_major) - round((x_value - x_min) / x_major)) < 1e-6:
+        elif major:
             parts.append(f'<text x="{x:.2f}" y="{plot_bottom + 24:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#ffffff">{x_value:g}</text>')
         x_value += x_minor
         x_count += 1
@@ -387,18 +472,16 @@ def render_growth_chart(chart_type: str, sex: str, points: list[dict[str, Any]],
         parts.append(f'<text x="{plot_left + plot_width / 2:.2f}" y="{plot_top + plot_height / 2:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#4b4b4b">Belum ada titik pengukuran yang dapat diplot</text>')
     parts.append('</g>')
 
-    # SD labels sit just outside the plot on the coloured right band.  Keep
-    # them in their own right-hand column: the band also contains the
-    # mirrored y-axis tick labels, so placing both at ``plot_right + 16``
-    # makes values such as ``28 +3`` render on top of each other at the edge
-    # of the chart.  Right-aligning the SD labels against the panel edge
-    # leaves a small, stable gap between the two columns at every width.
+    # SD labels sit in the white strip immediately to the right of the plot.
+    # Mirrored numeric y-axis ticks remain in the coloured strip beyond it,
+    # matching the spacing in the supplied WHO sheets and avoiding collisions
+    # such as a tick value "23" touching the "+3" SD label.
     label_x, label_lms = reference[-1]
-    sd_label_x = panel_right - 10.0
+    sd_label_x = plot_right + (sd_strip_right - plot_right) / 2.0
     for z in curve_z:
         label_y = sy(_inverse_lms(z, label_lms))
         label = "0" if z == 0 else f"{z:+d}"
-        parts.append(f'<text x="{sd_label_x:.2f}" y="{label_y + 5:.2f}" text-anchor="end" font-family="Arial,sans-serif" font-size="15" font-weight="700" fill="{CURVE_COLORS[z]}">{label}</text>')
+        parts.append(f'<text x="{sd_label_x:.2f}" y="{label_y + 5:.2f}" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" font-weight="700" fill="{CURVE_COLORS[z]}">{label}</text>')
     parts.extend([
         f'<text x="{plot_left + plot_width / 2:.2f}" y="{HEIGHT - 24}" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" font-weight="700" fill="#252525">{_escape(x_label)}</text>',
         f'<text x="{panel_left + 13:.2f}" y="{plot_top + plot_height / 2:.2f}" transform="rotate(-90 {panel_left + 13:.2f} {plot_top + plot_height / 2:.2f})" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="700" fill="#ffffff">{_escape(y_label)}</text>',
@@ -406,3 +489,30 @@ def render_growth_chart(chart_type: str, sex: str, points: list[dict[str, Any]],
         '</svg>',
     ])
     return "".join(parts)
+
+
+def render_growth_chart(
+    chart_type: str,
+    sex: str,
+    points: list[dict[str, Any]],
+    child_name: str = "",
+    language: str = "id",
+) -> str:
+    """Render a chart, reusing an identical deterministic SVG when possible."""
+
+    cache_key = payload_fingerprint(
+        {
+            "standardsVersion": who.STANDARDS_VERSION,
+            "chartType": chart_type,
+            "sex": sex,
+            "points": points,
+            "childName": child_name,
+            "language": language,
+        }
+    )
+    cached = _GRAPH_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    svg = _render_growth_chart_uncached(chart_type, sex, points, child_name, language)
+    _GRAPH_CACHE.set(cache_key, svg)
+    return svg

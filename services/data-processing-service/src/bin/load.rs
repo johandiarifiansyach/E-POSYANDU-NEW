@@ -1,5 +1,5 @@
-use e_posyandu_data_processing_service::proto::data_processing_worker_client::DataProcessingWorkerClient;
 use e_posyandu_data_processing_service::proto::ProcessJobRequest;
+use e_posyandu_data_processing_service::proto::data_processing_worker_client::DataProcessingWorkerClient;
 use serde_json::json;
 use std::{env, io, sync::Arc, time::Instant};
 use tokio::{sync::Semaphore, task::JoinSet};
@@ -57,7 +57,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             "version": 1,
                             "payloadJson": "{}"
                         })).collect::<Vec<_>>()
-                    }).to_string(),
+                    })
+                    .to_string(),
                     actor_role: "Ahli Gizi".into(),
                     village: None,
                     posyandu: None,

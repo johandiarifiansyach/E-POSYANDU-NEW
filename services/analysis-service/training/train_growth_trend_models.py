@@ -44,6 +44,10 @@ from sklearn.pipeline import Pipeline
 TRAINING_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TRAINING_DIR.parent))
 from analysis_service.who import assess_item  # noqa: E402
+try:  # noqa: E402 - supports both script and package execution
+    from .parallel import map_processes
+except ImportError:  # pragma: no cover - direct ``python path/to/script.py``
+    from parallel import map_processes
 
 
 RANDOM_STATE = 20260831
@@ -146,7 +150,13 @@ def _status_for_measurement(weight: float, height: float, age_months: int, sex: 
     )
 
 
-def parse_cohort(source: Path, year: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _status_for_pending_measurement(values: tuple[float, float, int, str]) -> dict[str, Any]:
+    """Process-pool adapter; kept top-level so it is safely picklable."""
+
+    return _status_for_measurement(*values)
+
+
+def parse_cohort(source: Path, year: int, workers: int = 1) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     workbook = openpyxl.load_workbook(source, data_only=True, read_only=True)
     sheet = workbook[workbook.sheetnames[0]]
     # ``ReadOnlyWorksheet.cell`` reparses the XML stream for every random
@@ -155,6 +165,7 @@ def parse_cohort(source: Path, year: int) -> tuple[list[dict[str, Any]], dict[st
     rows = list(sheet.iter_rows(values_only=True))
     quality = Counter()
     observations: list[dict[str, Any]] = []
+    pending_statuses: list[tuple[float, float, int, str]] = []
     children = 0
 
     for base_index in range(5, len(rows), 7):
@@ -193,7 +204,7 @@ def parse_cohort(source: Path, year: int) -> tuple[list[dict[str, Any]], dict[st
             if not 0 <= age_months <= 60:
                 quality["pairs_age_outside_0_60"] += 1
                 continue
-            status = _status_for_measurement(weight, height, age_months, sex)
+            pending_statuses.append((weight, height, age_months, sex))
             observations.append(
                 {
                     "child_id": str(child_id),
@@ -204,12 +215,17 @@ def parse_cohort(source: Path, year: int) -> tuple[list[dict[str, Any]], dict[st
                     "sex_l": 1.0 if sex == "L" else 0.0,
                     "weight_kg": weight,
                     "height_cm": height,
-                    "statuses": {
-                        key: status[key]
-                        for key in ("bbu_status", "tbu_status", "bbtb_status")
-                    },
                 }
             )
+
+    # WHO status is still deterministic and identical; only independent
+    # offline rows are distributed across processes when explicitly requested.
+    statuses = map_processes(_status_for_pending_measurement, pending_statuses, workers)
+    for observation, status in zip(observations, statuses, strict=True):
+        observation["statuses"] = {
+            key: status[key]
+            for key in ("bbu_status", "tbu_status", "bbtb_status")
+        }
 
     quality["observations"] = len(observations)
     quality["children_with_observations"] = len({item["child_id"] for item in observations})
@@ -310,7 +326,8 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    observations, quality = parse_cohort(source, args.year)
+    workers = max(1, min(8, int(getattr(args, "workers", 1) or 1)))
+    observations, quality = parse_cohort(source, args.year, workers)
     examples = build_trend_examples(observations)
     if len(examples) < 100:
         raise ValueError("Contoh tren terlalu sedikit setelah pembersihan.")
@@ -395,6 +412,10 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             "testSize": args.test_size,
             "randomState": split_seed,
         },
+        "compute": {
+            "workers": workers,
+            "parallelism": "bounded-process-pool" if workers > 1 else "single-process",
+        },
     }
     artifact = {"models": models, "metadata": metadata}
     joblib.dump(artifact, output_dir / "growth_trend_models.joblib", compress=3)
@@ -415,6 +436,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True, help="Directory for local trend model artifacts")
     parser.add_argument("--year", type=int, default=2026, help="Year represented by the monthly columns")
     parser.add_argument("--test-size", type=float, default=0.2)
+    parser.add_argument("--workers", type=int, default=1, help="Offline parser processes (1 keeps parsing in-process)")
     return parser.parse_args()
 
 

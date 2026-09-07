@@ -188,7 +188,13 @@ export async function requestPythonGrowthChart(child, history, chartType) {
     body: JSON.stringify({
       chartType,
       sex: String(child?.jk || '').toUpperCase() === 'P' ? 'P' : 'L',
-      childName: child?.nama || '',
+      // The Python SVG is also used for PNG/PDF export, so include the
+      // location beside the child's name in the rendered chart identity.
+      childName: [
+        child?.nama || 'Balita',
+        child?.posyandu ? `Posyandu: ${child.posyandu}` : '',
+        child?.desa || child?.village ? `Desa: ${child.desa || child.village}` : '',
+      ].filter(Boolean).join(' • '),
       language: 'id',
       points,
     }),

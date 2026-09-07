@@ -1,0 +1,3 @@
+# Only the embedded persistence bridge needs a database driver.  Transport is
+# served by Rust/tonic, so grpcio is intentionally not installed here.
+psycopg[binary]==3.2.9

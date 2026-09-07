@@ -1,0 +1,10 @@
+# Offline-only dependencies. Do not install this file in the production gRPC
+# image; the online service intentionally stays on the Python standard library
+# plus grpcio/psycopg to keep memory and startup time predictable.
+numpy>=1.26,<3
+pandas>=2.1,<3
+polars>=1.0,<2
+openpyxl>=3.1,<4
+pypdf>=4,<7
+scikit-learn>=1.4,<2
+joblib>=1.3,<2
