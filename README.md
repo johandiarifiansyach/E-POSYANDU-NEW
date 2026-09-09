@@ -5,13 +5,22 @@ Aplikasi pencatatan balita, pengukuran, ASI eksklusif, MPASI, dan PMT untuk UPTD
 ## Struktur Proyek
 
 ```text
-frontend/              Aplikasi dan aset native HTML5, CSS, dan TypeScript
+frontend-react/        Frontend utama React 19 + TSX + TypeScript 7
+frontend-react/src/compat/
+                       Kontrak API, utilitas, aset, dan data referensi bersama
 backend/               API Rust untuk Cloudflare Workers
 database/migrations/   Riwayat migrasi PostgreSQL/Supabase
 docs/                  Panduan operasional dan monitoring
 scripts/               Otomasi database dan pemeliharaan
 tests/                 Pengujian kontrak lintas komponen
 ```
+
+Frontend utama menggunakan React dan TSX dengan kontrak API TypeScript yang
+ketat. Halaman, layout, dialog, modal, tabel, filter, feedback, skeleton,
+notifikasi, utilitas ikon, dan alur autentikasi berada di `frontend-react/`.
+Modul bersama yang sebelumnya berada pada frontend native kini dipindahkan ke
+`frontend-react/src/compat/`; modul tersebut hanya dipakai sebagai kontrak,
+utilitas, data WHO, dan stylesheet bersama, bukan sebagai renderer native.
 
 ## Infrastruktur Produksi
 
@@ -77,5 +86,14 @@ Urutan migrasi ada di [database/README.md](database/README.md), sedangkan prosed
 Status pengembangan fitur operasional ada di [docs/ROADMAP.md](docs/ROADMAP.md).
 Panduan kepemilikan folder dan penempatan file baru ada di [docs/STRUCTURE.md](docs/STRUCTURE.md).
 
-Seluruh antarmuka memakai HTML5, CSS, dan TypeScript dengan elemen DOM browser langsung. Tidak ada React, JSX/TSX, virtual DOM, atau runtime rekonsiliasi.
+Pemeriksaan frontend React lokal:
+
+```bash
+npm run frontend:react:check
+npm run frontend:react:build
+npm run frontend:react:test -- --workers=1
+```
+
+Seluruh perubahan frontend pada tahap migrasi ini diverifikasi lokal dan tidak
+menjalankan deployment otomatis.
 # skills-copilot-codespaces-vscode

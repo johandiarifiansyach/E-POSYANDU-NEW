@@ -43,7 +43,7 @@ def _circumference_source_path() -> Path:
     packaged = Path(__file__).resolve().parents[1] / "data" / "whoGrowthLms.ts"
     if packaged.exists():
         return packaged
-    return _repository_root() / "frontend" / "src" / "data" / "whoGrowthLms.ts"
+    return _repository_root() / "frontend-react" / "src" / "compat" / "data" / "whoGrowthLms.ts"
 
 
 @lru_cache(maxsize=1)

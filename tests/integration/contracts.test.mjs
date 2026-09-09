@@ -7,16 +7,16 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const readJson = async (path) => JSON.parse(await readFile(resolve(root, path), 'utf8'));
 const API_MODULES = [
-  'frontend/src/api/client.ts',
-  'frontend/src/api/httpClient.ts',
-  'frontend/src/api/authApi.ts',
-  'frontend/src/api/childrenApi.ts',
-  'frontend/src/api/measurementApi.ts',
-  'frontend/src/api/analysisApi.ts',
-  'frontend/src/api/dashboardApi.ts',
-  'frontend/src/api/exportApi.ts',
-  'frontend/src/api/syncApi.ts',
-  'frontend/src/api/legacyClient.ts'
+  'frontend-react/src/compat/api/client.ts',
+  'frontend-react/src/compat/api/httpClient.ts',
+  'frontend-react/src/compat/api/authApi.ts',
+  'frontend-react/src/compat/api/childrenApi.ts',
+  'frontend-react/src/compat/api/measurementApi.ts',
+  'frontend-react/src/compat/api/analysisApi.ts',
+  'frontend-react/src/compat/api/dashboardApi.ts',
+  'frontend-react/src/compat/api/exportApi.ts',
+  'frontend-react/src/compat/api/syncApi.ts',
+  'frontend-react/src/compat/api/legacyClient.ts'
 ];
 const readApiClient = async () =>
   (await Promise.all(API_MODULES.map((path) => readFile(resolve(root, path), 'utf8')))).join('\n');
@@ -35,9 +35,9 @@ async function readSourceTree(path) {
 
 test('label akun gizi konsisten sebagai Ahli Gizi dan role lama tidak diubah', async () => {
   const [frontend, backend, dashboard, roleMigration, adminMigration] = await Promise.all([
-    readSourceTree('frontend/src'),
+    readSourceTree('frontend-react/src/compat'),
     readSourceTree('backend/src'),
-    readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8'),
+    readFile(resolve(root, 'frontend-react/src/compat/app/dashboard.ts'), 'utf8'),
     readFile(resolve(root, 'database/migrations/003_app_users.sql'), 'utf8'),
     readFile(resolve(root, 'database/migrations/029_super_admin_access.sql'), 'utf8')
   ]);
@@ -50,7 +50,7 @@ test('label akun gizi konsisten sebagai Ahli Gizi dan role lama tidak diubah', a
 });
 
 test('callback pemulihan admin hanya dipakai pada path aktivasi khusus', async () => {
-  const app = await readFile(resolve(root, 'frontend/src/App.ts'), 'utf8');
+  const app = await readFile(resolve(root, 'frontend-react/src/compat/App.ts'), 'utf8');
 
   assert.match(app, /callbackType === 'invite'/);
   assert.match(
@@ -67,7 +67,7 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '044_read_path_indexes.sql');
+  assert.equal(files.at(-1), '046_super_admin_scope_materialized_reads.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
@@ -367,7 +367,7 @@ test('dashboard, masalah gizi, dan ASI memakai sumber serta cakupan data yang sa
     resolve(root, 'database/migrations/014_unify_dashboard_report_counts.sql'),
     'utf8'
   );
-  const dashboard = await readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8');
+  const dashboard = await readFile(resolve(root, 'frontend-react/src/compat/app/dashboard.ts'), 'utf8');
   const client = await readApiClient();
 
   assert.match(migration, /create or replace function public\.eposyandu_problem_children_page/);
@@ -392,7 +392,7 @@ test('dashboard, masalah gizi, dan ASI memakai sumber serta cakupan data yang sa
 test('halaman balita hanya membaca cache untuk ID yang sedang ditampilkan', async () => {
   const client = await readApiClient();
   const offlineStore = await readFile(
-    resolve(root, 'frontend/src/services/offlineStore.ts'),
+    resolve(root, 'frontend-react/src/compat/services/offlineStore.ts'),
     'utf8'
   );
   const cacheRemoteDocuments = offlineStore.slice(
@@ -469,10 +469,10 @@ test('administrasi akun dan monitoring realtime hanya tersedia untuk administrat
     readFile(resolve(root, 'services/oracle-api/src/native_auth.rs'), 'utf8'),
     readFile(resolve(root, 'services/oracle-api/src/main.rs'), 'utf8'),
     readFile(resolve(root, 'services/oracle-api/src/system_metrics.rs'), 'utf8'),
-    readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8'),
-    readFile(resolve(root, 'frontend/src/pages/AdminBackendPage.ts'), 'utf8'),
-    readFile(resolve(root, 'frontend/src/pages/AdminMonitoringPanel.ts'), 'utf8'),
-    readFile(resolve(root, 'frontend/src/api/legacyClient.ts'), 'utf8')
+    readFile(resolve(root, 'frontend-react/src/compat/app/dashboard.ts'), 'utf8'),
+    readFile(resolve(root, 'frontend-react/src/compat/pages/AdminBackendPage.ts'), 'utf8'),
+    readFile(resolve(root, 'frontend-react/src/compat/pages/AdminMonitoringPanel.ts'), 'utf8'),
+    readFile(resolve(root, 'frontend-react/src/compat/api/legacyClient.ts'), 'utf8')
   ]);
 
   assert.match(oracleMain, /\/api\/v1\/admin\/accounts/);
@@ -499,7 +499,7 @@ test('administrasi akun dan monitoring realtime hanya tersedia untuk administrat
   assert.match(page, /admin-backend-tabs/);
   assert.match(page, /admin-account-modal-backdrop/);
   assert.match(page, /activeSection === 'monitoring'/);
-  assert.match(await readFile(resolve(root, 'frontend/src/pages/MfaPage.ts'), 'utf8'), /Daftarkan passkey baru/);
+  assert.match(await readFile(resolve(root, 'frontend-react/src/compat/pages/MfaPage.ts'), 'utf8'), /Daftarkan passkey baru/);
   assert.match(monitoringPanel, /new EventSource\(getAdminMonitoringStreamUrl\(\)/);
   assert.match(monitoringPanel, /source\?\.close\(\)/);
   assert.match(monitoringPanel, /visibilitychange/);
@@ -510,9 +510,9 @@ test('administrasi akun dan monitoring realtime hanya tersedia untuk administrat
   assert.match(client, /reportAccountPresence/);
   assert.match(client, /getAdminMonitoringStreamUrl/);
   assert.match(client, /subscribeToRealtime/);
-  assert.match(await readFile(resolve(root, 'frontend/src/security/webauthn.ts'), 'utf8'), /InvalidStateError/);
-  assert.match(await readFile(resolve(root, 'frontend/src/security/webauthn.ts'), 'utf8'), /activeCeremony/);
-  assert.match(await readFile(resolve(root, 'frontend/src/security/webauthn.ts'), 'utf8'), /passkeyErrorMessage/);
+  assert.match(await readFile(resolve(root, 'frontend-react/src/compat/security/webauthn.ts'), 'utf8'), /InvalidStateError/);
+  assert.match(await readFile(resolve(root, 'frontend-react/src/compat/security/webauthn.ts'), 'utf8'), /activeCeremony/);
+  assert.match(await readFile(resolve(root, 'frontend-react/src/compat/security/webauthn.ts'), 'utf8'), /passkeyErrorMessage/);
 });
 
 test('ringkasan AI pertumbuhan tidak diekspos sebelum layanan siap', async () => {
@@ -559,7 +559,7 @@ test('Neon mengambil alih baca hanya untuk sesi Supabase yang pernah diverifikas
 
 test('data dinamis memakai primary dan cache Redis terversi dengan TTL terpisah', async () => {
   const worker = await readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8');
-  const dashboard = await readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8');
+  const dashboard = await readFile(resolve(root, 'frontend-react/src/compat/app/dashboard.ts'), 'utf8');
   const dashboardStart = worker.indexOf('async fn dashboard(');
   const dashboardEnd = worker.indexOf('async fn ', dashboardStart + 1);
   const dashboardRoute = worker.slice(
@@ -643,12 +643,12 @@ test('analisis pertumbuhan menerima riwayat dan mengembalikan screening serta an
     readFile(resolve(root, 'services/analysis-service/proto/analysis.proto'), 'utf8'),
     readFile(resolve(root, 'services/analysis-service/analysis_service/who.py'), 'utf8'),
     readFile(resolve(root, 'services/analysis-service/analysis_service/ml.py'), 'utf8'),
-    readFile(resolve(root, 'frontend/src/features/measurements/MeasurementAnalysisDialog.ts'), 'utf8'),
-    readFile(resolve(root, 'frontend/src/features/measurements/growthCharts.ts'), 'utf8'),
+    readFile(resolve(root, 'frontend-react/src/compat/features/measurements/MeasurementAnalysisDialog.ts'), 'utf8'),
+    readFile(resolve(root, 'frontend-react/src/compat/features/measurements/growthCharts.ts'), 'utf8'),
     readFile(resolve(root, 'services/analysis-service/analysis_service/charts.py'), 'utf8'),
-    readFile(resolve(root, 'frontend/src/features/measurements/GrowthChartsDialog.ts'), 'utf8'),
-    readFile(resolve(root, 'frontend/src/api/analysisApi.ts'), 'utf8'),
-    readFile(resolve(root, 'frontend/src/pages/MeasurementPage.ts'), 'utf8')
+    readFile(resolve(root, 'frontend-react/src/compat/features/measurements/GrowthChartsDialog.ts'), 'utf8'),
+    readFile(resolve(root, 'frontend-react/src/compat/api/analysisApi.ts'), 'utf8'),
+    readFile(resolve(root, 'frontend-react/src/compat/pages/MeasurementPage.ts'), 'utf8')
   ]);
 
   assert.match(proto, /history_json = 11/);
@@ -856,7 +856,7 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
 test('riwayat perubahan dimuat langsung, dibatasi, dan rincian diproses bertahap', async () => {
   const worker = await readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8');
   const client = await readApiClient();
-  const dashboard = await readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8');
+  const dashboard = await readFile(resolve(root, 'frontend-react/src/compat/app/dashboard.ts'), 'utf8');
 
   assert.match(worker, /for id_chunk in ids\.chunks\(75\)/);
   assert.match(
@@ -871,8 +871,8 @@ test('riwayat perubahan dimuat langsung, dibatasi, dan rincian diproses bertahap
 });
 
 test('manifest dan service worker membentuk shell PWA yang dapat dipasang', async () => {
-  const manifest = await readJson('frontend/public/manifest.webmanifest');
-  const serviceWorker = await readFile(resolve(root, 'frontend/public/service-worker.js'), 'utf8');
+  const manifest = await readJson('frontend-react/public/manifest.webmanifest');
+  const serviceWorker = await readFile(resolve(root, 'frontend-react/public/service-worker.js'), 'utf8');
 
   assert.equal(manifest.start_url, '/');
   assert.equal(manifest.display, 'standalone');
@@ -883,8 +883,8 @@ test('manifest dan service worker membentuk shell PWA yang dapat dipasang', asyn
 });
 
 test('header keamanan frontend mencakup kebijakan utama', async () => {
-  const headers = await readFile(resolve(root, 'frontend/public/_headers'), 'utf8');
-  const frontendPackage = await readJson('frontend/package.json');
+  const headers = await readFile(resolve(root, 'frontend-react/public/_headers'), 'utf8');
+  const frontendPackage = await readJson('frontend-react/package.json');
   for (const header of [
     'Content-Security-Policy:',
     'Strict-Transport-Security:',
@@ -918,8 +918,8 @@ test('header keamanan frontend mencakup kebijakan utama', async () => {
 
 test('kode aplikasi tidak memakai eval atau penyisipan HTML mentah', async () => {
   const source = [
-    await readSourceTree('frontend/src'),
-    await readFile(resolve(root, 'frontend/public/service-worker.js'), 'utf8'),
+    await readSourceTree('frontend-react/src/compat'),
+    await readFile(resolve(root, 'frontend-react/public/service-worker.js'), 'utf8'),
     await readSourceTree('backend/src'),
     await readSourceTree('services/neon-read-worker/src'),
     await readSourceTree('services/data-processing-service/src')
@@ -1000,9 +1000,9 @@ test('deployment diperiksa berkala dan backup hanya disimpan dalam bentuk terenk
 });
 
 test('sinkronisasi offline mendeteksi konflik dan tidak menimpa perubahan diam-diam', async () => {
-  const store = await readFile(resolve(root, 'frontend/src/services/offlineStore.ts'), 'utf8');
+  const store = await readFile(resolve(root, 'frontend-react/src/compat/services/offlineStore.ts'), 'utf8');
   const client = await readApiClient();
-  const dashboard = await readFile(resolve(root, 'frontend/src/app/dashboard.ts'), 'utf8');
+  const dashboard = await readFile(resolve(root, 'frontend-react/src/compat/app/dashboard.ts'), 'utf8');
   const worker = await readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8');
 
   assert.match(store, /const CONFLICT_STORE = 'conflicts'/);
@@ -1018,11 +1018,11 @@ test('sinkronisasi offline mendeteksi konflik dan tidak menimpa perubahan diam-d
 });
 
 test('cache sensitif dienkripsi per akun dan login tidak melewati gerbang keamanan', async () => {
-  const store = await readFile(resolve(root, 'frontend/src/services/offlineStore.ts'), 'utf8');
+  const store = await readFile(resolve(root, 'frontend-react/src/compat/services/offlineStore.ts'), 'utf8');
   const client = await readApiClient();
   const worker = await readFile(resolve(root, 'backend/src/lib.rs'), 'utf8');
   const oracleAuth = await readFile(resolve(root, 'services/oracle-api/src/native_auth.rs'), 'utf8');
-  const pagesProxy = await readFile(resolve(root, 'frontend/public/_worker.js'), 'utf8');
+  const pagesProxy = await readFile(resolve(root, 'frontend-react/public/_worker.js'), 'utf8');
 
   assert.match(store, /AES-GCM/);
   assert.match(store, /OFFLINE_ENCRYPTION_SESSION_KEY/);
@@ -1089,8 +1089,8 @@ test('kebijakan privasi mencatat klasifikasi, retensi, dan respons insiden', asy
 });
 
 test('skeleton awal mengikuti struktur aplikasi tanpa teks persiapan', async () => {
-  const skeleton = await readFile(resolve(root, 'frontend/src/ui/skeleton.ts'), 'utf8');
-  const app = await readFile(resolve(root, 'frontend/src/App.ts'), 'utf8');
+  const skeleton = await readFile(resolve(root, 'frontend-react/src/compat/ui/skeleton.ts'), 'utf8');
+  const app = await readFile(resolve(root, 'frontend-react/src/compat/App.ts'), 'utf8');
 
   assert.match(skeleton, /app-loading-sidebar/);
   assert.match(skeleton, /app-loading-topbar/);

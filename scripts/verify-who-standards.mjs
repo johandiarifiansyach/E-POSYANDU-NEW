@@ -20,7 +20,7 @@ const backend = await readJson('backend/data/anthropometry.json');
 const analysis = await readJson('services/analysis-service/data/anthropometry.json');
 assert.deepEqual(analysis, backend, 'Tabel WHO backend dan analysis-service harus identik');
 
-const frontendSource = await readText('frontend/src/data/anthropometry.ts');
+const frontendSource = await readText('frontend-react/src/compat/data/anthropometry.ts');
 const prefix = 'export const WHO_0_TO_5 = ';
 const start = frontendSource.indexOf(prefix);
 const end = frontendSource.lastIndexOf(' as const;');
@@ -29,7 +29,7 @@ const frontend = JSON.parse(frontendSource.slice(start + prefix.length, end));
 assert.deepEqual(frontend, backend, 'Tabel WHO frontend dan backend harus identik');
 
 const circumferenceModule = await import(
-  `${pathToFileURL(resolve(root, 'frontend/src/data/whoGrowthLms.ts')).href}?audit=${Date.now()}`
+  `${pathToFileURL(resolve(root, 'frontend-react/src/compat/data/whoGrowthLms.ts')).href}?audit=${Date.now()}`
 );
 const circumference = circumferenceModule.WHO_GROWTH_LMS;
 const expected = provenance.expectedRowsPerSex;

@@ -3,6 +3,6 @@
 !services/analysis-service/analysis_service/**
 !services/analysis-service/proto/**
 !services/analysis-service/data/**
-!frontend/src/data/whoGrowthLms.ts
+!frontend-react/src/compat/data/whoGrowthLms.ts
 services/analysis-service/**/__pycache__/
 services/analysis-service/**/*.pyc

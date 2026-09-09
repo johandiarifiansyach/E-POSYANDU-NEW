@@ -1311,12 +1311,17 @@ async fn redis_get_text(env: &Env, key: &str) -> Option<String> {
 }
 
 async fn redis_set_text(env: &Env, key: &str, value: String, ttl_seconds: u64) -> bool {
-    redis_commands(env, json!([["SET", key, value, "EX", ttl_seconds]]))
+    let redis_saved = redis_commands(env, json!([["SET", key, value.clone(), "EX", ttl_seconds]]))
         .await
         .as_ref()
         .and_then(|payload| redis_command_result(payload, 0))
         .and_then(|value| value.as_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case("OK"))
+        .is_some_and(|value| value.eq_ignore_ascii_case("OK"));
+    if redis_saved {
+        return true;
+    }
+
+    false
 }
 
 async fn redis_delete(env: &Env, key: &str) {

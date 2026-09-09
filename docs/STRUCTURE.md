@@ -4,18 +4,17 @@ Struktur ini memisahkan kode berdasarkan tanggung jawab agar lokasi perubahan mu
 
 ```text
 E-POSYANDU/
-├── frontend/
+├── frontend-react/
 │   ├── public/              Aset publik, PWA, header, dan redirect
 │   ├── e2e/                 Pengujian browser desktop dan ponsel
 │   └── src/
-│       ├── api/             Klien REST dan autentikasi
-│       ├── components/      Komponen UI yang digunakan ulang
-│       ├── config/          Versi aplikasi dan riwayat rilis
-│       ├── data/            Data referensi statis
-│       ├── pages/           Halaman dan alur utama aplikasi
-│       ├── runtime/         Renderer DOM native
-│       ├── services/        Penyimpanan dan sinkronisasi lokal
-│       ├── styles/          Stylesheet global
+│       ├── api/             Adapter API React
+│       ├── components/      Komponen UI React yang digunakan ulang
+│       ├── features/        Implementasi fitur per domain
+│       ├── pages/           Halaman dan alur utama React
+│       ├── compat/          Kontrak, utilitas, data WHO, dan CSS bersama
+│       ├── services/        Penyimpanan, ekspor, dan sinkronisasi lokal
+│       ├── styles/          Stylesheet React dan token visual
 │       ├── theme/           Mode terang dan gelap
 │       └── ui/              Ikon, tooltip, notifikasi, dan modal bersama
 ├── backend/
@@ -49,10 +48,15 @@ E-POSYANDU/
 
 ## Aturan Penempatan
 
-- Tambahkan halaman baru ke `frontend/src/pages`.
-- Tambahkan komponen yang dipakai beberapa halaman ke `frontend/src/components`.
-- Akses jaringan frontend hanya ditambahkan melalui `frontend/src/api`.
-- Kode penyimpanan browser dan sinkronisasi lokal ditempatkan di `frontend/src/services`.
+- Tambahkan halaman baru ke `frontend-react/src/pages` dan implementasi domainnya
+  ke `frontend-react/src/features`.
+- Tambahkan komponen React yang dipakai beberapa halaman ke
+  `frontend-react/src/components`.
+- Akses jaringan frontend hanya ditambahkan melalui `frontend-react/src/api`.
+- Kode penyimpanan browser dan sinkronisasi lokal ditempatkan di
+  `frontend-react/src/services`.
+- Gunakan `frontend-react/src/compat` hanya untuk kontrak, utilitas, data WHO,
+  dan stylesheet bersama yang belum memiliki padanan React khusus.
 - Endpoint backend ditempatkan di `backend/src/api`; `lib.rs` hanya mengurus pintu masuk, autentikasi, keamanan, dan dispatch.
 - Browser memakai HTTPS ke gateway untuk autentikasi, CRUD, sinkronisasi ringan,
   progres, dan unduhan. GraphQL hanya untuk query baca dashboard dan laporan

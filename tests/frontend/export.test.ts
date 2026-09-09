@@ -1,4 +1,4 @@
-import { test, expect } from '../../frontend/node_modules/@playwright/test/index.mjs';
+import { test, expect } from '../../frontend-react/node_modules/@playwright/test/index.mjs';
 import {
   buildSigiziMeasurementExportItems,
   getMpasiExportRows,
@@ -8,7 +8,7 @@ import {
   getSigiziMeasurementRows,
   latestMeasurementsByChild,
   toExportBinary
-} from '../../frontend/src/services/exportService';
+} from '../../frontend-react/src/compat/services/exportService';
 
 test.describe('export feature', () => {
   test('builds an inclusive range for a leap-year month', () => {

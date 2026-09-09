@@ -152,10 +152,58 @@ fn stale_snapshot_result(snapshot: &Value) -> Option<Value> {
     Some(result)
 }
 
+fn analysis_value_present(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(value) => {
+            let value = value.trim();
+            !value.is_empty() && value != "-"
+        }
+        Value::Array(values) => !values.is_empty(),
+        Value::Object(values) => !values.is_empty(),
+        Value::Bool(_) | Value::Number(_) => true,
+    }
+}
+
+/// Return true when a measurement already has at least one persisted Python
+/// result.  Read-replica fallbacks can contain the raw row (including the
+/// legacy/default `statusNaik` value) while the materialized projection is
+/// temporarily unavailable; that raw field must not be mistaken for a Python
+/// result and hidden behind a loading skeleton.
+fn has_persisted_analysis(data: &serde_json::Map<String, Value>) -> bool {
+    [
+        "bbuStatus",
+        "tbuStatus",
+        "bbtbStatus",
+        "imtuStatus",
+        "lilaStatus",
+        "lkStatus",
+        "exclusiveBreastfeedingStatus",
+        "analysis",
+    ]
+    .into_iter()
+    .any(|key| data.get(key).is_some_and(analysis_value_present))
+}
+
+/// Used by the dynamic Redis cache guard. A page with an unfinished analysis
+/// is deliberately never cached: otherwise the read service could serve the
+/// same skeleton for the whole TTL after Python has already committed the
+/// result. Completed pages remain cacheable for fast kader reads.
+fn has_pending_analysis(value: &Value) -> bool {
+    match value {
+        Value::Object(values) => {
+            values.get("analysisPending").and_then(Value::as_bool) == Some(true)
+                || values.values().any(has_pending_analysis)
+        }
+        Value::Array(values) => values.iter().any(has_pending_analysis),
+        _ => false,
+    }
+}
+
 /// Annotate a direct PostgreSQL page used during a rolling migration or a
 /// temporary Python outage. The raw page remains read-only and keeps the
-/// persisted values intact; measurement rows are marked pending so the UI
-/// does not present missing derived fields as a completed analysis.
+/// persisted values intact; only measurement rows without derived values are
+/// marked pending so the UI does not present missing analysis as completed.
 fn mark_page_read_fallback(mut page: Value) -> Value {
     let Some(object) = page.as_object_mut() else {
         return page;
@@ -164,7 +212,12 @@ fn mark_page_read_fallback(mut page: Value) -> Value {
     if let Some(rows) = object.get_mut("measurements").and_then(Value::as_array_mut) {
         for row in rows {
             if let Some(data) = row.get_mut("data").and_then(Value::as_object_mut) {
-                data.insert("analysisPending".to_owned(), Value::Bool(true));
+                // Preserve any values that were already persisted by Python.
+                // Only a row with no derived result should remain pending.
+                data.insert(
+                    "analysisPending".to_owned(),
+                    Value::Bool(!has_persisted_analysis(data)),
+                );
             }
         }
     }
@@ -800,7 +853,13 @@ impl OperationsDomain {
         if let (Some(cache), Some(key)) = (cache.as_ref(), key.as_deref())
             && let Some(value) = cache.get(key).await
         {
-            return response_json(StatusCode::OK, value);
+            // Do not reuse a page captured while Python was still processing
+            // a newly written measurement.  The next request must reach
+            // PostgreSQL so it can observe the materialized result as soon
+            // as the worker commits it.
+            if !has_pending_analysis(&value) {
+                return response_json(StatusCode::OK, value);
+            }
         }
 
         let response = handler(request).await;
@@ -814,6 +873,7 @@ impl OperationsDomain {
         };
         if let (Some(cache), Some(key)) = (cache.as_ref(), key.as_deref())
             && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+            && !has_pending_analysis(&value)
         {
             cache.put(key, &value, ttl_seconds).await;
         }
@@ -2039,6 +2099,18 @@ impl ReadDomain {
         })
     }
 
+    /// Keep the read service's Redis version in sync with PostgreSQL writes
+    /// and Python materialization commits.  ReadService is intentionally
+    /// write-free, so it needs its own LISTEN connection for cache invalidation
+    /// when it runs as a separate process.
+    pub fn start_cache_invalidation_listener(&self) {
+        let database = self.inner.database.clone();
+        let cache = self.inner.api.cache_handle();
+        tokio::spawn(async move {
+            database.listen_realtime(RealtimeHub::new(), cache).await;
+        });
+    }
+
     pub async fn handle(&self, request: Request) -> Response {
         self.inner.handle_read(request).await
     }
@@ -2124,6 +2196,44 @@ pub struct RealtimeDomain {
 #[cfg(test)]
 mod analysis_contract_tests {
     use super::*;
+
+    #[test]
+    fn read_fallback_preserves_completed_analysis() {
+        let result = mark_page_read_fallback(json!({
+            "items": [{"id": "child-1", "data": {"nama": "Balita Uji"}}],
+            "measurements": [{
+                "id": "measurement-1",
+                "data": {
+                    "childId": "child-1",
+                    "bbuStatus": "Berat Normal",
+                    "analysisPending": false
+                }
+            }]
+        }));
+        assert_eq!(result["measurements"][0]["data"]["analysisPending"], false);
+    }
+
+    #[test]
+    fn read_fallback_marks_only_unanalysed_rows_pending() {
+        let result = mark_page_read_fallback(json!({
+            "items": [],
+            "measurements": [{
+                "id": "measurement-1",
+                "data": {"childId": "child-1", "bb": 5.2, "statusNaik": "B"}
+            }]
+        }));
+        assert_eq!(result["measurements"][0]["data"]["analysisPending"], true);
+    }
+
+    #[test]
+    fn pending_pages_are_not_eligible_for_dynamic_cache() {
+        assert!(has_pending_analysis(&json!({
+            "measurements": [{"data": {"analysisPending": true}}]
+        })));
+        assert!(!has_pending_analysis(&json!({
+            "measurements": [{"data": {"analysisPending": false}}]
+        })));
+    }
 
     #[test]
     fn stale_snapshot_is_marked_without_changing_metrics() {

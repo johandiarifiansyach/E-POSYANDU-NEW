@@ -1,18 +1,18 @@
-import { test, expect } from '../../frontend/node_modules/@playwright/test/index.mjs';
+import { test, expect } from '../../frontend-react/node_modules/@playwright/test/index.mjs';
 import {
   getMeasurementStatuses,
   validateMeasurementForm,
-} from '../../frontend/src/features/measurements/measurementRules';
+} from '../../frontend-react/src/compat/features/measurements/measurementRules';
 import {
   calculateGiziStatus,
   calculateZScore,
-} from '../../frontend/src/shared/dashboardUtils';
+} from '../../frontend-react/src/compat/shared/dashboardUtils';
 import {
   GROWTH_CHART_LABELS,
   GROWTH_CHART_TYPES,
   safeChildFileName,
-} from '../../frontend/src/features/measurements/growthCharts';
-import { fetchChildMeasurementHistory } from '../../frontend/src/services/measurementService';
+} from '../../frontend-react/src/compat/features/measurements/growthCharts';
+import { fetchChildMeasurementHistory } from '../../frontend-react/src/compat/services/measurementService';
 
 test.describe('measurement feature', () => {
   test('normalizes valid local decimal input before saving', () => {

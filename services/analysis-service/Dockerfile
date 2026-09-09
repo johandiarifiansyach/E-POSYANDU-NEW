@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY services/analysis-service /app/services/analysis-service
 COPY services/analysis-service/data/anthropometry.json /app/services/analysis-service/data/anthropometry.json
-COPY frontend/src/data/whoGrowthLms.ts /app/frontend/src/data/whoGrowthLms.ts
+COPY frontend-react/src/compat/data/whoGrowthLms.ts /app/frontend-react/src/compat/data/whoGrowthLms.ts
 
 RUN mkdir -p /app/services/analysis-service/analysis_service/generated \
   && python -m grpc_tools.protoc \

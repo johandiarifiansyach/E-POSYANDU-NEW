@@ -1,11 +1,11 @@
-import { test, expect } from '../../frontend/node_modules/@playwright/test/index.mjs';
+import { test, expect } from '../../frontend-react/node_modules/@playwright/test/index.mjs';
 import {
   createInitialChildForm,
   formatChildName,
   generateTemporaryKk,
   generateTemporaryNik,
   validateChildBirthMeasurements
-} from '../../frontend/src/features/children/childRules';
+} from '../../frontend-react/src/compat/features/children/childRules';
 
 test.describe('children feature', () => {
   test('formats each part of a child name', () => {

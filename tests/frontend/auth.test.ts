@@ -1,5 +1,5 @@
-import { test, expect } from '../../frontend/node_modules/@playwright/test/index.mjs';
-import { getUserScope, hasRole } from '../../frontend/src/services/authService';
+import { test, expect } from '../../frontend-react/node_modules/@playwright/test/index.mjs';
+import { getUserScope, hasRole } from '../../frontend-react/src/compat/services/authService';
 
 test.describe('auth feature', () => {
   test('keeps the authenticated user scope in one shape', () => {

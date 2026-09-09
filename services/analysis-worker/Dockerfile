@@ -34,7 +34,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt \
 
 COPY services/analysis-service/analysis_service /app/services/analysis-service/analysis_service
 COPY services/analysis-service/data /app/services/analysis-service/data
-COPY frontend/src/data/whoGrowthLms.ts /app/frontend/src/data/whoGrowthLms.ts
+COPY frontend-react/src/compat/data/whoGrowthLms.ts /app/frontend-react/src/compat/data/whoGrowthLms.ts
 COPY --from=builder /app/services/analysis-worker/target/release/e-posyandu-analysis-worker /usr/local/bin/e-posyandu-analysis-worker
 
 USER 10001:10001

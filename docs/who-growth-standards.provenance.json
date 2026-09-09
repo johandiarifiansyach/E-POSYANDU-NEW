@@ -121,11 +121,11 @@
       "sha256": "9973fec065b08cda78130faaff4cc7a7f31baeab75443a0596dd7d417cc6655a"
     },
     {
-      "path": "frontend/src/data/anthropometry.ts",
+      "path": "frontend-react/src/compat/data/anthropometry.ts",
       "sha256": "73e52f1654a026ebb4d4eb1bbafdebf7e2367a7f0d11568bae711e406208b5e8"
     },
     {
-      "path": "frontend/src/data/whoGrowthLms.ts",
+      "path": "frontend-react/src/compat/data/whoGrowthLms.ts",
       "sha256": "055e49c514b33caf1fa056e47cfb4506d6b0529d933508e7863924a96f1ce107"
     }
   ],

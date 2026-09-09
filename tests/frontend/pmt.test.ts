@@ -1,11 +1,11 @@
-import { test, expect } from '../../frontend/node_modules/@playwright/test/index.mjs';
+import { test, expect } from '../../frontend-react/node_modules/@playwright/test/index.mjs';
 import {
   categoryMetric,
   getMonitoringForWeek,
   maxWeeksForCategory,
   monitoringStatus,
   numericValue
-} from '../../frontend/src/features/pmt/pmtRules';
+} from '../../frontend-react/src/compat/features/pmt/pmtRules';
 
 test.describe('pmt feature', () => {
   test('uses the correct monitoring duration and nutrition index', () => {

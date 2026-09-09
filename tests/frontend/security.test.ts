@@ -1,11 +1,11 @@
-import { test, expect } from '../../frontend/node_modules/@playwright/test/index.mjs';
-import * as Native from '../../frontend/src/runtime/dom';
+import { test, expect } from '../../frontend-react/node_modules/@playwright/test/index.mjs';
+import * as Native from '../../frontend-react/src/compat/runtime/dom';
 import {
   createSafeWorksheet,
   ensureXlsx,
   hardenSpreadsheetWorksheet,
   validateSpreadsheetFile
-} from '../../frontend/src/services/xlsx';
+} from '../../frontend-react/src/compat/services/xlsx';
 
 test.describe('DOM security boundary', () => {
   test('rejects executable URLs and string event handlers', () => {

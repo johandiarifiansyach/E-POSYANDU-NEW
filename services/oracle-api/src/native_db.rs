@@ -147,15 +147,13 @@ impl NativeDatabase {
                         if let Ok(event) =
                             serde_json::from_str::<RealtimeEvent>(notification.payload())
                         {
-                            // Python commits materialized WHO/ML results
-                            // directly to PostgreSQL, so no Rust mutation
-                            // path gets a chance to bump Redis' dynamic
-                            // cache version.  Analysis notifications close
-                            // that gap without invalidating the cache for
-                            // every polling request.
-                            if event.operation == "analysis_updated"
-                                && let Some(cache) = cache.as_ref()
-                            {
+                            // Raw writes and Python's materialized analysis
+                            // commits both arrive as PostgreSQL NOTIFY events.
+                            // Every such event can change a dynamic page, so
+                            // advance the version in every cache-owning
+                            // service.  This also covers the read-only
+                            // service, which does not execute Rust writes.
+                            if let Some(cache) = cache.as_ref() {
                                 cache.invalidate().await;
                             }
                             hub.publish(event);

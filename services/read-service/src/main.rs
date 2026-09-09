@@ -85,6 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .init();
     let address = address()?;
     let domain = Arc::new(ReadDomain::from_env().await.map_err(io::Error::other)?);
+    domain.start_cache_invalidation_listener();
     let (reporter, health) = tonic_health::server::health_reporter();
     reporter.set_serving::<ReadServiceServer<ReadGrpc>>().await;
     let server = Server::builder()
