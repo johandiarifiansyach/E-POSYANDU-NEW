@@ -13,10 +13,10 @@ if [[ ! "$public_site" =~ ^([A-Za-z0-9-]+\.)+[A-Za-z]{2,}$ ]]; then
   exit 1
 fi
 
-echo "[1/8] Koneksi Bastion/SSH"
+echo "[1/9] Koneksi Bastion/SSH"
 ssh -o BatchMode=yes -o ConnectTimeout=10 "$ssh_host" true
 
-echo "[2/8] Deployment, container, dan mode API"
+echo "[2/9] Deployment, container, dan mode API"
 ssh "$ssh_host" 'sudo bash -s' <<'REMOTE'
 set -euo pipefail
 test -L /opt/e-posyandu/current
@@ -35,7 +35,7 @@ fi
   ps
 REMOTE
 
-echo "[3/8] Secret Vault tanpa menampilkan nilainya"
+echo "[3/9] Secret Vault tanpa menampilkan nilainya"
 ssh "$ssh_host" 'sudo bash -s' <<'REMOTE'
 set -euo pipefail
 host_env=/etc/e-posyandu/nutrition-grpc.env
@@ -61,10 +61,49 @@ test "$(stat -c %a /run/e-posyandu/cloudflare-tunnel-token)" = 600
 echo "Secret persisten: bersih; runtime tmpfs: siap."
 REMOTE
 
-echo "[4/8] Health API internal"
-ssh "$ssh_host" 'curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8081/api/v1/health/ready | python3 -c '\''import json,sys; data=json.load(sys.stdin); print("status=" + str(data.get("status"))); raise SystemExit(0 if data.get("ok") is True else 1)'\'''
+echo "[4/9] Health API internal dan analysis-worker"
+ssh "$ssh_host" 'curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8081/api/v1/health/ready | python3 -c '\''import json,sys; data=json.load(sys.stdin); components=data.get("components", {}); analysis=components.get("analysisWorker", {}); print("status=" + str(data.get("status")) + " analysis-worker=" + str(analysis.get("status"))); raise SystemExit(0 if data.get("ok") is True and analysis.get("status") == "healthy" else 1)'\'''
 
-echo "[5/8] Cloudflare Tunnel dan penutupan bind origin"
+echo "[5/9] PostgreSQL connection budget"
+ssh "$ssh_host" 'sudo bash -s' <<'REMOTE'
+set -euo pipefail
+env_file=/etc/e-posyandu/nutrition-grpc.env
+target="$(sed -n 's/^ORACLE_POSTGRES_API_ROLE_CONNECTION_LIMIT=//p' "$env_file" | tail -n 1)"
+target="${target:-40}"
+if [[ ! "$target" =~ ^[0-9]+$ ]] || (( target < 10 || target > 90 )); then
+  echo "Budget koneksi PostgreSQL harus berupa angka 10..90." >&2
+  exit 1
+fi
+role_limit="$(runuser -u postgres -- psql --dbname=postgres --no-psqlrc --set=ON_ERROR_STOP=1 --tuples-only --no-align --command="select rolconnlimit from pg_roles where rolname='eposyandu_api';")"
+role_limit="${role_limit//[[:space:]]/}"
+max_connections="$(runuser -u postgres -- psql --dbname=postgres --no-psqlrc --set=ON_ERROR_STOP=1 --tuples-only --no-align --command='show max_connections;')"
+max_connections="${max_connections//[[:space:]]/}"
+if [[ -z "$role_limit" || ! "$role_limit" =~ ^-?[0-9]+$ ]]; then
+  echo "Role eposyandu_api tidak ditemukan atau rolconnlimit tidak valid." >&2
+  exit 1
+fi
+if (( role_limit != -1 && role_limit < target )); then
+  echo "Role eposyandu_api hanya memiliki limit $role_limit (minimum $target)." >&2
+  exit 1
+fi
+if (( role_limit != -1 )) && { [[ ! "$max_connections" =~ ^[0-9]+$ ]] || (( target >= max_connections - 4 )); }; then
+  echo "Budget koneksi $target terlalu besar untuk max_connections=$max_connections." >&2
+  exit 1
+fi
+active="$(runuser -u postgres -- psql --dbname=postgres --no-psqlrc --set=ON_ERROR_STOP=1 --tuples-only --no-align --command="select count(*) from pg_stat_activity where usename='eposyandu_api';")"
+active="${active//[[:space:]]/}"
+if [[ ! "$active" =~ ^[0-9]+$ ]]; then
+  echo "Jumlah koneksi aktif PostgreSQL tidak valid." >&2
+  exit 1
+fi
+if (( role_limit != -1 && active >= role_limit )); then
+  echo "Koneksi aktif eposyandu_api ($active) sudah mencapai limit $role_limit." >&2
+  exit 1
+fi
+echo "Role eposyandu_api: limit=$role_limit aktif=$active max_connections=$max_connections."
+REMOTE
+
+echo "[6/9] Cloudflare Tunnel dan penutupan bind origin"
 ssh "$ssh_host" 'sudo bash -s' <<'REMOTE'
 set -euo pipefail
 env_file=/etc/e-posyandu/nutrition-grpc.env
@@ -84,7 +123,7 @@ case ",${profiles// /,}," in
 esac
 REMOTE
 
-echo "[6/8] Timer operasional"
+echo "[7/9] Timer operasional"
 ssh "$ssh_host" 'sudo bash -s' <<'REMOTE'
 set -euo pipefail
 for unit in \
@@ -96,14 +135,14 @@ done
 echo "Monitoring dan backup: siap."
 REMOTE
 
-echo "[7/8] HTTPS publik dan security headers"
+echo "[8/9] HTTPS publik dan security headers"
 headers="$(curl --fail --silent --show-error --max-time 15 --head "https://$public_site/")"
 grep -Eiq '^strict-transport-security:' <<<"$headers"
 grep -Eiq '^content-security-policy:' <<<"$headers"
 grep -Eiq '^x-content-type-options:[[:space:]]*nosniff' <<<"$headers"
 echo "HTTPS dan header utama: siap."
 
-echo "[8/8] Delegasi DNS edge"
+echo "[9/9] Delegasi DNS edge"
 nameservers="$(dig +short NS "$public_site" | tr '[:upper:]' '[:lower:]')"
 if grep -q 'cloudflare.com' <<<"$nameservers"; then
   echo "Nameserver Cloudflare: aktif."

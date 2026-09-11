@@ -222,6 +222,16 @@ if [[ -f "$postgresql_dir/eposyandu-postgresql-migrate.py" \
     "$postgresql_dir/eposyandu-postgresql-migrate.py" \
     /usr/local/libexec/e-posyandu/eposyandu-postgresql-migrate.py
 fi
+if [[ -f "$postgresql_dir/eposyandu-postgresql-connection-budget.sh" \
+  && -x /usr/bin/psql \
+  && id postgres >/dev/null 2>&1 ]]; then
+  install -d -o root -g root -m 0750 /usr/local/libexec/e-posyandu
+  install -o root -g root -m 0750 \
+    "$postgresql_dir/eposyandu-postgresql-connection-budget.sh" \
+    /usr/local/libexec/e-posyandu/eposyandu-postgresql-connection-budget.sh
+  /usr/local/libexec/e-posyandu/eposyandu-postgresql-connection-budget.sh \
+    /etc/e-posyandu/nutrition-grpc.env
+fi
 if [[ -f "$postgresql_dir/eposyandu-postgresql-backup.py" \
   && -f "$postgresql_dir/eposyandu-postgresql-backup.service" \
   && -f "$postgresql_dir/eposyandu-postgresql-backup.timer" \

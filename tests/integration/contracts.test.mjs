@@ -789,7 +789,8 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
     databaseMigration,
     databaseBackup,
     databaseBackupUnit,
-    backupEnv
+    backupEnv,
+    connectionBudget
   ] = await Promise.all([
     readFile(resolve(root, 'deploy/oracle/compose.yaml'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/Caddyfile'), 'utf8'),
@@ -808,7 +809,8 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
     readFile(resolve(root, 'deploy/oracle/postgresql/eposyandu-postgresql-migrate.py'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/postgresql/eposyandu-postgresql-backup.py'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/postgresql/eposyandu-postgresql-backup.service'), 'utf8'),
-    readFile(resolve(root, 'deploy/oracle/backup/eposyandu-backup.env.example'), 'utf8')
+    readFile(resolve(root, 'deploy/oracle/backup/eposyandu-backup.env.example'), 'utf8'),
+    readFile(resolve(root, 'deploy/oracle/postgresql/eposyandu-postgresql-connection-budget.sh'), 'utf8')
   ]);
 
   assert.match(compose, /DATA_PROCESSING_GRPC_ADDR: \$\{DATA_PROCESSING_GRPC_ADDR:-unix:\/\/\/run\/e-posyandu\/data-processing\.sock\}/);
@@ -869,6 +871,7 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(bootstrap, /--resolve "\$health_host:443:127\.0\.0\.1"/);
   assert.match(bootstrap, /127\.0\.0\.1:8081\/api\/v1\/health\/ready/);
   assert.match(bootstrap, /grep -Fq '\"ok\":true'/);
+  assert.match(bootstrap, /eposyandu-postgresql-connection-budget\.sh/);
   assert.match(bootstrap, /origin-cert\.pem/);
   assert.match(bootstrap, /origin-key\.pem/);
   assert.match(deploy, /ssh -o BatchMode=yes -o ConnectTimeout=10/);
@@ -903,6 +906,9 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(vaultMaterializer, /ORACLE_DATABASE_URL/);
   assert.match(nativeDatabase, /deadpool_postgres/);
   assert.match(nativeDatabase, /ORACLE_DATABASE_POOL_SIZE/);
+  assert.match(connectionBudget, /alter role/);
+  assert.match(connectionBudget, /ORACLE_POSTGRES_API_ROLE_CONNECTION_LIMIT/);
+  assert.match(envExample, /ORACLE_POSTGRES_API_ROLE_CONNECTION_LIMIT=40/);
   assert.match(databaseMigration, /--format=custom/);
   assert.match(databaseMigration, /fingerprints_source/);
   assert.match(databaseMigration, /alter database.*rename to/si);

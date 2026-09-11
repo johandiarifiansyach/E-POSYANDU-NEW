@@ -22,6 +22,12 @@ terbaru juga memasang `eposyandu-postgresql-maintenance.timer` yang menjalankan
 `VACUUM (ANALYZE)` tabel antrean/proyeksi setiap jam. Pool koneksi aplikasi tetap
 dibatasi per service; PgBouncer hanya perlu diaktifkan bila metrik koneksi
 menunjukkan tekanan `max_connections`, bukan sebagai pengganti pool aplikasi.
+Saat bootstrap rilis, role aplikasi `eposyandu_api` juga diperiksa melalui
+`eposyandu-postgresql-connection-budget.sh`. Limit koneksi dinaikkan secara
+idempoten ke `ORACLE_POSTGRES_API_ROLE_CONNECTION_LIMIT` (default 40) bila
+limit lama terlalu kecil; limit yang lebih tinggi atau unlimited tidak pernah
+diturunkan. Ini mencegah analysis-worker gagal readiness ketika seluruh
+microservice memakai PostgreSQL native yang sama.
 
 Urutan migrasi yang aman:
 

@@ -163,6 +163,14 @@ mendekati `max_connections`, pasang PgBouncer pada jaringan privat lalu arahkan
 dan mode transaction pooling hanya boleh dipakai setelah seluruh transaksi
 aplikasi tidak bergantung pada session state.
 
+Pada host Oracle, bootstrap menjaga limit role `eposyandu_api` melalui
+`deploy/oracle/postgresql/eposyandu-postgresql-connection-budget.sh`. Nilai
+default `ORACLE_POSTGRES_API_ROLE_CONNECTION_LIMIT=40` menyisakan slot untuk
+maintenance dan akses darurat. Script berjalan sebagai role sistem `postgres`,
+tidak menaruh password di command line, dan tidak menurunkan limit yang sudah
+lebih tinggi atau unlimited. Preflight cutover akan menolak rilis bila limit
+role masih di bawah target atau seluruh slot sedang terpakai.
+
 Partitioning pengukuran belum diaktifkan karena volume saat ini masih sekitar
 30 ribu baris. Partitioning baru dipertimbangkan ketika tabel mencapai jutaan
 baris dan query rentang waktu menunjukkan sequential scan/bloat. Migrasi tersebut
