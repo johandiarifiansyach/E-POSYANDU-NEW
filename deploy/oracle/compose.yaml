@@ -640,11 +640,9 @@ services:
       - "${ORACLE_PUBLIC_BIND:-0.0.0.0}:443:443"
       - "${ORACLE_PUBLIC_BIND:-0.0.0.0}:443:443/udp"
     expose:
-      - "8443"
+      - "8088"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - /run/e-posyandu/origin-cert.pem:/run/secrets/eposyandu-origin-cert.pem:ro,Z
-      - /run/e-posyandu/origin-key.pem:/run/secrets/eposyandu-origin-key.pem:ro,Z
       - caddy_data:/data
       - caddy_config:/config
     read_only: true

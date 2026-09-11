@@ -34,7 +34,8 @@ Urutan migrasi yang aman:
 1. Deploy Oracle dengan mode `proxy`, lalu uji API internal.
 2. Materialisasi seluruh secret dari OCI Vault dan aktifkan mode `auth`,
    `reads`, lalu `full`; setiap tahap memiliki health check dan rollback.
-3. Buat Cloudflare Tunnel menuju listener internal HTTPS `health-proxy:8443`.
+3. Buat Cloudflare Tunnel menuju listener internal HTTP `health-proxy:8088`
+   (transport Tunnel tetap terenkripsi; Origin CA dapat diaktifkan kemudian).
 4. Delegasikan DNS ke Cloudflare dan uji login, CRUD, sinkronisasi offline,
    ekspor, Queue/R2, serta grafik dari jaringan desktop dan seluler.
 5. Ubah bind publik Oracle menjadi loopback, tutup ingress OCI 80/443, dan
@@ -227,15 +228,15 @@ dengan hostname** agar sertifikat Origin CA diverifikasi:
 
 | Public hostname | Service | HTTP Host Header |
 | --- | --- | --- |
-| `api.eposyandu.app` | `https://health-proxy:8443` | `api.eposyandu.app` |
-| `nutrition.eposyandu.app` | `https://health-proxy:8443` | `nutrition.eposyandu.app` |
+| `api.eposyandu.app` | `http://health-proxy:8088` | `api.eposyandu.app` |
+| `nutrition.eposyandu.app` | `http://health-proxy:8088` | `nutrition.eposyandu.app` |
 
-Pada **Origin request and connection settings** untuk masing-masing route, isi
-`Origin Server Name` dengan hostname route yang sama dan aktifkan verifikasi
-sertifikat. Sertifikat serta private key Origin CA dimaterialisasi dari OCI
-Vault ke `/run/e-posyandu/origin-cert.pem` dan
+Jika Origin CA diaktifkan, pada **Origin request and connection settings**
+untuk masing-masing route isi `Origin Server Name` dengan hostname route yang
+sama dan aktifkan verifikasi sertifikat. Sertifikat serta private key Origin CA
+dimaterialisasi dari OCI Vault ke `/run/e-posyandu/origin-cert.pem` dan
 `/run/e-posyandu/origin-key.pem`; keduanya tidak boleh dimasukkan ke archive
-atau Git.
+atau Git. Tanpa kedua OCID tersebut, gunakan service HTTP `health-proxy:8088`.
 
 Sebelum mengganti nameserver di registrar, salin seluruh record DNS yang masih
 dipakai ke zone Cloudflare. Inventaris aplikasi saat migrasi adalah apex/API/

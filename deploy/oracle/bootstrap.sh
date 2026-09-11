@@ -181,13 +181,19 @@ if [[ -f "$vault_dir/eposyandu-vault-env.py" && -f "$vault_dir/eposyandu-vault-e
     echo "File secret runtime API Oracle tidak berhasil disiapkan." >&2
     exit 1
   fi
-  for origin_tls_file in /run/e-posyandu/origin-cert.pem /run/e-posyandu/origin-key.pem; do
-    if [[ ! -s "$origin_tls_file" ]]; then
-      echo "Secret Origin TLS belum tersedia: $origin_tls_file" >&2
-      echo "Isi OCI_SECRET_ORIGIN_CERT_ID dan OCI_SECRET_ORIGIN_KEY_ID di /etc/e-posyandu/vault.env." >&2
-      exit 1
-    fi
-  done
+  origin_cert_id="$(sed -n 's/^OCI_SECRET_ORIGIN_CERT_ID=//p' /etc/e-posyandu/vault.env | tail -n 1)"
+  origin_key_id="$(sed -n 's/^OCI_SECRET_ORIGIN_KEY_ID=//p' /etc/e-posyandu/vault.env | tail -n 1)"
+  if [[ -n "$origin_cert_id" || -n "$origin_key_id" ]]; then
+    for origin_tls_file in /run/e-posyandu/origin-cert.pem /run/e-posyandu/origin-key.pem; do
+      if [[ ! -s "$origin_tls_file" ]]; then
+        echo "Secret Origin TLS belum tersedia: $origin_tls_file" >&2
+        echo "Periksa OCI_SECRET_ORIGIN_CERT_ID dan OCI_SECRET_ORIGIN_KEY_ID di /etc/e-posyandu/vault.env." >&2
+        exit 1
+      fi
+    done
+  else
+    echo "Origin TLS tidak dikonfigurasi; memakai listener HTTP privat untuk Tunnel."
+  fi
 fi
 
 backup_dir="$release_dir/deploy/oracle/backup"
@@ -223,8 +229,8 @@ if [[ -f "$postgresql_dir/eposyandu-postgresql-migrate.py" \
     /usr/local/libexec/e-posyandu/eposyandu-postgresql-migrate.py
 fi
 if [[ -f "$postgresql_dir/eposyandu-postgresql-connection-budget.sh" \
-  && -x /usr/bin/psql \
-  && id postgres >/dev/null 2>&1 ]]; then
+  && -x /usr/bin/psql ]] \
+  && id postgres >/dev/null 2>&1; then
   install -d -o root -g root -m 0750 /usr/local/libexec/e-posyandu
   install -o root -g root -m 0750 \
     "$postgresql_dir/eposyandu-postgresql-connection-budget.sh" \
