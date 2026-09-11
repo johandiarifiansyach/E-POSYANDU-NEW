@@ -60,11 +60,18 @@ docker run --rm \
 Pada Compose Oracle service memakai UDS
 `unix:///run/e-posyandu/analysis.sock`, sedangkan health check HTTP berada pada
 port privat `8082`. Tabel LMS dibundel dari tabel WHO yang sudah diverifikasi.
-Model screening runtime berjalan tanpa dependensi ML besar (standard library
-Python saja), sehingga jejak RAM/CPU tetap rendah dan tidak ada data anak yang
-dikirim ke layanan eksternal. Pelatihan eksperimen offline menggunakan
-`numpy`, `pandas`, `scikit-learn`, dan `joblib` melalui skrip di `training/`;
-dependensi berat tersebut tidak dimuat oleh server produksi.
+Model screening tetap memakai standard library; NumPy menjadi akselerator
+opsional untuk batch LMS dan koordinat kurva grafik, sehingga hasilnya identik
+dengan jalur skalar ketika `ANALYSIS_NUMPY_ENABLED=false`. Pandas/Polars dan
+dependensi pelatihan tetap offline melalui skrip di `training/`; keduanya tidak
+diperlukan pada setiap request produksi.
+
+`ANALYSIS_DATASET_WORKER_MODE=thread` adalah default dan wajib untuk image
+PyO3 karena interpreter Python tertanam di proses Rust. Service Python/gRPC
+standalone dapat memilih `process` setelah profiling; `ProcessPoolExecutor`
+menjalankan beberapa proses CPython yang masing-masing memuat tabel WHO sekali,
+sehingga pekerjaan CPU-bound tidak terserialisasi oleh GIL. Mode process tidak
+boleh diaktifkan pada worker PyO3.
 
 ### Skalabilitas agregasi
 
@@ -108,17 +115,30 @@ input per pengukuran; baris yang sama tidak dihitung ulang dan
 `analysis_version`-nya dipertahankan. Baris pengukuran yang dihapus atau
 menjadi tidak lengkap tetap dibersihkan dari proyeksi. Rust dapat membaca
 proyeksi itu langsung dari PostgreSQL/Redis tanpa mengulang kalkulasi WHO pada
-setiap request. Setel `ANALYSIS_DATABASE_URL`
-(atau `ORACLE_DATABASE_URL`) dan `ANALYSIS_PERSISTENCE_INTERVAL_SECONDS` sesuai
-lingkungan. Grafik dan analisis pertumbuhan detail tetap melewati RPC Python.
+setiap request. Setel `ANALYSIS_DATABASE_URL` (atau `ORACLE_DATABASE_URL`;
+`DATABASE_URL` diterima sebagai fallback saat rotasi secret) dan
+`ANALYSIS_PERSISTENCE_INTERVAL_SECONDS` sesuai lingkungan. Pada deployment
+Rust/PyO3, scheduler mendengarkan channel PostgreSQL
+`e_posyandu_analysis_outbox` dan interval tersebut hanya menjadi safety-net
+ketika LISTEN/NOTIFY tidak tersedia. Satu wake memproses batch terbatas yang
+diatur `ANALYSIS_PERSISTENCE_BATCH_SIZE` (default 8), sehingga input massal
+tidak menimbulkan satu lintasan PyO3 untuk setiap baris. Kegagalan dikembalikan
+ke antrean dengan exponential backoff yang diatur
+`ANALYSIS_PERSISTENCE_RETRY_BASE_SECONDS` (default 2) dan
+`ANALYSIS_PERSISTENCE_RETRY_MAX_SECONDS` (default 300). Saat worker mulai,
+job child yang sebelumnya masuk status `failed` dipulihkan sekali ke antrean
+`pending` melalui `ANALYSIS_REQUEUE_FAILED_ON_START=true` (default), sehingga
+gangguan migrasi atau koneksi tidak meninggalkan kolom status kosong selama
+berhari-hari. Grafik dan analisis pertumbuhan detail tetap melewati RPC Python.
 
 Operasi LMS yang berulang memakai cache numerik bounded di `who.py`. Renderer
 grafik menyimpan SVG identik secara process-local dengan TTL agar pembukaan
 ulang grafik tidak merender ulang kurva WHO; ukuran dan TTL diatur melalui
-`ANALYSIS_GRAPH_CACHE_SIZE` dan `ANALYSIS_GRAPH_CACHE_TTL_SECONDS`. Dependency
-NumPy/Pandas/Polars tidak dipasang pada image runtime—semuanya tersedia di
-`training/requirements.txt` untuk pembersihan ekspor, statistik, dan pelatihan
-offline saja.
+`ANALYSIS_GRAPH_CACHE_SIZE` dan `ANALYSIS_GRAPH_CACHE_TTL_SECONDS`. Image
+analysis-worker memasang NumPy bounded (`numpy>=1.26,<3`) untuk perhitungan
+batch dan grafik. Pandas/Polars tetap hanya berada di `training/requirements.txt`
+untuk pembersihan ekspor, statistik, dan pelatihan offline sehingga image
+runtime tidak membawa dependensi tabel besar yang tidak dipakai jalur request.
 
 Setiap item mengembalikan `analysis_json` berisi `anomaly`, `risk`,
 `nutritionConcern`, `nutritionEducation`, `weightGainStatus`,

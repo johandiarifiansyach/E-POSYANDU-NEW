@@ -234,6 +234,19 @@ if [[ -f "$postgresql_dir/eposyandu-postgresql-backup.py" \
   systemctl daemon-reload
   systemctl enable --now eposyandu-postgresql-backup.timer
 fi
+if [[ -f "$postgresql_dir/eposyandu-postgresql-maintenance.service" \
+  && -f "$postgresql_dir/eposyandu-postgresql-maintenance.timer" \
+  && -x /usr/bin/psql ]] \
+  && id postgres >/dev/null 2>&1; then
+  install -o root -g root -m 0644 \
+    "$postgresql_dir/eposyandu-postgresql-maintenance.service" \
+    /etc/systemd/system/eposyandu-postgresql-maintenance.service
+  install -o root -g root -m 0644 \
+    "$postgresql_dir/eposyandu-postgresql-maintenance.timer" \
+    /etc/systemd/system/eposyandu-postgresql-maintenance.timer
+  systemctl daemon-reload
+  systemctl enable --now eposyandu-postgresql-maintenance.timer
+fi
 
 compose_file="$release_dir/deploy/oracle/compose.yaml"
 if [[ ! -f "$compose_file" ]]; then
@@ -243,6 +256,34 @@ fi
 
 compose_profiles="$(sed -n 's/^COMPOSE_PROFILES=//p' /etc/e-posyandu/nutrition-grpc.env | tail -n 1)"
 public_bind="$(sed -n 's/^ORACLE_PUBLIC_BIND=//p' /etc/e-posyandu/nutrition-grpc.env | tail -n 1)"
+# podman-compose does not enable service profiles from COMPOSE_PROFILES alone
+# (unlike Docker Compose).  Translate the persisted profile list into explicit
+# --profile flags so the Cloudflare Tunnel connector (and optional MCP) are
+# included whenever their profile is configured.
+if [[ -n "$compose_profiles" ]]; then
+  normalized_profiles="${compose_profiles//,/ }"
+  read -r -a profile_names <<< "$normalized_profiles"
+  for profile_name in "${profile_names[@]}"; do
+    [[ -z "$profile_name" ]] && continue
+    if [[ ! "$profile_name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+      echo "Nama COMPOSE_PROFILES tidak valid: $profile_name" >&2
+      exit 1
+    fi
+    compose_command+=(--profile "$profile_name")
+  done
+fi
+# A Tunnel-only origin must never fall back to the public 0.0.0.0 bind when
+# the persisted env predates Tunnel activation.  Persist the secure default
+# and export it so compose interpolation uses loopback during this rollout.
+case ",${compose_profiles// /,}," in
+  *,cloudflare-tunnel,*)
+    if [[ -z "$public_bind" ]]; then
+      public_bind=127.0.0.1
+      printf '\nORACLE_PUBLIC_BIND=%s\n' "$public_bind" >> /etc/e-posyandu/nutrition-grpc.env
+    fi
+    ;;
+esac
+export ORACLE_PUBLIC_BIND="$public_bind"
 case "${public_bind:-0.0.0.0}" in
   0.0.0.0|127.0.0.1) ;;
   *)

@@ -1,8 +1,8 @@
-import type { ReactNode } from 'react';
+import { memo, type ReactNode } from 'react';
 
 type BadgeColor = 'emerald' | 'blue' | 'pink' | 'slate' | 'amber';
 
-export function Badge({ children, color = 'emerald' }: { children?: ReactNode; color?: BadgeColor }) {
+export const Badge = memo(function Badge({ children, color = 'emerald' }: { children?: ReactNode; color?: BadgeColor }) {
   const colors: Record<BadgeColor, string> = {
     emerald: 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200',
     blue: 'bg-blue-100 text-blue-700 ring-1 ring-blue-200',
@@ -11,9 +11,9 @@ export function Badge({ children, color = 'emerald' }: { children?: ReactNode; c
     amber: 'bg-amber-100 text-amber-700 ring-1 ring-amber-200'
   };
   return <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-bold ${colors[color]}`}>{children}</span>;
-}
+});
 
-export function KenaikanBadge({ status }: { status?: string | null }) {
+export const KenaikanBadge = memo(function KenaikanBadge({ status }: { status?: string | null }) {
   if (!status) return <span className="text-slate-300">-</span>;
   const labels: Record<string, [string, string]> = {
     N: ['N (Naik)', 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200'],
@@ -23,9 +23,9 @@ export function KenaikanBadge({ status }: { status?: string | null }) {
   };
   const [label, color] = labels[status] || [status, 'bg-slate-100 text-slate-700'];
   return <span className={`ios-status-pill whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold ${color}`}>{label}</span>;
-}
+});
 
-export function StatusBadge({ status }: { status?: string | null }) {
+export const StatusBadge = memo(function StatusBadge({ status }: { status?: string | null }) {
   if (status === '-' || !status) return <span className="text-slate-300">-</span>;
   const key = String(status).trim().toLowerCase();
   let color = 'bg-slate-100 text-slate-700';
@@ -36,4 +36,4 @@ export function StatusBadge({ status }: { status?: string | null }) {
   else if (['gizi lebih', 'lila tinggi', 'makrosefali'].includes(key)) color = 'bg-sky-100 text-sky-700 ring-1 ring-sky-200';
   else if (['tinggi', 'obesitas'].includes(key)) color = 'bg-blue-900 text-white ring-1 ring-blue-900';
   return <span className={`ios-status-pill whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold ${color}`}>{status}</span>;
-}
+});

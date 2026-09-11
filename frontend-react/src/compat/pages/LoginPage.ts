@@ -80,7 +80,7 @@ function loginView() {
         h('section', { className: 'login-glass-card', 'aria-labelledby': 'login-title' },
           h('div', { className: 'login-brand' },
             h('div', { className: 'login-logo-shell' },
-              h('img', { src: '/logo-puskesmas-32981.svg', alt: 'Logo Puskesmas Gumukmas', className: 'h-11 w-11 object-contain' })
+              h('img', { src: '/logo-puskesmas-32981.svg', alt: 'Logo Puskesmas Gumukmas', className: 'h-11 w-11 object-contain', width: 44, height: 44, loading: 'eager', decoding: 'async' })
             ),
             h('h1', { id: 'login-title', className: 'login-title' }, 'E-Posyandu'),
             h('p', { className: 'login-organization' }, 'UPTD Puskesmas Gumukmas'),

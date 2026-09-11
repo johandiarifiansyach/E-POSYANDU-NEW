@@ -407,6 +407,34 @@ fn stale_snapshot_result(snapshot: &Value) -> Option<Value> {
     Some(result)
 }
 
+fn is_dashboard_stats_result(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    [
+        "S",
+        "D",
+        "N",
+        "T",
+        "B",
+        "O",
+        "asiEksklusif",
+        "asiTarget",
+        "underweight",
+        "stunting",
+        "wasting",
+        "perD",
+        "perN",
+        "perT",
+        "perAsiEksklusif",
+        "perUnderweight",
+        "perStunting",
+        "perWasting",
+    ]
+    .iter()
+    .all(|key| object.contains_key(*key))
+}
+
 fn valid_age_group(value: &str) -> bool {
     matches!(
         value,
@@ -3534,6 +3562,28 @@ impl NativeApi {
         }
         let village = scoped_value(scope, value(query, "village"), true);
         let posyandu = scoped_value(scope, value(query, "posyandu"), false);
+        let materialized_request = json!({
+            "p_month_start": month_start,
+            "p_month_end": month_end,
+            "p_previous_month_start": previous_month_start,
+            "p_previous_month_end": previous_month_end,
+            "p_age_group": age_group,
+            "p_village": village,
+            "p_posyandu": posyandu,
+            "p_role": database_scope_role(&scope.role),
+            "p_scope_village": scope.desa,
+            "p_scope_posyandu": scope.posyandu,
+        });
+        if let Ok(value) = self
+            .rpc(
+                "eposyandu_dashboard_materialized_stats",
+                materialized_request,
+            )
+            .await
+            && is_dashboard_stats_result(&value)
+        {
+            return Ok(value);
+        }
         let scope_key = dashboard_scope_key(village.as_deref(), posyandu.as_deref());
         let snapshot_request = json!({
             "p_cache_key": dashboard_cache_key(

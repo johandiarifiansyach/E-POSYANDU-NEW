@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   expireAuthSession,
   getCurrentAccessProfile,
@@ -16,11 +16,17 @@ import {
 } from '../api/authApi';
 import type { DashboardUser } from '../types';
 import { AppLoadingSkeleton, LoginLoadingSkeleton } from '../components/base/LoadingSkeletons';
-import LoginPage from '../pages/LoginPage';
-import MfaPage, { type AuthenticatedResult } from '../pages/MfaPage';
-import MaintenancePage from '../pages/MaintenancePage';
-import AdminInvitePage from '../pages/AdminInvitePage';
-import DashboardPage from '../pages/DashboardPage';
+import type { AuthenticatedResult } from '../pages/MfaPage';
+import { useAuthStore } from '../stores/authStore';
+
+// Keep the authentication shell small. Each screen is requested only after
+// the session phase requires it, so the login bundle does not include the
+// dashboard shell or any of its feature pages.
+const LoginPage = lazy(() => import('../pages/LoginPage'));
+const MfaPage = lazy(() => import('../pages/MfaPage'));
+const MaintenancePage = lazy(() => import('../pages/MaintenancePage'));
+const AdminInvitePage = lazy(() => import('../pages/AdminInvitePage'));
+const DashboardPage = lazy(() => import('../pages/DashboardPage'));
 
 type Phase = 'loading' | 'login' | 'mfa' | 'dashboard' | 'activation' | 'error';
 
@@ -30,6 +36,10 @@ const STORED_USER_KEY = 'e-posyandu:user';
 const IDLE_ACTIVITY_KEY = 'e-posyandu:last-activity';
 const IDLE_EXPIRED_KEY = 'e-posyandu:idle-session-expired';
 const IDLE_LOGOUT_MS = 30 * 60 * 1000;
+
+function LazyPage({ children, fallback = <AppLoadingSkeleton /> }: { children: ReactNode; fallback?: ReactNode }) {
+  return <Suspense fallback={fallback}>{children}</Suspense>;
+}
 
 const auth: Auth = getAuthInstance(initializeApp({
   projectId: import.meta.env.VITE_APP_ID || 'siposyandu-377b6'
@@ -186,14 +196,15 @@ function StartupError({ onRetry }: { onRetry: () => void }) {
 
 export default function AuthGate() {
   if (import.meta.env.VITE_MAINTENANCE_MODE === 'true') {
-    return <MaintenancePage onRetry={() => window.location.reload()} />;
+    return <LazyPage><MaintenancePage onRetry={() => window.location.reload()} /></LazyPage>;
   }
   return <AuthenticatedGate />;
 }
 
 function AuthenticatedGate() {
   const [phase, setPhase] = useState<Phase>('loading');
-  const [user, setUser] = useState<StoredUser | null>(null);
+  const user = useAuthStore((state) => state.user);
+  const setUser = useAuthStore((state) => state.setUser);
   const [pending, setPending] = useState<MfaPendingSignIn | null>(null);
   const phaseRef = useRef(phase);
   const mountedRef = useRef(true);
@@ -331,28 +342,32 @@ function AuthenticatedGate() {
   if (phase === 'activation') {
     const tokens = readAdminActivationTokens();
     if (!tokens) return <StartupError onRetry={() => window.location.reload()} />;
-    return <AdminInvitePage
-      {...tokens}
-      onComplete={async (result: SignInResult) => {
-        clearAdminActivationHash();
-        if (result.mfaRequired) {
-          setPending(result);
-          setPhase('mfa');
-          return;
-        }
-        await completeAuthentication({ profile: result.profile, recoveryCodes: [] });
-      }}
-      onCancel={async () => { clearAdminActivationHash(); await signOut(auth).catch(() => undefined); clearStoredUser(); setPhase('login'); }}
-    />;
+    return <LazyPage><AdminInvitePage
+        {...tokens}
+        onComplete={async (result: SignInResult) => {
+          clearAdminActivationHash();
+          if (result.mfaRequired) {
+            setPending(result);
+            setPhase('mfa');
+            return;
+          }
+          await completeAuthentication({ profile: result.profile, recoveryCodes: [] });
+        }}
+        onCancel={async () => { clearAdminActivationHash(); await signOut(auth).catch(() => undefined); clearStoredUser(); setPhase('login'); }}
+      /></LazyPage>;
   }
   if (phase === 'loading') return <AppLoadingSkeleton />;
   if (phase === 'error') return <StartupError onRetry={() => window.location.reload()} />;
-  if (phase === 'login') return <LoginPage onLogin={handleLogin} />;
+  if (phase === 'login') {
+    return <LazyPage fallback={<LoginLoadingSkeleton includeTurnstile={Boolean(import.meta.env.VITE_TURNSTILE_SITE_KEY?.trim())} />}>
+      <LoginPage onLogin={handleLogin} />
+    </LazyPage>;
+  }
   if (phase === 'mfa' && pending) {
-    return <MfaPage auth={auth} pending={pending} onAuthenticated={completeAuthentication} onCancel={handleCancelMfa} />;
+    return <LazyPage><MfaPage auth={auth} pending={pending} onAuthenticated={completeAuthentication} onCancel={handleCancelMfa} /></LazyPage>;
   }
   if (phase === 'dashboard' && user) {
-    return <DashboardPage user={user} onLogout={handleLogout} />;
+    return <LazyPage><DashboardPage user={user} onLogout={handleLogout} /></LazyPage>;
   }
   return <LoginLoadingSkeleton includeTurnstile={Boolean(import.meta.env.VITE_TURNSTILE_SITE_KEY?.trim())} />;
 }

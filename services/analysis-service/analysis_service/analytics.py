@@ -10,9 +10,10 @@ clinical aggregate.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 import os
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import ml, who
 from .runtime import TtlLruCache, payload_fingerprint
@@ -46,6 +47,7 @@ AGE_GROUPS = {
     "0-59", "newborn", "newborn_premature", "0-5", "6", "0-11",
     "0-23", "6-11", "6-23", "12-23", "6-59", "12-59", "24-59",
 }
+REPORT_TIMEZONE = ZoneInfo("Asia/Jakarta")
 
 
 def _text(value: Any) -> str:
@@ -67,6 +69,31 @@ def _date_key(row: dict[str, Any], *keys: str) -> str:
         value = row.get(key)
         if value:
             return _text(value)[:10]
+    return ""
+
+
+def _local_date_key(row: dict[str, Any], *keys: str) -> str:
+    """Return a report-local date for timestamptz values.
+
+    PostgreSQL dashboard aggregation uses Asia/Jakarta boundaries.  Parsing
+    the timestamp here prevents a child created near midnight UTC from being
+    assigned to a different report month by Python's string slicing.
+    """
+
+    for key in keys:
+        value = row.get(key)
+        if not value:
+            continue
+        text = _text(value)
+        if "T" not in text:
+            return text[:10]
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text[:10]
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(REPORT_TIMEZONE).date().isoformat()
     return ""
 
 
@@ -117,6 +144,22 @@ def _child_id(row: dict[str, Any]) -> str:
 
 def _measurement_child_id(row: dict[str, Any]) -> str:
     return _text(row.get("child_id") or row.get("childId") or row.get("legacy_child_id"))
+
+
+def _measurement_sort_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    """Match PostgreSQL's latest-measurement ordering exactly.
+
+    The native read projection resolves a duplicate measurement date with
+    ``created_at`` and then the stable row id.  Using the same three keys in
+    Python prevents dashboard aggregates from selecting a different row than
+    the table when a child has more than one entry on a day.
+    """
+
+    return (
+        _date_key(row, "measurement_date", "tglUkur", "measurementDate"),
+        _text(row.get("created_at") or row.get("createdAt")),
+        _text(row.get("id")),
+    )
 
 
 def _measurement_for_analysis(child: dict[str, Any], row: dict[str, Any]) -> dict[str, Any] | None:
@@ -251,7 +294,7 @@ def dashboard_stats(dataset: dict[str, Any]) -> dict[str, Any]:
         if child_id:
             by_child.setdefault(child_id, []).append(row)
     for rows in by_child.values():
-        rows.sort(key=lambda row: (_date_key(row, "measurement_date", "tglUkur", "measurementDate"), _text(row.get("id"))))
+        rows.sort(key=_measurement_sort_key)
 
     # The dashboard projection includes a compact all-history ASI stream for
     # the six-month cohort. Older deployments do not provide this field, so
@@ -268,7 +311,7 @@ def dashboard_stats(dataset: dict[str, Any]) -> dict[str, Any]:
         if child_id:
             by_child_asi.setdefault(child_id, []).append(row)
     for rows in by_child_asi.values():
-        rows.sort(key=lambda row: (_date_key(row, "measurement_date", "tglUkur", "measurementDate"), _text(row.get("id"))))
+        rows.sort(key=_measurement_sort_key)
 
     assessments: list[dict[str, Any]] = []
     measured = 0
@@ -280,16 +323,25 @@ def dashboard_stats(dataset: dict[str, Any]) -> dict[str, Any]:
         rows = by_child.get(child_id, [])
         current_rows = [row for row in rows if _in_range(_date_key(row, "measurement_date", "tglUkur", "measurementDate"), month_start, month_end)]
         previous_rows = [row for row in rows if _in_range(_date_key(row, "measurement_date", "tglUkur", "measurementDate"), previous_start, previous_end)]
-        if not previous_rows:
-            no_previous += 1
-        created_at = _date_key(child, "created_at", "createdAt")
+        created_at = _local_date_key(child, "created_at", "createdAt")
         if month_start and created_at.startswith(month_start[:7]):
             created += 1
         if not current_rows:
             continue
         current_row = current_rows[-1]
+        # O (Tidak Ditimbang) is a status of the current measurement cohort:
+        # a child without a current valid weight is not present in the table's
+        # status column and must not inflate the dashboard O counter.
+        current_weight = _number(current_row.get("weight_kg", current_row.get("bb")))
+        if current_weight is None or current_weight <= 0:
+            continue
+        measured += 1
+        if not previous_rows:
+            no_previous += 1
         item = _measurement_for_analysis(child, current_row)
-        if not item or item.get("weight_kg") is None:
+        if not item:
+            # Keep D/O aligned with the table even when a malformed row cannot
+            # be classified clinically (for example a missing sex value).
             continue
         history = []
         for row in rows:
@@ -304,7 +356,6 @@ def dashboard_stats(dataset: dict[str, Any]) -> dict[str, Any]:
         item["history"] = history
         assessed = _assess_item_cached(child, item, history)
         assessments.append(assessed)
-        measured += 1
         gain = assessed.get("weight_gain_status")
         if gain == "N":
             naik += 1
@@ -520,7 +571,7 @@ def children_page(dataset: dict[str, Any]) -> dict[str, Any]:
         if child_id:
             by_child.setdefault(child_id, []).append(row)
     for rows in by_child.values():
-        rows.sort(key=lambda row: (_date_key(row, "measurement_date", "tglUkur", "measurementDate"), _text(row.get("id"))))
+        rows.sort(key=_measurement_sort_key)
 
     selected: list[tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]] = []
     for child in children:
@@ -678,7 +729,7 @@ def exclusive_breastfeeding_page(dataset: dict[str, Any]) -> dict[str, Any]:
         if child_id:
             by_child.setdefault(child_id, []).append(row)
     for rows in by_child.values():
-        rows.sort(key=lambda row: (_date_key(row, "measurement_date", "tglUkur", "measurementDate"), _text(row.get("id"))))
+        rows.sort(key=_measurement_sort_key)
 
     selected: list[dict[str, Any]] = []
     for child in children:

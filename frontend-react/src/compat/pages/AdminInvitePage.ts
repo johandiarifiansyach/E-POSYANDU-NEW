@@ -45,7 +45,7 @@ export function mountAdminInvitePage(container: HTMLElement, options: Options): 
       h('section', { className: 'login-glass-card admin-mfa-card', 'aria-labelledby': 'invite-title' },
         h('div', { className: 'login-brand' },
           h('div', { className: 'login-logo-shell' },
-            h('img', { src: '/logo-puskesmas-32981.svg', alt: 'Logo Puskesmas Gumukmas', className: 'h-11 w-11 object-contain' })
+            h('img', { src: '/logo-puskesmas-32981.svg', alt: 'Logo Puskesmas Gumukmas', className: 'h-11 w-11 object-contain', width: 44, height: 44, loading: 'eager', decoding: 'async' })
           ),
           h('h1', { id: 'invite-title', className: 'login-title' }, 'Aktivasi Akun'),
           h('p', { className: 'login-organization' }, 'E-Posyandu Puskesmas Gumukmas'),

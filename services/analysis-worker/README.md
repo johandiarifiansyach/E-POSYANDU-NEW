@@ -14,9 +14,25 @@ Semua keputusan analitik tetap berada di CPython yang dimuat melalui PyO3:
 
 Rust tidak menghitung ulang indikator dan tidak menyimpan hasil analitik
 sendiri. Ia hanya mengubah pesan protobuf menjadi JSON, memanggil fungsi
-Python, lalu mengubah hasilnya kembali ke protobuf. Loop outbox memanggil
-`process_outbox_once_json` secara bounded; beberapa instance worker dapat
+Python, lalu mengubah hasilnya kembali ke protobuf. Scheduler outbox menunggu
+`LISTEN e_posyandu_analysis_outbox` dan tetap memiliki polling interval sebagai
+safety-net. Satu wake memanggil `process_outbox_once_json` untuk batch terbatas
+(`ANALYSIS_PERSISTENCE_BATCH_SIZE`, default 8); beberapa instance worker dapat
 berbagi antrean PostgreSQL karena klaim memakai `FOR UPDATE SKIP LOCKED`.
+Kegagalan job dikembalikan ke antrean dengan exponential backoff yang dibatasi
+(`ANALYSIS_PERSISTENCE_RETRY_BASE_SECONDS` dan
+`ANALYSIS_PERSISTENCE_RETRY_MAX_SECONDS`).
+
+## Akselerasi Python
+
+NumPy dipakai untuk operasi LMS yang dapat dibatch dan pembentukan kurva WHO.
+Tabel referensi `anthropometry.json` dan tabel lingkar tubuh tetap dimuat satu
+kali melalui cache startup; tidak ada pembacaan file per request. Atur
+`ANALYSIS_NUMPY_ENABLED=false` untuk fallback skalar saat diagnosis operasional.
+Pada service Python standalone, `ANALYSIS_DATASET_WORKER_MODE=process` memakai
+beberapa proses CPython untuk pekerjaan CPU-bound dan menghindari GIL. Mode
+tersebut tidak digunakan pada binary PyO3 ini; deployment PyO3 tetap
+menggunakan beberapa loop Rust yang aman dan satu interpreter Python.
 
 ## Pemeriksaan lokal
 

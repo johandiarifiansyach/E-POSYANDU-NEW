@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import {
   addDoc,
   collection,
@@ -32,6 +32,7 @@ import {
   Card,
   InputGroup,
   AppSelect,
+  GrowthChartSkeleton,
   KenaikanBadge,
   SkeletonBlock,
   StatusBadge,
@@ -48,8 +49,13 @@ import {
   TrendingUp,
 } from "../../ui/icons";
 import type { DashboardUser } from "../../types";
-import ReactGrowthChartsPage from "../growth-charts/ReactGrowthChartsPage";
 import MeasurementAnalysisDialog from "./MeasurementAnalysisDialog";
+
+// Growth charts are opened from a button in the measurement view. Defer the
+// chart renderer and PDF export code until that modal is actually requested.
+const ReactGrowthChartsPage = lazy(
+  () => import("../growth-charts/ReactGrowthChartsPage"),
+);
 
 type Child = Record<string, any>;
 type Measurement = Record<string, any> & { id: string };
@@ -550,11 +556,19 @@ export default function ReactMeasurementPage({
       data-react-measurement-page="true"
     >
       {showCharts ? (
-        <ReactGrowthChartsPage
-          child={child}
-          history={monthlyHistory}
-          onClose={() => setShowCharts(false)}
-        />
+        <Suspense
+          fallback={
+            <div className="growth-chart-backdrop" role="presentation">
+              <GrowthChartSkeleton />
+            </div>
+          }
+        >
+          <ReactGrowthChartsPage
+            child={child}
+            history={monthlyHistory}
+            onClose={() => setShowCharts(false)}
+          />
+        </Suspense>
       ) : null}
       {analysis.status !== "idle" ? (
         <MeasurementAnalysisDialog

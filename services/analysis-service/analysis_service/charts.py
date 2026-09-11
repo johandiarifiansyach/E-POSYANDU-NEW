@@ -1,6 +1,7 @@
 """Server-side WHO growth chart renderer.
 
-The renderer deliberately uses only the Python standard library.  It creates
+The renderer uses the Python standard library and an optional NumPy
+accelerator.  It creates
 an accessible SVG from the exact LMS tables consumed by :mod:`who`, so the
 browser does not need a second copy of the anthropometry calculation.  The
 layout follows the familiar WHO reference-chart conventions (SD curves,
@@ -18,6 +19,11 @@ from typing import Any
 
 from . import ml, who
 from .runtime import TtlLruCache, payload_fingerprint
+
+try:  # Optional accelerator; scalar rendering remains the compatibility path.
+    import numpy as np
+except ImportError:  # pragma: no cover - exercised in the stdlib-only image
+    np = None  # type: ignore[assignment]
 
 
 WIDTH = 1200
@@ -100,6 +106,25 @@ def _inverse_lms(z: float, reference: list[float] | tuple[float, float, float]) 
     if l == 0:
         return median * math.exp(spread * z)
     return median * max(0.0, 1 + l * spread * z) ** (1 / l)
+
+
+def _inverse_lms_many(
+    z: float,
+    references: list[list[float]] | list[tuple[float, float, float]],
+) -> list[float]:
+    """Invert one SD curve for all LMS rows with one NumPy operation."""
+
+    if np is None or not who.numpy_enabled() or len(references) < 8:
+        return [_inverse_lms(z, reference) for reference in references]
+    rows = np.asarray(references, dtype=np.float64)
+    lms_l, medians, spreads = rows[:, 0], rows[:, 1], rows[:, 2]
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        values = np.where(
+            lms_l == 0.0,
+            medians * np.exp(spreads * z),
+            medians * np.maximum(0.0, 1.0 + lms_l * spreads * z) ** (1.0 / lms_l),
+        )
+    return [float(value) for value in values]
 
 
 def _nice_step(span: float, ticks: int = 8) -> float:
@@ -343,7 +368,8 @@ def _render_growth_chart_uncached(
     sex_color = SEX_COLORS[normalized_sex]
     title, x_label, y_label, unit, reference, child_points = _chart_spec(chart_type, normalized_sex, points)
     curve_z = CURVE_Z_WITH_INNER if chart_type in INNER_CURVE_TYPES else CURVE_Z
-    curve_values = [_inverse_lms(z, lms) for _, lms in reference for z in curve_z]
+    reference_lms = [lms for _, lms in reference]
+    curve_values = [value for z in curve_z for value in _inverse_lms_many(z, reference_lms)]
     point_values = [value for _, value, _, _ in child_points]
     all_y_values = [value for value in curve_values + point_values if math.isfinite(value)]
     if not all_y_values:
@@ -459,7 +485,11 @@ def _render_growth_chart_uncached(
     # WHO curves are solid and use black at ±3 SD, red at ±2 SD, yellow at
     # ±1 SD, and green at the median (0 SD), matching the requested reference.
     for z in curve_z:
-        curve = [(sx(x_value), sy(_inverse_lms(z, lms))) for x_value, lms in reference]
+        curve_y = _inverse_lms_many(z, reference_lms)
+        curve = [
+            (sx(x_value), sy(y_value))
+            for (x_value, _), y_value in zip(reference, curve_y)
+        ]
         parts.append(f'<path d="{_path(curve)}" fill="none" stroke="{CURVE_COLORS[z]}" stroke-width="{2.8 if z == 0 else 1.9}" stroke-linejoin="round"><title>{"median (0 SD)" if z == 0 else f"{z:+d} SD"}</title></path>')
     # Child observations are joined chronologically per contiguous segment.
     ordered = sorted(child_points, key=lambda item: (item[0], str(item[2])))

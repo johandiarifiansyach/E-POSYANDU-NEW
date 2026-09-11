@@ -17,6 +17,12 @@ Cloudflare berada di depan Oracle untuk DNS, proxy/WAF, DDoS, Turnstile,
 Tunnel, Queue, R2, serta jalur rollback Worker/Pages. Tidak ada failover tulis
 otomatis ke database Oracle.
 
+PostgreSQL native memakai indeks jalur baca dan autovacuum bawaan. Release
+terbaru juga memasang `eposyandu-postgresql-maintenance.timer` yang menjalankan
+`VACUUM (ANALYZE)` tabel antrean/proyeksi setiap jam. Pool koneksi aplikasi tetap
+dibatasi per service; PgBouncer hanya perlu diaktifkan bila metrik koneksi
+menunjukkan tekanan `max_connections`, bukan sebagai pengganti pool aplikasi.
+
 Urutan migrasi yang aman:
 
 1. Deploy Oracle dengan mode `proxy`, lalu uji API internal.
@@ -54,6 +60,10 @@ npm run oracle:deploy:data-processing -- eposyandu-oracle nutrition.example.go.i
 # Hanya worker analisis Rust/PyO3 (kalkulasi tetap Python)
 npm run oracle:deploy:analysis -- eposyandu-oracle nutrition.example.go.id
 
+# Rilis seluruh stack Oracle secara atomik (API, domain service, worker,
+# analysis-worker, dan MCP bila profile/secret-nya sudah disiapkan)
+npm run oracle:deploy:all -- eposyandu-oracle nutrition.example.go.id
+
 # Hanya satu domain service
 npm run oracle:deploy:identity -- eposyandu-oracle nutrition.example.go.id
 npm run oracle:deploy:read -- eposyandu-oracle nutrition.example.go.id
@@ -76,6 +86,11 @@ environment URL bila service dipindahkan ke server/platform lain. Compose hanya 
 `up --no-deps` pada target, sehingga Redis, Caddy, Tunnel, dan service lain tidak
 ikut di-restart. Migration database dijalankan terpisah sebelum service yang
 membutuhkan skema baru dirilis.
+
+Readiness gateway juga memeriksa endpoint `/ready` analysis-worker dan
+keberadaan tabel `analysis_outbox`, `measurement_analysis`, serta
+`dashboard_analysis`. Jika analisis belum siap, status gateway menjadi
+`degraded` tetapi jalur baca tetap melayani snapshot terakhir.
 
 Pada rilis penuh, worker mengirim batch pengukuran ke `analysis-worker` melalui
 `ANALYSIS_GRPC_URL=unix:///run/e-posyandu/analysis.sock` dan
@@ -116,11 +131,18 @@ konfigurasi global yang jarang berubah seperti feature flag, menu, dan referensi
 Health `GET /api/v1/health/ready` menampilkan keterjangkauan Redis dan akan
 berstatus `degraded` bila cache tidak tersedia tanpa mengalihkan sumber data.
 
+Key native mengikuti format
+`e-posyandu:cache:v2:<target>:version:<n>:scope:<sha256>:query:<sha256>`;
+scope/query selalu di-hash sehingga data pribadi tidak terlihat pada key.
+Jalur REST saat ini menyimpan satu payload JSON per request. Pipeline/MGET
+digunakan untuk endpoint batch baru yang mengambil beberapa key sekaligus,
+bukan untuk memecah satu payload menjadi banyak round-trip.
+
 Proxy Pages membaca environment variable non-secret `PRODUCTION_API_ORIGIN`.
-Nilai default tetap Worker lama. Saat cutover, isi dengan
-`https://api.eposyandu.app`; untuk rollback, hapus variable tersebut atau
-kembalikan ke URL Worker lama. Jangan mengubah `STAGING_API_ORIGIN` menjadi
-origin produksi.
+Nilai default sudah `https://api.eposyandu.app` (Oracle primary). Untuk
+rollback baca yang terkontrol, isi `PRODUCTION_API_ORIGIN` dengan origin
+Worker lama dan pertahankan `PRODUCTION_API_FALLBACK_ORIGIN` sebagai nilai
+cadangan. Jangan mengubah `STAGING_API_ORIGIN` menjadi origin produksi.
 
 Deployment juga menerbitkan metrik kustom `eposyandu.ApiUp` dan
 `eposyandu.TunnelUp`. Setelah cutover, buat alarm `ApiUp[1m].min() < 1` dan

@@ -68,7 +68,7 @@
   position: fixed;
   inset: -2%;
   background-color: #556477;
-  background-image: url('/batik-jember-login.jpg');
+  background-image: url('/batik-jember-login.webp');
   background-position: center;
   background-size: cover;
   filter: saturate(0.52) brightness(0.87) contrast(0.9) hue-rotate(9deg);
@@ -362,6 +362,11 @@
 .admin-mfa-secondary:hover:not(:disabled) {
   background: rgba(0, 102, 204, 0.14);
   box-shadow: none;
+}
+
+/* Keep disabled secondary MFA actions readable while a passkey ceremony is running. */
+.login-submit.admin-mfa-secondary:disabled {
+  color: #fff;
 }
 
 .admin-mfa-qr {

@@ -449,6 +449,25 @@ fn is_date(value: &str) -> bool {
             .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
 }
 
+fn valid_age_group(value: &str) -> bool {
+    matches!(
+        value,
+        "0-59"
+            | "newborn"
+            | "newborn_premature"
+            | "0-5"
+            | "6"
+            | "0-11"
+            | "0-23"
+            | "6-11"
+            | "6-23"
+            | "12-23"
+            | "6-59"
+            | "12-59"
+            | "24-59"
+    )
+}
+
 fn parse_positive(value: Option<&String>, fallback: usize, maximum: usize) -> ApiResult<usize> {
     let Some(value) = value.filter(|value| !value.is_empty()) else {
         return Ok(fallback);
@@ -679,6 +698,22 @@ fn database_scope_role(role: &str) -> &str {
         "Ahli Gizi"
     } else {
         role
+    }
+}
+
+/// Resolve an optional location filter without allowing a scoped account to
+/// widen its query beyond the village/posyandu assigned to it. Full-access
+/// roles may use the explicit filter selected by the user.
+fn scoped_value(scope: &AccessScope, selected: Option<&str>, village: bool) -> Option<String> {
+    if is_full_access_role(&scope.role) {
+        return selected.map(ToOwned::to_owned);
+    }
+    if village {
+        scope.desa.clone()
+    } else if scope.role == "Kader Posyandu" {
+        scope.posyandu.clone()
+    } else {
+        selected.map(ToOwned::to_owned)
     }
 }
 
@@ -1132,6 +1167,17 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
     let view = first_query(&query, "view")
         .map(String::as_str)
         .unwrap_or("data");
+    let requested_age_group = first_query(&query, "ageGroup")
+        .map(String::as_str)
+        .unwrap_or("0-59");
+    if !valid_age_group(requested_age_group) {
+        return Err(api_error(422, "Kelompok umur tidak valid."));
+    }
+    let age_group = if view == "mpasi" {
+        "6-23"
+    } else {
+        requested_age_group
+    };
     let sort = first_query(&query, "sort")
         .map(String::as_str)
         .unwrap_or("recent");
@@ -1150,6 +1196,45 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
     if search.is_some_and(|value| value.chars().count() > 80) {
         return Err(api_error(422, "Kata pencarian terlalu panjang."));
     }
+
+    let village = first_query(&query, "village")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    let posyandu = first_query(&query, "posyandu")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    // Dashboard and table rows must come from the same primary projection.
+    // In particular, do not let a lagging Neon replica return a different
+    // cohort total or an older Python status while the dashboard reads the
+    // just-committed primary data.
+    let materialized_payload = json!({
+        "p_as_of": as_of,
+        "p_measurement_start": measurement_start,
+        "p_measurement_end": measurement_end,
+        "p_page": page,
+        "p_size": size,
+        "p_sort": sort,
+        "p_view": view,
+        "p_search": search,
+        "p_village": scoped_value(&scope, village, true),
+        "p_posyandu": scoped_value(&scope, posyandu, false),
+        "p_role": database_scope_role(&scope.role),
+        "p_scope_village": scope.desa,
+        "p_scope_posyandu": scope.posyandu,
+        "p_age_group": age_group,
+    });
+    if let Ok(value) = rpc(
+        env,
+        "eposyandu_materialized_children_page",
+        materialized_payload,
+    )
+    .await
+    {
+        if value.get("items").is_some() {
+            return Ok(value);
+        }
+    }
+
     if matches!(
         view,
         "problem_underweight" | "problem_stunting" | "problem_wasting" | "problem_tidak_naik"
@@ -1166,11 +1251,12 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
                 "p_size": size,
                 "p_search": search,
                 "p_sort": sort,
-                "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
-                "p_posyandu": first_query(&query, "posyandu").map(|value| value.trim()).filter(|value| !value.is_empty()),
+                "p_village": village,
+                "p_posyandu": posyandu,
                 "p_role": database_scope_role(&scope.role),
                 "p_scope_village": scope.desa,
                 "p_scope_posyandu": scope.posyandu,
+                "p_age_group": age_group,
             }),
         )
         .await;
@@ -1184,11 +1270,12 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
         "p_sort": sort,
         "p_view": view,
         "p_search": search,
-        "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
-        "p_posyandu": first_query(&query, "posyandu").map(|value| value.trim()).filter(|value| !value.is_empty()),
+        "p_village": village,
+        "p_posyandu": posyandu,
         "p_role": database_scope_role(&scope.role),
         "p_scope_village": scope.desa,
         "p_scope_posyandu": scope.posyandu,
+        "p_age_group": age_group,
     });
     if let Ok(value) = read_rpc(
         env,
@@ -1487,11 +1574,19 @@ async fn dashboard(request: Request, env: &Env) -> ApiResult<Value> {
     }) {
         return Err(api_error(422, "Periode dashboard tidak valid."));
     }
-    // The dashboard must agree with writes immediately. Other read-heavy
-    // pages may use Neon, but these aggregate counters stay on Supabase.
-    rpc(env, "eposyandu_dashboard_stats", json!({
+    let age_group = first_query(&query, "ageGroup")
+        .map(String::as_str)
+        .unwrap_or("0-59");
+    if !valid_age_group(age_group) {
+        return Err(api_error(422, "Kelompok umur dashboard tidak valid."));
+    }
+    // The dashboard and child table read one persisted projection. Python
+    // remains the authority that writes measurement_analysis; this RPC only
+    // applies the same scope, period, and age predicates used by the table.
+    rpc(env, "eposyandu_dashboard_materialized_stats", json!({
         "p_month_start": first_query(&query, "monthStart"), "p_month_end": first_query(&query, "monthEnd"),
         "p_previous_month_start": first_query(&query, "previousMonthStart"), "p_previous_month_end": first_query(&query, "previousMonthEnd"),
+        "p_age_group": age_group,
         "p_village": first_query(&query, "village").map(|value| value.trim()).filter(|value| !value.is_empty()),
         "p_posyandu": first_query(&query, "posyandu").map(|value| value.trim()).filter(|value| !value.is_empty()),
         "p_role": database_scope_role(&scope.role), "p_scope_village": scope.desa, "p_scope_posyandu": scope.posyandu,

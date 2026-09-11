@@ -44,6 +44,47 @@ export function getAgeInMonths(birthDateString: unknown, refDate = new Date()): 
   return Math.max(months, 0);
 }
 
+/**
+ * Calculate completed months without conflating an invalid/missing birth date
+ * with a newborn.  The table read model does not persist age on the child
+ * row, so list pages use this helper against the selected report date.
+ */
+export function getCompletedAgeInMonths(
+  birthDateValue: unknown,
+  referenceDateValue: unknown = new Date(),
+): number | null {
+  const birthMatch = String(birthDateValue ?? '').slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!birthMatch) return null;
+  const birthYear = Number(birthMatch[1]);
+  const birthMonth = Number(birthMatch[2]);
+  const birthDay = Number(birthMatch[3]);
+  const birth = new Date(birthYear, birthMonth - 1, birthDay);
+  if (
+    !Number.isFinite(birth.getTime()) ||
+    birth.getFullYear() !== birthYear ||
+    birth.getMonth() !== birthMonth - 1 ||
+    birth.getDate() !== birthDay
+  ) {
+    return null;
+  }
+
+  const reference =
+    referenceDateValue instanceof Date
+      ? new Date(referenceDateValue.getTime())
+      : (() => {
+          const match = String(referenceDateValue ?? '').slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+          if (!match) return new Date(Number.NaN);
+          return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+        })();
+  if (!Number.isFinite(reference.getTime()) || birth > reference) return null;
+
+  let months =
+    (reference.getFullYear() - birthYear) * 12 +
+    reference.getMonth() - (birthMonth - 1);
+  if (reference.getDate() < birthDay) months -= 1;
+  return Math.max(0, months);
+}
+
 export function normalizeDecimalInput(value: unknown): string {
   const raw = String(value ?? '').trim();
   let result = '';

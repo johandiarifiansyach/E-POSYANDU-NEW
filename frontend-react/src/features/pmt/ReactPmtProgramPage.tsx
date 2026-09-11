@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   Calendar,
@@ -18,6 +18,7 @@ import {
   KenaikanBadge,
   StatusBadge,
   SkeletonBlock,
+  VirtualizedTableBody,
 } from "../../components/base";
 import { formatIndoDate } from "../../shared/formatters";
 import type { DashboardUser } from "../../types";
@@ -70,7 +71,7 @@ function statusResult(category: string, status: string) {
   );
 }
 
-function MeasurementCell({
+const MeasurementCell = memo(function MeasurementCell({
   category,
   status,
   date,
@@ -99,9 +100,9 @@ function MeasurementCell({
       <div className="mt-1">{statusResult(category, status)}</div>
     </div>
   );
-}
+});
 
-function PmtTableHeader({ weeks }: { weeks: number[] }) {
+const PmtTableHeader = memo(function PmtTableHeader({ weeks }: { weeks: number[] }) {
   return (
     <thead>
       <tr>
@@ -121,7 +122,112 @@ function PmtTableHeader({ weeks }: { weeks: number[] }) {
       </tr>
     </thead>
   );
-}
+});
+
+type PmtTableRowProps = {
+  program: Program;
+  child?: Child;
+  index: number;
+  weeks: number[];
+  openingProgramId: string | null;
+  onOpenMonitoring: (program: Program, child: Child | undefined) => void;
+  onDeleteProgram?: (program: Program) => void;
+};
+
+/** Isolated PMT row.  PMT monitoring state changes should only update the
+ * selected row/action, not rebuild every programme row in the table. */
+const PmtTableRow = memo(function PmtTableRow({
+  program,
+  child,
+  index,
+  weeks,
+  openingProgramId,
+  onOpenMonitoring,
+  onDeleteProgram,
+}: PmtTableRowProps) {
+  const programKey = String(program.id || program.childId || index);
+  const baseline = baselineForProgram(program, child);
+  const programWeeks = maxWeeksForCategory(program.category);
+  const category = String(program.category || "TidakNaik");
+  const Icon = categoryIcon(category);
+  const partner = program.mitraLain || program.mitra || "-";
+  return (
+    <tr className="ios-data-row">
+      <td className="pmt-col-number">{index + 1}</td>
+      <td className="pmt-col-child">
+        <strong>{program.childName || child?.nama || "-"}</strong>
+        <span>
+          {child
+            ? `${child.desa || ""} / ${child.posyandu || ""}`
+            : "Data wilayah tersedia saat balita dimuat"}
+        </span>
+      </td>
+      <td>
+        <div className={`pmt-category-label pmt-category-${category.toLowerCase()}`}>
+          <Icon className="h-4 w-4" />
+          <span>{categoryLabel(category)}</span>
+        </div>
+        <span className="pmt-metric-label">Status {categoryMetric(category)}</span>
+      </td>
+      <td>{program.sumberAnggaran || "-"}</td>
+      <td>{partner}</td>
+      <td className="whitespace-nowrap">{formatIndoDate(String(baseline.date || ""))}</td>
+      <td className="pmt-week-column">
+        <MeasurementCell
+          category={category}
+          status={monitoringStatus(program, child, null, 0, baseline)}
+          date={baseline.date}
+          weight={baseline.weight}
+          height={baseline.height}
+        />
+      </td>
+      {weeks.map((week) => {
+        const monitoring = getMonitoringForWeek(program, week);
+        return week > programWeeks ? (
+          <td key={week} className="pmt-week-column pmt-week-disabled">Tidak berlaku</td>
+        ) : (
+          <td key={week} className="pmt-week-column">
+            <MeasurementCell
+              category={category}
+              status={monitoringStatus(program, child, monitoring, week, baseline)}
+              date={monitoring?.tgl}
+              weight={monitoring?.bb}
+              height={monitoring?.tb}
+            />
+          </td>
+        );
+      })}
+      <td className="pmt-col-action">
+        <div className="pmt-row-actions">
+          <button
+            type="button"
+            className="table-action-button table-action-blue"
+            disabled={!child || Boolean(openingProgramId)}
+            aria-label={`Pantau PMT ${program.childName || "balita"}`}
+            onClick={() => onOpenMonitoring(program, child)}
+          >
+            {openingProgramId === programKey ? (
+              <Loader2 className="h-4 w-4" />
+            ) : (
+              <Calendar className="h-4 w-4" />
+            )}
+          </button>
+          {onDeleteProgram ? (
+            <button
+              type="button"
+              className="table-action-button table-action-red"
+              disabled={!program.id}
+              aria-label={`Hapus PMT ${program.childName || "balita"}`}
+              onClick={() => onDeleteProgram(program)}
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
+      </td>
+    </tr>
+  );
+});
 
 export default function ReactPmtProgramPage({
   user,
@@ -206,12 +312,15 @@ export default function ReactPmtProgramPage({
     };
   }, [childrenData, remotePrograms]);
 
-  const displayedPrograms =
-    pageState?.status === "success"
-      ? pageState.data || []
-      : pmtPrograms.length
-        ? pmtPrograms
-        : remotePrograms;
+  const displayedPrograms = useMemo(
+    () =>
+      pageState?.status === "success"
+        ? pageState.data || []
+        : pmtPrograms.length
+          ? pmtPrograms
+          : remotePrograms,
+    [pageState?.data, pageState?.status, pmtPrograms, remotePrograms],
+  );
   const childById = useMemo(
     () =>
       new Map(
@@ -255,18 +364,21 @@ export default function ReactPmtProgramPage({
     currentFilterDate,
     displayedPrograms,
   ]);
-  const visibleWeekCount =
-    categoryFilter === "Semua"
-      ? Math.max(
-          2,
-          ...filteredPrograms.map((program) =>
-            maxWeeksForCategory(program.category),
-          ),
-        )
-      : maxWeeksForCategory(categoryFilter);
-  const weeks = Array.from(
-    { length: visibleWeekCount },
-    (_, index) => index + 1,
+  const visibleWeekCount = useMemo(
+    () =>
+      categoryFilter === "Semua"
+        ? Math.max(
+            2,
+            ...filteredPrograms.map((program) =>
+              maxWeeksForCategory(program.category),
+            ),
+          )
+        : maxWeeksForCategory(categoryFilter),
+    [categoryFilter, filteredPrograms],
+  );
+  const weeks = useMemo(
+    () => Array.from({ length: visibleWeekCount }, (_, index) => index + 1),
+    [visibleWeekCount],
   );
   const pageLoading = pageState?.status === "loading";
   const pageError = pageState?.status === "error" ? pageState.message : null;
@@ -274,17 +386,42 @@ export default function ReactPmtProgramPage({
     pageLoading ||
     (!pageState && remoteState === "loading" && !pmtPrograms.length);
 
-  const openMonitoring = async (program: Program, child: Child | undefined) => {
-    const programKey = String(program.id || program.childId || "");
-    if (!child || !program.childId || !programKey || openingProgramId) return;
-    setOpeningProgramId(programKey);
-    try {
-      if (onOpenMonitoring) await onOpenMonitoring(program, child);
-      else setSelectedMonitoring({ program, child });
-    } finally {
-      setOpeningProgramId(null);
-    }
-  };
+  const openMonitoring = useCallback(
+    async (program: Program, child: Child | undefined) => {
+      const programKey = String(program.id || program.childId || "");
+      if (!child || !program.childId || !programKey || openingProgramId) return;
+      setOpeningProgramId(programKey);
+      try {
+        if (onOpenMonitoring) await onOpenMonitoring(program, child);
+        else setSelectedMonitoring({ program, child });
+      } finally {
+        setOpeningProgramId(null);
+      }
+    },
+    [onOpenMonitoring, openingProgramId],
+  );
+  const renderPmtRow = useCallback(
+    (program: Program, index: number) => {
+      const child =
+        childById.get(String(program.childId)) ||
+        (program.child && typeof program.child === "object"
+          ? (program.child as Child)
+          : undefined);
+      return (
+        <PmtTableRow
+          key={String(program.id || program.childId || index)}
+          program={program}
+          child={child}
+          index={index}
+          weeks={weeks}
+          openingProgramId={openingProgramId}
+          onOpenMonitoring={openMonitoring}
+          onDeleteProgram={onDeleteProgram}
+        />
+      );
+    },
+    [childById, onDeleteProgram, openMonitoring, openingProgramId, weeks],
+  );
 
   return (
     <div
@@ -395,123 +532,14 @@ export default function ReactPmtProgramPage({
           >
             <table className="pmt-data-table ios-data-table">
               <PmtTableHeader weeks={weeks} />
-              <tbody>
-                {filteredPrograms.map((program, index) => {
-                  const child =
-                    childById.get(String(program.childId)) ||
-                    (program.child && typeof program.child === "object"
-                      ? (program.child as Child)
-                      : undefined);
-                  const programKey = String(
-                    program.id || program.childId || index,
-                  );
-                  const baseline = baselineForProgram(program, child);
-                  const programWeeks = maxWeeksForCategory(program.category);
-                  const category = String(program.category || "TidakNaik");
-                  const Icon = categoryIcon(category);
-                  const partner = program.mitraLain || program.mitra || "-";
-                  return (
-                    <tr key={programKey} className="ios-data-row">
-                      <td className="pmt-col-number">{index + 1}</td>
-                      <td className="pmt-col-child">
-                        <strong>
-                          {program.childName || child?.nama || "-"}
-                        </strong>
-                        <span>
-                          {child
-                            ? `${child.desa || ""} / ${child.posyandu || ""}`
-                            : "Data wilayah tersedia saat balita dimuat"}
-                        </span>
-                      </td>
-                      <td>
-                        <div
-                          className={`pmt-category-label pmt-category-${category.toLowerCase()}`}
-                        >
-                          <Icon className="h-4 w-4" />
-                          <span>{categoryLabel(category)}</span>
-                        </div>
-                        <span className="pmt-metric-label">
-                          Status {categoryMetric(category)}
-                        </span>
-                      </td>
-                      <td>{program.sumberAnggaran || "-"}</td>
-                      <td>{partner}</td>
-                      <td className="whitespace-nowrap">
-                        {formatIndoDate(String(baseline.date || ""))}
-                      </td>
-                      <td className="pmt-week-column">
-                        <MeasurementCell
-                          category={category}
-                          status={monitoringStatus(
-                            program,
-                            child,
-                            null,
-                            0,
-                            baseline,
-                          )}
-                          date={baseline.date}
-                          weight={baseline.weight}
-                          height={baseline.height}
-                        />
-                      </td>
-                      {weeks.map((week) =>
-                        week > programWeeks ? (
-                          <td
-                            key={week}
-                            className="pmt-week-column pmt-week-disabled"
-                          >
-                            Tidak berlaku
-                          </td>
-                        ) : (
-                          <td key={week} className="pmt-week-column">
-                            <MeasurementCell
-                              category={category}
-                              status={monitoringStatus(
-                                program,
-                                child,
-                                getMonitoringForWeek(program, week),
-                                week,
-                                baseline,
-                              )}
-                              date={getMonitoringForWeek(program, week)?.tgl}
-                              weight={getMonitoringForWeek(program, week)?.bb}
-                              height={getMonitoringForWeek(program, week)?.tb}
-                            />
-                          </td>
-                        ),
-                      )}
-                      <td className="pmt-col-action">
-                        <div className="pmt-row-actions">
-                          <button
-                            type="button"
-                            className="table-action-button table-action-blue"
-                            disabled={!child || Boolean(openingProgramId)}
-                            aria-label={`Pantau PMT ${program.childName || "balita"}`}
-                            onClick={() => void openMonitoring(program, child)}
-                          >
-                            {openingProgramId === programKey ? (
-                              <Loader2 className="h-4 w-4" />
-                            ) : (
-                              <Calendar className="h-4 w-4" />
-                            )}
-                          </button>
-                          {onDeleteProgram ? (
-                            <button
-                              type="button"
-                              className="table-action-button table-action-red"
-                              disabled={!program.id}
-                              aria-label={`Hapus PMT ${program.childName || "balita"}`}
-                              onClick={() => onDeleteProgram(program)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
+              <VirtualizedTableBody
+                items={filteredPrograms}
+                colSpan={8 + weeks.length}
+                rowKey={(program, index) => String(program.id || program.childId || index)}
+                renderRow={renderPmtRow}
+                estimateRowHeight={112}
+                className="divide-y divide-slate-100"
+              />
             </table>
           </DataTable>
         )}

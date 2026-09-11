@@ -11,6 +11,7 @@ use tracing::warn;
 pub(crate) const DYNAMIC_CACHE_TTL_SECONDS: u64 = 5 * 60;
 pub(crate) const DASHBOARD_CACHE_TTL_SECONDS: u64 = 60;
 const DYNAMIC_CACHE_VERSION_KEY: &str = "e-posyandu:dynamic:version:v1";
+const DYNAMIC_CACHE_KEY_PREFIX: &str = "e-posyandu:cache:v2";
 
 #[derive(Clone)]
 pub(crate) struct NativeCache {
@@ -127,19 +128,60 @@ fn dynamic_cache_key(
     request_target: &str,
     version: i64,
 ) -> String {
-    let version = version.to_string();
-    let mut digest = Sha256::new();
-    for component in [
-        version.as_str(),
+    // Keep the key human-auditable at the category/version level while
+    // hashing scope and query values so names, NIKs, and addresses never
+    // become Redis key material.  A new prefix also makes old v1 entries
+    // naturally unreachable without requiring a production-wide FLUSHDB.
+    let scope_hash = digest_components([
         role,
         village.unwrap_or_default(),
         posyandu.unwrap_or_default(),
-        request_target,
-    ] {
+    ]);
+    let query_hash = digest_components([request_target]);
+    let target_label = cache_target_label(request_target);
+    format!(
+        "{DYNAMIC_CACHE_KEY_PREFIX}:{}:version:{version}:scope:{scope_hash}:query:{query_hash}",
+        target_label,
+    )
+}
+
+fn digest_components<const N: usize>(components: [&str; N]) -> String {
+    let mut digest = Sha256::new();
+    for component in components {
         digest.update(component.as_bytes());
         digest.update([0]);
     }
-    format!("e-posyandu:dynamic:v1:{}", hex::encode(digest.finalize()))
+    hex::encode(digest.finalize())
+}
+
+fn cache_target_label(request_target: &str) -> String {
+    let path = request_target
+        .split(['?', '|'])
+        .next()
+        .unwrap_or(request_target);
+    match path {
+        "/api/v1/dashboard/stats" => "dashboard-stats".to_owned(),
+        "/api/v1/children/page" => "children-page".to_owned(),
+        "/api/v1/exclusive-breastfeeding/page" => "exclusive-breastfeeding-page".to_owned(),
+        _ if path.starts_with("/api/v1/collections/") => {
+            let table = path
+                .strip_prefix("/api/v1/collections/")
+                .and_then(|value| value.split('/').next())
+                .unwrap_or("unknown");
+            let mut safe = table
+                .chars()
+                .filter(|character| {
+                    character.is_ascii_alphanumeric() || *character == '-' || *character == '_'
+                })
+                .take(32)
+                .collect::<String>();
+            if safe.is_empty() {
+                safe.push_str("unknown");
+            }
+            format!("collection-{safe}")
+        }
+        _ => "dynamic".to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -191,5 +233,29 @@ mod tests {
     fn dynamic_cache_ttl_uses_five_minutes_with_dashboard_exception() {
         assert_eq!(DYNAMIC_CACHE_TTL_SECONDS, 300);
         assert_eq!(DASHBOARD_CACHE_TTL_SECONDS, 60);
+    }
+
+    #[test]
+    fn cache_key_has_readable_versioned_namespace_without_raw_scope() {
+        let key = dynamic_cache_key(
+            "Kader Posyandu",
+            Some("Desa Rahasia"),
+            Some("SALAK 01"),
+            "/api/v1/children/page?ageGroup=0-59",
+            187,
+        );
+        assert!(key.starts_with("e-posyandu:cache:v2:children-page:version:187:"));
+        assert!(key.contains(":scope:"));
+        assert!(key.contains(":query:"));
+        assert!(!key.contains("Desa Rahasia"));
+        assert!(!key.contains("SALAK 01"));
+        assert_eq!(
+            cache_target_label("/api/v1/dashboard/stats"),
+            "dashboard-stats"
+        );
+        assert_eq!(
+            cache_target_label("/api/v1/collections/measurements"),
+            "collection-measurements"
+        );
     }
 }

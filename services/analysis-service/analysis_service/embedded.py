@@ -17,6 +17,10 @@ from typing import Any
 from . import analytics, charts, who
 from .runtime import AnalysisRuntime
 
+# PyO3 imports this module once per embedded interpreter. Warm immutable WHO
+# tables at that point so the first request does not pay file/parsing overhead.
+who.preload_reference_tables()
+
 LOGGER = logging.getLogger("eposyandu.analysis.embedded")
 
 _persistence_lock = threading.Lock()
@@ -54,7 +58,10 @@ def analyze_dataset_json(payload_json: str) -> str:
     if _runtime is None:
         with _runtime_lock:
             if _runtime is None:
-                _runtime = AnalysisRuntime.from_env()
+                # PyO3 owns the interpreter inside the Rust process. Keep the
+                # low-overhead thread pool even if a shared env file enables
+                # process mode for a standalone Python deployment.
+                _runtime = AnalysisRuntime.from_env(worker_mode="thread")
     result, _cache_hit = _runtime.analyze_dataset(dataset, payload_json=payload_json)
     persistence = _get_persistence_worker()
     if str(dataset.get("operation") or "dashboard_stats") == "dashboard_stats" and persistence is not None:
@@ -113,29 +120,17 @@ def _get_persistence_worker():
 
 
 def process_outbox_once_json(_payload_json: str = "{}") -> str:
-    """Claim and process at most one durable analysis job.
+    """Claim and process one bounded batch of durable analysis jobs.
 
     The Rust worker owns the scheduling loop, while this one-shot function
     keeps PostgreSQL writes and retry semantics in the existing Python
-    persistence implementation.  Returning a result instead of raising for a
-    bad row prevents one malformed child from stopping the service loop.
+    persistence implementation.  Returning per-batch counters instead of
+    raising for a bad row prevents one malformed child from stopping the
+    service loop.
     """
 
     worker = _get_persistence_worker()
     if worker is None:
         return json.dumps({"processed": False, "reason": "disabled"}, separators=(",", ":"))
-    job = worker._claim_one()
-    if job is None:
-        return json.dumps({"processed": False}, separators=(",", ":"))
-    job_id = int(job["id"])
-    try:
-        worker._process(job)
-    except Exception as error:  # pragma: no cover - exercised against PostgreSQL
-        LOGGER.exception("job analisis Python gagal")
-        worker._fail(job_id, str(error))
-        return json.dumps(
-            {"processed": True, "failed": True, "jobId": job_id, "error": str(error)[:1000]},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-    return json.dumps({"processed": True, "jobId": job_id}, separators=(",", ":"))
+    result = worker.process_batch()
+    return json.dumps(result, ensure_ascii=False, separators=(",", ":"))

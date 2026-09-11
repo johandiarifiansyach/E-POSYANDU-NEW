@@ -32,6 +32,9 @@ Konfigurasi:
 - `ORACLE_API_MIGRATION_PROXY_ENABLED`: harus `false` pada production
   microservices-only. Hanya aktifkan saat rollback terencana.
 - `ORACLE_API_LISTEN_ADDR`: default `0.0.0.0:8081`.
+- `ORACLE_API_TOKIO_WORKER_THREADS`: jumlah worker thread runtime Tokio. Jika
+  kosong, gateway mengikuti CPU yang tersedia di container/OCI (dengan batas
+  aman maksimum `32`); gunakan nilai eksplisit hanya setelah profiling.
 - `ORACLE_DATABASE_POOL_SIZE`: batas koneksi PostgreSQL per service (default
   `5`, maksimum `10`). Pool memakai antrean FIFO dan statement cache per
   koneksi agar request tidak membuat koneksi/parse SQL baru setiap kali.
@@ -41,6 +44,10 @@ Konfigurasi:
   (default `5`). `0` menonaktifkan batas waktu.
 - `ORACLE_DATABASE_POOL_RECYCLE_TIMEOUT_SECONDS`: batas pemeriksaan koneksi
   saat dikembalikan ke pool (default `2`). `0` menonaktifkan batas waktu.
+- Response JSON dan stream yang dapat dikompresi dinegosiasikan otomatis dengan
+  `Accept-Encoding`: Brotli (`br`) dipilih untuk browser modern dan gzip
+  (`gzip`) menjadi fallback. Response yang sudah memiliki `Content-Encoding`,
+  SSE, atau tipe yang tidak aman tidak dikompresi ulang.
 - `GET /api/v1/realtime/stream`: SSE perubahan data aplikasi. Event hanya
   memuat metadata perubahan; Oracle menerbitkannya lewat PostgreSQL `NOTIFY`
   dan memfilter cakupan desa/posyandu sebelum dikirim ke browser.
@@ -54,6 +61,19 @@ cache dan PostgreSQL native tetap menjadi satu-satunya sumber kebenaran. Kegagal
 operasi Redis setelah proses berjalan tidak menggagalkan baca/tulis PostgreSQL;
 readiness berubah menjadi `degraded` agar gangguan cache tetap terlihat.
 
+Format key cache native adalah
+`e-posyandu:cache:v2:<target>:version:<n>:scope:<sha256>:query:<sha256>`.
+`target` tetap terbaca (misalnya `children-page` atau `dashboard-stats`),
+sedangkan scope dan query di-hash agar NIK, nama, dan alamat tidak masuk ke
+key. Versi berubah setiap mutasi sehingga key versi lama langsung tidak dipakai
+dan cukup dibiarkan habis oleh TTL tanpa `FLUSHDB`.
+
+Setiap response saat ini hanya membutuhkan satu key (payload halaman/agregasi
+disimpan sebagai satu objek JSON), sehingga pipeline Redis tidak menambah
+latensi pada jalur utama. Jika endpoint baru perlu mengambil banyak objek,
+gunakan satu `redis::Pipeline`/`MGET` untuk seluruh key tersebut agar tidak
+melakukan round-trip per baris.
+
 ## Jalur baca PostgreSQL
 
 `native_db.rs` menggunakan pool `deadpool-postgres` berbatas. Query REST, RPC,
@@ -62,6 +82,11 @@ koneksi), sedangkan nilai pengguna tetap dikirim sebagai parameter—tidak ada
 interpolasi nilai ke SQL. Halaman balita, ASI, MPASI, riwayat, dan dashboard
 selalu dipaginasi; Rust membaca fungsi PostgreSQL yang mengambil proyeksi
 `measurement_analysis`/`dashboard_analysis` yang telah dihitung Python.
+
+Ukuran pool sengaja dibatasi per service agar jumlah koneksi gabungan pada
+host (identity, read, write, operations, dan gateway) tidak menghabiskan
+`max_connections` PostgreSQL. Request yang melebihi antrean pool gagal cepat
+dengan status layanan sementara, sehingga tidak menahan seluruh runtime.
 
 Migration `044_read_path_indexes.sql` menambahkan indeks jalur panas untuk
 scope/umur balita, urutan terbaru, lookup pengukuran/MPASI per child, riwayat,

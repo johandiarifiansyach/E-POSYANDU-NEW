@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { getChangeHistory } from "../../api/dashboardApi";
 import { DEFAULT_AGE_GROUP, type AgeGroup } from "../../config/ageFilters";
 import { isFullAccessRole, MONTHS } from "../../config/dashboard";
@@ -7,6 +8,7 @@ import { errorMessage, type PageState } from "../../shared/pageState";
 import type { DashboardUser } from "../../types";
 import { Card, Pagination, SkeletonBlock } from "../../components/base";
 import { History, RotateCcw } from "../../ui/icons";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 
 type Scope = {
   month: number;
@@ -77,6 +79,48 @@ function HistorySkeleton() {
   );
 }
 
+const HistoryCard = memo(function HistoryCard({ item }: { item: HistoryDocument }) {
+  const change = dataOf(item);
+  const changes = Array.isArray(change.changes)
+    ? (change.changes as Array<Record<string, unknown>>)
+    : [];
+  const changedAt = timestamp(change.timestamp);
+  return (
+    <Card className="apple-list-card p-4">
+      <div className="mb-2 flex items-start justify-between gap-4">
+        <div>
+          <h3 className="font-bold text-slate-800">{text(change.childName, "Balita")}</h3>
+          <p className="text-xs text-slate-500">
+            {changedAt ? formatIndoDateTime(changedAt) : "-"} - Oleh: {text(change.changedBy, "Petugas")}
+          </p>
+        </div>
+        <History className="h-5 w-5 text-amber-500" />
+      </div>
+      <div className="space-y-2 rounded-lg bg-slate-50 p-3 text-xs">
+        {changes.length === 0 ? (
+          <p className="change-history-empty-detail text-slate-500">
+            Pembaruan identitas tercatat, tetapi rincian perubahan tidak tersedia pada catatan lama.
+          </p>
+        ) : (
+          changes.map((entry, index) => {
+            const field = String(entry.field || "Data identitas");
+            return (
+              <div className="flex flex-col gap-1 border-b border-slate-200 pb-1 last:border-0 last:pb-0 sm:flex-row sm:items-center sm:gap-2" key={`${field}-${index}`}>
+                <span className="w-36 font-semibold text-slate-600">{FIELD_LABELS[field] || field}</span>
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <span className="break-words rounded bg-rose-50 px-1 text-rose-500 line-through">{text(entry.oldValue)}</span>
+                  <span className="text-slate-400">-&gt;</span>
+                  <span className="break-words rounded bg-emerald-50 px-1 font-bold text-emerald-600">{text(entry.newValue)}</span>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </Card>
+  );
+});
+
 export type ReactChangeHistoryPageProps = { user: DashboardUser; scope: Scope };
 
 /** Read-only React view of the audited identity change log. */
@@ -87,9 +131,7 @@ export default function ReactChangeHistoryPage({
   const [page, setPage] = useState(1);
   const [searchDraft, setSearchDraft] = useState("");
   const [search, setSearch] = useState("");
-  const [state, setState] = useState<PageState<HistoryResponse>>({
-    status: "loading",
-  });
+  const debouncedSearch = useDebouncedValue(search);
   const village = isFullAccessRole(user.role)
     ? scope.desa || undefined
     : user.desa || undefined;
@@ -109,43 +151,51 @@ export default function ReactChangeHistoryPage({
       search,
     ],
   );
-  useEffect(() => {
-    let active = true;
-    setState({ status: "loading" });
-    void getChangeHistory(
+  const historyRequest = useMemo(
+    () => ({
       page,
-      PAGE_SIZE,
-      scope.ageGroup || DEFAULT_AGE_GROUP,
-      endOfMonth(scope.year, scope.month),
+      pageSize: PAGE_SIZE,
+      ageGroup: scope.ageGroup || DEFAULT_AGE_GROUP,
+      asOf: endOfMonth(scope.year, scope.month),
       village,
       posyandu,
-      search || undefined,
-    )
-      .then((response) => {
-        if (active) setState({ status: "success", data: response });
-      })
-      .catch((cause) => {
-        if (active)
-          setState({
-            status: "error",
-            message: errorMessage(
-              cause,
-              "Riwayat perubahan belum dapat dimuat.",
-            ),
-          });
-      });
-    return () => {
-      active = false;
-    };
-  }, [
-    page,
-    posyandu,
-    scope.ageGroup,
-    scope.month,
-    scope.year,
-    search,
-    village,
-  ]);
+      search: debouncedSearch || undefined,
+    }),
+    [
+      debouncedSearch,
+      page,
+      posyandu,
+      scope.ageGroup,
+      scope.month,
+      scope.year,
+      village,
+    ],
+  );
+  const historyQuery = useQuery({
+    queryKey: ["change-history", historyRequest],
+    queryFn: () =>
+      getChangeHistory(
+        historyRequest.page,
+        historyRequest.pageSize,
+        historyRequest.ageGroup,
+        historyRequest.asOf,
+        historyRequest.village,
+        historyRequest.posyandu,
+        historyRequest.search,
+      ),
+    placeholderData: keepPreviousData,
+  });
+  const state: PageState<HistoryResponse> = historyQuery.data
+    ? { status: "success", data: historyQuery.data }
+    : historyQuery.error
+      ? {
+          status: "error",
+          message: errorMessage(
+            historyQuery.error,
+            "Riwayat perubahan belum dapat dimuat.",
+          ),
+        }
+      : { status: "loading" };
 
   const response = state.status === "success" ? state.data : null;
   const items = useMemo(
@@ -205,58 +255,7 @@ export default function ReactChangeHistoryPage({
       ) : state.status !== "error" ? (
         <div className="space-y-3">
           {items.map((item) => {
-            const change = dataOf(item);
-            const changes = Array.isArray(change.changes)
-              ? (change.changes as Array<Record<string, unknown>>)
-              : [];
-            const changedAt = timestamp(change.timestamp);
-            return (
-              <Card className="apple-list-card p-4" key={item.id}>
-                <div className="mb-2 flex items-start justify-between gap-4">
-                  <div>
-                    <h3 className="font-bold text-slate-800">
-                      {text(change.childName, "Balita")}
-                    </h3>
-                    <p className="text-xs text-slate-500">
-                      {changedAt ? formatIndoDateTime(changedAt) : "-"} - Oleh:{" "}
-                      {text(change.changedBy, "Petugas")}
-                    </p>
-                  </div>
-                  <History className="h-5 w-5 text-amber-500" />
-                </div>
-                <div className="space-y-2 rounded-lg bg-slate-50 p-3 text-xs">
-                  {changes.length === 0 ? (
-                    <p className="change-history-empty-detail text-slate-500">
-                      Pembaruan identitas tercatat, tetapi rincian perubahan
-                      tidak tersedia pada catatan lama.
-                    </p>
-                  ) : (
-                    changes.map((entry, index) => {
-                      const field = String(entry.field || "Data identitas");
-                      return (
-                        <div
-                          className="flex flex-col gap-1 border-b border-slate-200 pb-1 last:border-0 last:pb-0 sm:flex-row sm:items-center sm:gap-2"
-                          key={`${field}-${index}`}
-                        >
-                          <span className="w-36 font-semibold text-slate-600">
-                            {FIELD_LABELS[field] || field}
-                          </span>
-                          <div className="flex min-w-0 flex-1 items-center gap-2">
-                            <span className="break-words rounded bg-rose-50 px-1 text-rose-500 line-through">
-                              {text(entry.oldValue)}
-                            </span>
-                            <span className="text-slate-400">-&gt;</span>
-                            <span className="break-words rounded bg-emerald-50 px-1 font-bold text-emerald-600">
-                              {text(entry.newValue)}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </Card>
-            );
+            return <HistoryCard item={item} key={item.id} />;
           })}
         </div>
       ) : null}

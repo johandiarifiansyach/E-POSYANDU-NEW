@@ -5,6 +5,8 @@ export { Badge, KenaikanBadge, StatusBadge } from './Badge';
 export { default as AppSelect } from './Select';
 export type { AppSelectProps, SelectOption } from './Select';
 export { default as DataTable } from './DataTable';
+export { default as VirtualizedTableBody } from './VirtualizedTableBody';
+export type { VirtualizedTableBodyProps } from './VirtualizedTableBody';
 export { Card, InputGroup } from './Card';
 export { default as AppModal } from './Modal';
 export type { AppModalProps } from './Modal';

@@ -5,6 +5,7 @@ import { reportClientError } from './api/dashboardApi';
 import { setupProblemReporter } from './ui/problemReporter';
 import './compat/styles/index.css';
 import ErrorBoundary from './app/ErrorBoundary';
+import PerformanceProfiler from './app/PerformanceProfiler';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Root element tidak ditemukan.');
@@ -34,4 +35,10 @@ window.addEventListener('unhandledrejection', (event) => {
   void reportClientError(error, 'window.unhandledrejection');
 });
 
-createRoot(root).render(<ErrorBoundary><App /></ErrorBoundary>);
+createRoot(root).render(
+  <PerformanceProfiler id="E-Posyandu App">
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  </PerformanceProfiler>,
+);

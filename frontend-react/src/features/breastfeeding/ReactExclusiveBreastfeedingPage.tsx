@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   getExclusiveBreastfeedingPage,
-  peekCachedExclusiveBreastfeedingPage,
   type ExclusiveBreastfeedingPageResponse,
 } from "../../api/childrenApi";
 import { isFullAccessRole, MONTHS } from "../../config/dashboard";
@@ -61,6 +61,47 @@ function TableSkeleton() {
   );
 }
 
+type BreastfeedingRowProps = {
+  item: ExclusiveBreastfeedingPageResponse["items"][number];
+  index: number;
+  page: number;
+};
+
+const BreastfeedingRow = memo(function BreastfeedingRow({
+  item,
+  index,
+  page,
+}: BreastfeedingRowProps) {
+  const child = dataOf(item.data ? item : item);
+  return (
+    <tr className="text-slate-700 hover:bg-slate-50">
+      <td className="px-4 py-3 text-center text-slate-500">
+        {(page - 1) * 10 + index + 1}
+      </td>
+      <td className="px-4 py-3">
+        <p className="font-semibold text-slate-800">{display(child.nama)}</p>
+        <p className={`font-mono text-xs ${child.hasNIK !== true ? "font-bold text-red-600" : "text-slate-500"}`}>
+          {display(child.nik || child.national_id)}
+        </p>
+      </td>
+      <td className="px-4 py-3">{display(child.ageInMonths)} bulan</td>
+      <td className="px-4 py-3">
+        {child.tglUkur ? formatIndoDate(String(child.tglUkur)) : "-"}
+      </td>
+      <td className="px-4 py-3">
+        <p>{display(child.posyandu)}</p>
+        <p className="text-xs text-slate-500">{display(child.desa)}</p>
+      </td>
+      <td className="px-4 py-3 text-center">
+        <span className="ios-status-pill ios-status-success inline-flex items-center gap-1.5 text-xs font-bold">
+          <CheckCircle2 className="h-4 w-4" />
+          Ya
+        </span>
+      </td>
+    </tr>
+  );
+});
+
 export type ReactExclusiveBreastfeedingPageProps = {
   user: DashboardUser;
   scope: Scope;
@@ -72,9 +113,6 @@ export default function ReactExclusiveBreastfeedingPage({
   scope,
 }: ReactExclusiveBreastfeedingPageProps) {
   const [page, setPage] = useState(1);
-  const [state, setState] = useState<
-    PageState<ExclusiveBreastfeedingPageResponse>
-  >({ status: "loading" });
   const ageGroup = scope.ageGroup === "6" ? "6" : "0-5";
   const village = isFullAccessRole(user.role)
     ? scope.desa || undefined
@@ -109,29 +147,24 @@ export default function ReactExclusiveBreastfeedingPage({
   useEffect(() => {
     setPage(1);
   }, [scope.ageGroup, scope.month, scope.year, scope.desa, scope.posyandu]);
-  useEffect(() => {
-    let active = true;
-    const cached = peekCachedExclusiveBreastfeedingPage(request);
-    if (cached) setState({ status: "success", data: cached });
-    else setState({ status: "loading" });
-    void getExclusiveBreastfeedingPage(request)
-      .then((response) => {
-        if (active) setState({ status: "success", data: response });
-      })
-      .catch((cause) => {
-        if (active)
-          setState({
-            status: "error",
-            message: errorMessage(
-              cause,
-              "Data ASI eksklusif belum dapat dimuat.",
-            ),
-          });
-      });
-    return () => {
-      active = false;
-    };
-  }, [request]);
+  const pageQuery = useQuery({
+    queryKey: ["exclusive-breastfeeding-page", request],
+    queryFn: () => getExclusiveBreastfeedingPage(request),
+    // A cohort or period change must wait for the matching response instead
+    // of briefly painting the previous page's rows.
+    staleTime: 0,
+  });
+  const state: PageState<ExclusiveBreastfeedingPageResponse> = pageQuery.data
+    ? { status: "success", data: pageQuery.data }
+    : pageQuery.error
+      ? {
+          status: "error",
+          message: errorMessage(
+            pageQuery.error,
+            "Data ASI eksklusif belum dapat dimuat.",
+          ),
+        }
+      : { status: "loading" };
 
   const items = state.status === "success" ? state.data.items : [];
   const total = state.status === "success" ? state.data.total : 0;
@@ -238,47 +271,14 @@ export default function ReactExclusiveBreastfeedingPage({
                   </td>
                 </tr>
               ) : (
-                items.map((item, index) => {
-                  const child = dataOf(item.data ? item : item);
-                  return (
-                    <tr
-                      className="text-slate-700 hover:bg-slate-50"
-                      key={String(item.id || index)}
-                    >
-                      <td className="px-4 py-3 text-center text-slate-500">
-                        {(page - 1) * 10 + index + 1}
-                      </td>
-                      <td className="px-4 py-3">
-                        <p className="font-semibold text-slate-800">
-                          {display(child.nama)}
-                        </p>
-                        <p className={`font-mono text-xs ${child.hasNIK !== true ? "font-bold text-red-600" : "text-slate-500"}`}>
-                          {display(child.nik || child.national_id)}
-                        </p>
-                      </td>
-                      <td className="px-4 py-3">
-                        {display(child.ageInMonths)} bulan
-                      </td>
-                      <td className="px-4 py-3">
-                        {child.tglUkur
-                          ? formatIndoDate(String(child.tglUkur))
-                          : "-"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <p>{display(child.posyandu)}</p>
-                        <p className="text-xs text-slate-500">
-                          {display(child.desa)}
-                        </p>
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className="ios-status-pill ios-status-success inline-flex items-center gap-1.5 text-xs font-bold">
-                          <CheckCircle2 className="h-4 w-4" />
-                          Ya
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })
+                items.map((item, index) => (
+                  <BreastfeedingRow
+                    key={String(item.id || index)}
+                    item={item}
+                    index={index}
+                    page={page}
+                  />
+                ))
               )}
             </tbody>
           </table>

@@ -35,7 +35,7 @@ function dialogView() {
   },
   h('header', { className: 'release-notes-header' },
     h('div', { className: 'release-notes-title-group' },
-      h('span', { className: 'release-notes-logo' }, h('img', { src: '/logo-puskesmas-32981.svg', alt: '' })),
+      h('span', { className: 'release-notes-logo' }, h('img', { src: '/logo-puskesmas-32981.svg', alt: '', width: 40, height: 40, loading: 'lazy', decoding: 'async' })),
       h('div', null,
         h('p', { className: 'release-notes-eyebrow' }, `E-Posyandu v${LATEST_RELEASE.version}`),
         h('h2', { id: 'release-notes-title' }, 'Apa yang Baru')

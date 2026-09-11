@@ -8,6 +8,7 @@ import os
 import stat
 import tempfile
 from pathlib import Path
+from typing import Optional, Tuple
 from urllib.parse import quote
 
 import oci
@@ -23,6 +24,9 @@ ORACLE_API_OUTPUT_FILE = Path("/run/e-posyandu/oracle-api-vault.env")
 CLOUDFLARE_TUNNEL_TOKEN_FILE = Path(
     "/run/e-posyandu/cloudflare-tunnel-token"
 )
+# The official cloudflared image runs as UID/GID 65532. Keep the token
+# private (0600) while making it readable by that non-root container user.
+CLOUDFLARE_TUNNEL_CONTAINER_OWNER: Tuple[int, int] = (65532, 65532)
 DATA_PROCESSING_SECRET_SPECS = (
     ("CLOUDFLARE_QUEUES_API_TOKEN", "OCI_SECRET_CLOUDFLARE_QUEUES_API_TOKEN_ID"),
     ("RUST_WORKER_SHARED_SECRET", "OCI_SECRET_RUST_WORKER_SHARED_SECRET_ID"),
@@ -95,7 +99,11 @@ def write_env_file(path: Path, values: dict[str, str]) -> None:
         raise
 
 
-def write_secret_file(path: Path, value: str) -> None:
+def write_secret_file(
+    path: Path,
+    value: str,
+    owner: Optional[Tuple[int, int]] = None,
+) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -107,6 +115,8 @@ def write_secret_file(path: Path, value: str) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary_name, path)
         os.chmod(path, 0o600)
+        if owner is not None:
+            os.chown(path, owner[0], owner[1])
     except Exception:
         try:
             os.unlink(temporary_name)
@@ -174,10 +184,23 @@ def main() -> None:
             database_password_secret_id,
             "Oracle PostgreSQL application password",
         )
+        database_host = config.get(
+            "ORACLE_DATABASE_HOST", "host.containers.internal"
+        ).strip()
+        database_port = config.get("ORACLE_DATABASE_PORT", "5432").strip()
+        if (
+            not database_host
+            or any(character in database_host for character in "\r\n/@?#")
+            or not database_port.isdigit()
+            or not 1 <= int(database_port) <= 65535
+        ):
+            raise RuntimeError(
+                "ORACLE_DATABASE_HOST/ORACLE_DATABASE_PORT bukan endpoint PostgreSQL valid"
+            )
         oracle_api_values["ORACLE_DATABASE_URL"] = (
             "postgresql://eposyandu_api:"
             + quote(database_password, safe="")
-            + "@host.containers.internal:5432/eposyandu?sslmode=disable"
+            + f"@{database_host}:{database_port}/eposyandu?sslmode=disable"
         )
     # Compose requires this file even while native auth is still disabled.
     write_env_file(ORACLE_API_OUTPUT_FILE, oracle_api_values)
@@ -187,13 +210,18 @@ def main() -> None:
         write_secret_file(
             CLOUDFLARE_TUNNEL_TOKEN_FILE,
             fetch_secret(client, tunnel_secret_id, "Cloudflare Tunnel token"),
+            owner=CLOUDFLARE_TUNNEL_CONTAINER_OWNER,
         )
         tunnel_count = 1
     else:
         # Selalu timpa file agar token lama tidak tertinggal setelah OCID
         # dihapus. File kosong juga membuat Compose profile nonaktif tetap
         # dapat divalidasi tanpa membuat bind mount rahasia secara manual.
-        write_secret_file(CLOUDFLARE_TUNNEL_TOKEN_FILE, "")
+        write_secret_file(
+            CLOUDFLARE_TUNNEL_TOKEN_FILE,
+            "",
+            owner=CLOUDFLARE_TUNNEL_CONTAINER_OWNER,
+        )
         tunnel_count = 0
 
     print(

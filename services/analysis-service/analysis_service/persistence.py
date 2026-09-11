@@ -2,9 +2,10 @@
 
 Raw writes are deliberately not coupled to this worker: Rust commits the
 source row first and the database trigger places a child in ``analysis_outbox``.
-This worker claims one job at a time, calculates every WHO/ML/longitudinal
-field in Python, and stores the derived result for fast Rust/Redis reads.  The
-module is optional in local unit tests; production enables it explicitly.
+This worker claims bounded batches, calculates every WHO/ML/longitudinal field
+in Python, and stores the derived result for fast Rust/Redis reads. Production
+uses a Rust scheduler that is woken by PostgreSQL LISTEN/NOTIFY with polling as
+a safety-net; the module is optional in local unit tests.
 """
 
 from __future__ import annotations
@@ -40,7 +41,24 @@ def _enabled() -> bool:
 
 
 def _dsn() -> str:
-    return (os.environ.get("ANALYSIS_DATABASE_URL") or os.environ.get("ORACLE_DATABASE_URL") or "").strip()
+    # Keep the dedicated names as the production contract, but accept the
+    # conventional DATABASE_URL as a safe fallback.  This is important during
+    # rolling deployments where the Vault env file may still expose the
+    # generic PostgreSQL name while the analysis container is restarted.
+    return (
+        os.environ.get("ANALYSIS_DATABASE_URL")
+        or os.environ.get("ORACLE_DATABASE_URL")
+        or os.environ.get("DATABASE_URL")
+        or ""
+    ).strip()
+
+
+def _requeue_failed_on_start() -> bool:
+    """Whether one-time dead-letter recovery is enabled for this process."""
+
+    return os.environ.get("ANALYSIS_REQUEUE_FAILED_ON_START", "true").strip().casefold() not in {
+        "0", "false", "no", "off"
+    }
 
 
 def _interval() -> float:
@@ -64,6 +82,36 @@ def _workers() -> int:
     except ValueError:
         configured = 2
     return max(1, min(8, configured))
+
+
+def _batch_size() -> int:
+    """Return the bounded number of outbox jobs handled per scheduler wake."""
+
+    try:
+        configured = int(os.environ.get("ANALYSIS_PERSISTENCE_BATCH_SIZE", "8"))
+    except ValueError:
+        configured = 8
+    return max(1, min(32, configured))
+
+
+def _retry_backoff_base_seconds() -> float:
+    try:
+        configured = float(
+            os.environ.get("ANALYSIS_PERSISTENCE_RETRY_BASE_SECONDS", "2")
+        )
+    except ValueError:
+        configured = 2.0
+    return max(0.25, min(60.0, configured))
+
+
+def _retry_backoff_max_seconds() -> float:
+    try:
+        configured = float(
+            os.environ.get("ANALYSIS_PERSISTENCE_RETRY_MAX_SECONDS", "300")
+        )
+    except ValueError:
+        configured = 300.0
+    return max(1.0, min(3600.0, configured))
 
 
 def _notify_interval() -> float:
@@ -214,7 +262,7 @@ def _analysis_input_hash(
 
 
 class AnalysisPersistenceWorker:
-    """Small bounded poller; PostgreSQL owns the durable queue.
+    """Bounded outbox worker; PostgreSQL owns the durable queue.
 
     A child job rebuilds that child's complete materialized projection.  The
     queue is therefore safe to consume with a small number of independent
@@ -229,12 +277,18 @@ class AnalysisPersistenceWorker:
         dsn: str | None = None,
         interval: float | None = None,
         workers: int | None = None,
+        batch_size: int | None = None,
         dashboard_workers: int | None = None,
         dashboard_queue_size: int | None = None,
     ) -> None:
         self.dsn = (dsn or _dsn()).strip()
         self.interval = interval if interval is not None else _interval()
         self.workers = max(1, min(8, int(workers or _workers())))
+        self.batch_size = max(1, min(32, int(batch_size or _batch_size())))
+        self.retry_backoff_base_seconds = _retry_backoff_base_seconds()
+        self.retry_backoff_max_seconds = max(
+            self.retry_backoff_base_seconds, _retry_backoff_max_seconds()
+        )
         self.dashboard_workers = max(
             1,
             min(4, int(dashboard_workers if dashboard_workers is not None else _dashboard_workers())),
@@ -257,6 +311,9 @@ class AnalysisPersistenceWorker:
             maxsize=self.dashboard_queue_size
         )
         self._counter_lock = threading.Lock()
+        self._requeue_lock = threading.Lock()
+        self._failed_jobs_requeued = False
+        self._missing_projections_reconciled = False
         self._notify_lock = threading.Lock()
         self._last_notify = 0.0
         self.notify_interval = _notify_interval()
@@ -268,7 +325,13 @@ class AnalysisPersistenceWorker:
 
     @classmethod
     def from_env(cls) -> "AnalysisPersistenceWorker | None":
-        if not _enabled() or not _dsn():
+        if not _enabled():
+            return None
+        if not _dsn():
+            LOGGER.error(
+                "ANALYSIS_PERSISTENCE_ENABLED aktif tetapi URL PostgreSQL tidak ditemukan "
+                "(ANALYSIS_DATABASE_URL/ORACLE_DATABASE_URL/DATABASE_URL)"
+            )
             return None
         if psycopg is None:
             LOGGER.error("ANALYSIS_PERSISTENCE_ENABLED aktif tetapi psycopg belum terpasang")
@@ -291,9 +354,10 @@ class AnalysisPersistenceWorker:
         for thread in self._threads:
             thread.start()
         LOGGER.info(
-            "worker persistence Python aktif; workers=%s interval=%ss dashboard_writers=%s dashboard_queue=%s",
+            "worker persistence Python aktif; workers=%s interval=%ss batch=%s dashboard_writers=%s dashboard_queue=%s",
             self.workers,
             self.interval,
+            self.batch_size,
             self.dashboard_workers,
             self.dashboard_queue_size,
         )
@@ -340,6 +404,7 @@ class AnalysisPersistenceWorker:
             "processed": self.processed,
             "failed": self.failed,
             "workers": self.workers,
+            "batchSize": self.batch_size,
             "dashboardWorkers": self.dashboard_workers,
             "dashboardQueueSize": self.dashboard_queue_size,
             "dashboardQueueDepth": self._dashboard_queue.qsize(),
@@ -493,22 +558,54 @@ class AnalysisPersistenceWorker:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            job = None
+            processed = 0
             try:
-                job = self._claim_one()
-                if job is None:
+                result = self.process_batch()
+                processed = int(result["processedCount"])
+                if not result["processed"]:
                     self._stop.wait(self.interval)
                     continue
-                self._process(job)
-                with self._counter_lock:
-                    self.processed += 1
             except Exception as error:  # a bad row must not kill the long-lived worker
                 with self._counter_lock:
                     self.failed += 1
                 LOGGER.exception("job analisis Python gagal")
-                if job is not None:
-                    self._fail(int(job["id"]), str(error))
                 self._stop.wait(self.interval)
+            else:
+                with self._counter_lock:
+                    self.processed += processed
+
+    def process_batch(self, limit: int | None = None) -> dict[str, int | bool]:
+        """Process a bounded batch of child jobs after one scheduler wake.
+
+        Claiming remains exclusive in PostgreSQL, while batching the Python
+        boundary avoids one PyO3/JSON call for every outbox row during mass
+        input.  A failed child is requeued with backoff and does not prevent
+        the remaining jobs in this batch from being attempted.
+        """
+
+        batch_limit = max(1, min(32, int(limit or self.batch_size)))
+        processed = 0
+        failed = 0
+        for _ in range(batch_limit):
+            job = self._claim_one()
+            if job is None:
+                break
+            try:
+                self._process(job)
+                processed += 1
+            except Exception as error:
+                failed += 1
+                LOGGER.exception("job analisis Python gagal; melanjutkan batch")
+                self._fail(int(job["id"]), str(error))
+        if failed:
+            with self._counter_lock:
+                self.failed += failed
+        return {
+            "processed": processed > 0,
+            "processedCount": processed,
+            "failedCount": failed,
+            "failed": failed > 0,
+        }
 
     def _fail(self, job_id: int, message: str) -> None:
         try:
@@ -518,11 +615,19 @@ class AnalysisPersistenceWorker:
                         """
                         update public.analysis_outbox
                         set status = case when attempts >= 5 then 'failed' else 'pending' end,
-                            available_at = timezone('utc', now()) + interval '5 seconds',
+                            available_at = timezone('utc', now()) + least(
+                                %s * power(2::double precision, greatest(attempts - 1, 0)::double precision),
+                                %s
+                            ) * interval '1 second',
                             last_error = left(%s, 1000), updated_at = timezone('utc', now())
                         where id = %s
                         """,
-                        (message, job_id),
+                        (
+                            self.retry_backoff_base_seconds,
+                            self.retry_backoff_max_seconds,
+                            message,
+                            job_id,
+                        ),
                     )
         except Exception:
             LOGGER.exception("job analisis tidak dapat ditandai gagal")
@@ -533,6 +638,24 @@ class AnalysisPersistenceWorker:
         return psycopg.connect(self.dsn, row_factory=dict_row)
 
     def _claim_one(self) -> dict[str, Any] | None:
+        # A previous worker deliberately dead-letters a job after five
+        # attempts.  That is useful for malformed input, but it also strands
+        # every job when a transient deployment issue (missing migration,
+        # unavailable database, or stale image) is repaired later.  Requeue
+        # failed child jobs once per process start so a healthy worker can
+        # recover without an operator having to run SQL manually.  A job that
+        # fails again still remains failed until the next controlled restart,
+        # avoiding an endless hot loop for genuinely bad data.
+        if (
+            (_requeue_failed_on_start() and not self._failed_jobs_requeued)
+            or not self._missing_projections_reconciled
+        ):
+            with self._requeue_lock:
+                if _requeue_failed_on_start() and not self._failed_jobs_requeued:
+                    self._requeue_failed_jobs()
+                if not self._missing_projections_reconciled:
+                    self._reconcile_missing_projections()
+
         with self._connect() as conn:
             with conn.cursor() as cur:
                 # The original migration queued both every measurement and
@@ -604,6 +727,84 @@ class AnalysisPersistenceWorker:
                     """
                 )
                 return cur.fetchone()
+
+    def _requeue_failed_jobs(self) -> None:
+        """Move old failed child jobs back to the durable pending queue once."""
+
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        update public.analysis_outbox
+                        set status = 'pending', attempts = 0,
+                            available_at = timezone('utc', now()),
+                            last_error = null, updated_at = timezone('utc', now())
+                        where status = 'failed'
+                          and child_id is not null
+                          and updated_at < timezone('utc', now()) - interval '30 seconds'
+                        """
+                    )
+                    recovered = cur.rowcount
+            self._failed_jobs_requeued = True
+            if recovered:
+                LOGGER.warning(
+                    "%s job analisis gagal dipulihkan ke antrean pending setelah worker dimulai",
+                    recovered,
+                )
+        except Exception:
+            # Do not mark recovery complete when PostgreSQL is still
+            # unavailable.  The next scheduler tick retries this lightweight
+            # operation after the connection comes back.
+            LOGGER.exception("job analisis gagal tidak dapat dipulihkan")
+
+    def _reconcile_missing_projections(self) -> None:
+        """Queue children that have usable measurements but no projection.
+
+        This covers an interrupted first backfill or a deployment that marked
+        an outbox row done before its transaction committed.  The query is
+        deliberately run once per process start; normal writes continue to
+        use the table triggers and therefore do not cause a full-database
+        scan on every scheduler tick.
+        """
+
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        insert into public.analysis_outbox(entity_type, entity_id, child_id, operation)
+                        select 'children', c.id, c.id, 'insert'
+                        from public.children c
+                        where c.deleted_at is null
+                          and exists (
+                            select 1
+                            from public.measurements m
+                            left join public.measurement_analysis a on a.measurement_id = m.id
+                            where coalesce(m.child_id, nullif(m.legacy_child_id, '')) = c.id
+                              and m.weight_kg is not null
+                              and a.measurement_id is null
+                          )
+                          and not exists (
+                            select 1
+                            from public.analysis_outbox q
+                            where q.child_id = c.id
+                              and q.status in ('pending', 'processing')
+                          )
+                        """
+                    )
+                    queued = cur.rowcount
+            self._missing_projections_reconciled = True
+            if queued:
+                LOGGER.warning(
+                    "%s child dibuatkan job analisis karena proyeksi measurement_analysis belum ada",
+                    queued,
+                )
+        except Exception:
+            # Keep the flag false so a temporary database outage can recover
+            # on the next scheduler tick.  Once successful this path never
+            # scans the complete child population again until restart.
+            LOGGER.exception("rekonsiliasi proyeksi analisis gagal")
 
     def _process(self, job: dict[str, Any]) -> None:
         entity_type = str(job["entity_type"])

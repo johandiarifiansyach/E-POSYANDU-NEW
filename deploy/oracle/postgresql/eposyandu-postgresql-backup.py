@@ -88,13 +88,27 @@ def cleanup_old_backups(
     """Remove only this job's encrypted dumps beyond the configured window."""
 
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=retention_days)
-    listed = objects.list_objects(
-        namespace,
-        bucket,
-        prefix=f"{prefix}/",
-        fields="name,timeCreated",
-        limit=1000,
-    ).data
+    try:
+        listed = objects.list_objects(
+            namespace,
+            bucket,
+            prefix=f"{prefix}/",
+            fields="name,timeCreated",
+            limit=1000,
+        ).data
+    except oci.exceptions.ServiceError as exc:
+        # Instance principals are commonly granted object-create access while
+        # list/inspect is intentionally denied.  The encrypted dump has
+        # already been uploaded at this point; do not report the whole backup
+        # as failed merely because retention cleanup is not permitted.
+        if exc.status == 404:
+            LOG.warning(
+                "retensi backup dilewati; OCI bucket tidak dapat di-list "
+                "(object sudah diunggah): %s",
+                bucket,
+            )
+            return 0
+        raise
     deleted = 0
     for item in listed.objects or []:
         name = str(item.name or "")

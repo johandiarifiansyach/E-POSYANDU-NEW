@@ -1387,7 +1387,7 @@ export const Dashboard = ({ user, onLogout }) => {
                     Native.createElement(X, { className: "h-5 w-5" }))),
             Native.createElement("div", { className: "sidebar-brand-panel", "data-sidebar-brand": "true" },
                 Native.createElement("span", { className: "sidebar-brand-logo-shell", "aria-hidden": "true" },
-                    Native.createElement("img", { src: "/logo-puskesmas-32981.svg", alt: "", className: "h-10 w-10" })),
+                    Native.createElement("img", { src: "/logo-puskesmas-32981.svg", alt: "", className: "h-10 w-10", width: 40, height: 40, loading: "lazy", decoding: "async" })),
                 Native.createElement("div", { className: "sidebar-brand-copy min-w-0" },
                     Native.createElement("div", { className: "sidebar-brand-name-row" },
                         Native.createElement("strong", null, "E-Posyandu"),

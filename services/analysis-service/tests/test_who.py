@@ -12,6 +12,36 @@ from analysis_service.runtime import AnalysisRuntime
 
 
 class WhoCalculatorTests(unittest.TestCase):
+    @unittest.skipUnless(who.np is not None, "NumPy optional accelerator is not installed")
+    def test_vectorized_assessments_match_scalar_lms(self):
+        items = [
+            {
+                "weight_kg": 4.5 + index * 0.2,
+                "height_cm": 52.0 + index * 2.1,
+                "age_months": index,
+                "sex": "L" if index % 2 == 0 else "P",
+                "measurement_method": "Terlentang" if index < 5 else "Berdiri",
+                "lila_cm": 10.5 + index * 0.35,
+                "head_circumference_cm": 35.0 + index * 0.8,
+                "row_number": index + 1,
+                "record_id": f"vectorized-{index}",
+            }
+            for index in range(8)
+        ]
+        for index, item in enumerate(items):
+            who.validate_item(item, index)
+        vectorized = who.vectorized_assess_items(items)
+        self.assertIsNotNone(vectorized)
+        for item, actual in zip(items, vectorized):
+            expected = who.assess_item(item)
+            for key in ("bbu_z_score", "tbu_z_score", "bbtb_z_score", "imtu_z_score", "lila_z_score", "lk_z_score"):
+                if expected[key] is None:
+                    self.assertIsNone(actual[key], msg=key)
+                else:
+                    self.assertAlmostEqual(actual[key], expected[key], places=10, msg=key)
+            for key in ("bbu_status", "tbu_status", "bbtb_status", "imtu_status", "lila_status", "lk_status"):
+                self.assertEqual(actual[key], expected[key], msg=key)
+
     def test_python_children_page_owns_status_filter(self):
         child = {
             "id": "child-1",
@@ -159,6 +189,116 @@ class WhoCalculatorTests(unittest.TestCase):
             result["pipeline"],
             "postgresql-technical-rust-scope-python-clinical-v1",
         )
+
+    def test_dashboard_o_counts_only_current_valid_measurements(self):
+        """Dashboard O must match the table's current-row status contract."""
+
+        result = analytics.dashboard_stats({
+            "operation": "dashboard_stats",
+            "monthStart": "2026-08-01",
+            "monthEnd": "2026-08-31",
+            "previousMonthStart": "2026-07-01",
+            "previousMonthEnd": "2026-07-31",
+            "role": "Ahli Gizi",
+            "children": [
+                {"id": "no-current", "birth_date": "2025-01-01", "sex": "L"},
+                {"id": "first-current", "birth_date": "2025-01-01", "sex": "P"},
+                {"id": "repeat-current", "birth_date": "2025-01-01", "sex": "L"},
+            ],
+            "measurements": [
+                {
+                    "id": "first-current-row",
+                    "child_id": "first-current",
+                    "measurement_date": "2026-08-10",
+                    "weight_kg": 8.0,
+                    "height_cm": 72.0,
+                },
+                {
+                    "id": "repeat-previous-row",
+                    "child_id": "repeat-current",
+                    "measurement_date": "2026-07-10",
+                    "weight_kg": 7.5,
+                    "height_cm": 71.0,
+                },
+                {
+                    "id": "repeat-current-row",
+                    "child_id": "repeat-current",
+                    "measurement_date": "2026-08-10",
+                    "weight_kg": 7.9,
+                    "height_cm": 72.0,
+                },
+            ],
+        })
+        self.assertEqual(result["S"], 3)
+        self.assertEqual(result["D"], 2)
+        self.assertEqual(result["O"], 1)
+
+    def test_dashboard_and_table_choose_same_duplicate_date_row(self):
+        """The latest row tie-breakers must be date, created_at, then id."""
+
+        child = {
+            "id": "duplicate-date",
+            "birth_date": "2025-01-01",
+            "sex": "L",
+        }
+        dataset = {
+            "operation": "dashboard_stats",
+            "monthStart": "2026-08-01",
+            "monthEnd": "2026-08-31",
+            "previousMonthStart": "2026-07-01",
+            "previousMonthEnd": "2026-07-31",
+            "role": "Ahli Gizi",
+            "children": [child],
+            "measurements": [
+                {
+                    "id": "older-row",
+                    "child_id": "duplicate-date",
+                    "measurement_date": "2026-08-10",
+                    "created_at": "2026-08-10T08:00:00Z",
+                    "weight_kg": 8.0,
+                    "height_cm": 72.0,
+                },
+                {
+                    "id": "newer-row",
+                    "child_id": "duplicate-date",
+                    "measurement_date": "2026-08-10",
+                    "created_at": "2026-08-10T09:00:00Z",
+                    "weight_kg": 8.5,
+                    "height_cm": 72.0,
+                },
+            ],
+        }
+        result = analytics.dashboard_stats(dataset)
+        self.assertEqual(result["D"], 1)
+        table = analytics.children_page({
+            **dataset,
+            "operation": "children_page",
+            "asOf": "2026-08-31",
+            "measurementStart": "2026-08-01",
+            "measurementEnd": "2026-08-31",
+            "previousMonthStart": "2026-07-01",
+            "previousMonthEnd": "2026-07-31",
+            "view": "data",
+            "page": 1,
+            "size": 10,
+        })
+        self.assertEqual(table["measurements"][0]["data"]["bb"], 8.5)
+
+    def test_dashboard_b_uses_jakarta_month_boundary(self):
+        result = analytics.dashboard_stats({
+            "operation": "dashboard_stats",
+            "monthStart": "2026-08-01",
+            "monthEnd": "2026-08-31",
+            "previousMonthStart": "2026-07-01",
+            "previousMonthEnd": "2026-07-31",
+            "role": "Ahli Gizi",
+            "children": [
+                # 31 Jul 17:30 UTC is 1 Aug 00:30 in the report timezone.
+                {"id": "jakarta-child", "birth_date": "2025-01-01", "sex": "L", "created_at": "2026-07-31T17:30:00Z"},
+            ],
+            "measurements": [],
+        })
+        self.assertEqual(result["B"], 1)
 
     def test_dashboard_asi_denominator_is_all_six_month_children(self):
         result = analytics.dashboard_stats({
@@ -716,7 +856,7 @@ class WhoCalculatorTests(unittest.TestCase):
         self.assertTrue(any("setiap bulan" in text for text in education["followUp"]))
         self.assertEqual(education["sources"][0]["title"], "Buku KIA 2024")
         self.assertEqual(education["posterGuidance"]["ageGroup"], education["ageGroup"])
-        self.assertTrue(education["posterGuidance"]["asset"].endswith("isi-piringku-12-23.jpg"))
+        self.assertTrue(education["posterGuidance"]["asset"].endswith("isi-piringku-12-23.webp"))
         self.assertTrue(any("protein hewani" in text for text in education["posterGuidance"]["keyPoints"]))
         self.assertTrue(any(source.get("type") == "poster" for source in education["sources"]))
 
@@ -751,7 +891,7 @@ class WhoCalculatorTests(unittest.TestCase):
         self.assertEqual(concern["ageGroup"], "6–8 bulan")
         self.assertTrue(any("MPASI" in text for text in concern["education"]))
         self.assertTrue(concern["sources"][0]["pages"])
-        self.assertTrue(concern["posterGuidance"]["asset"].endswith("isi-piringku-6-8.jpg"))
+        self.assertTrue(concern["posterGuidance"]["asset"].endswith("isi-piringku-6-8.webp"))
         self.assertTrue(concern["posterGuidance"]["portionExamples"])
 
     def test_problem_guidance_selects_gizi_kurang_treatment_material(self):

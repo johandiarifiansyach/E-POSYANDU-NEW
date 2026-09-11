@@ -230,6 +230,9 @@ def _serve_health(port: int) -> None:
 
 def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+    # Load immutable WHO tables before accepting traffic. The lru caches in
+    # ``who`` ensure every later request reuses these in-memory objects.
+    who.preload_reference_tables()
     grpc_address = os.environ.get("ANALYSIS_GRPC_ADDR", "unix:///run/e-posyandu/analysis.sock").strip()
     health_port = int(os.environ.get("ANALYSIS_HTTP_PORT", "8082"))
     server = grpc.server(

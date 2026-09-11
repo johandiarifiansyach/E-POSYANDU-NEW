@@ -27,6 +27,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tower_http::{
+    compression::CompressionLayer,
     limit::RequestBodyLimitLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
@@ -58,9 +59,11 @@ const DEFAULT_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const ORACLE_ORIGIN_HEADER: &str = "x-e-posyandu-origin";
 const OPERATIONAL_CHECK_TIMEOUT: Duration = Duration::from_secs(8);
+const DEFAULT_ANALYSIS_HEALTH_URL: &str = "http://analysis-worker:8082/ready";
 const ADMIN_MONITORING_INTERVAL: Duration = Duration::from_secs(5);
 const ADMIN_MONITORING_CONNECTION_LIMIT: usize = 4;
 const REALTIME_CONNECTION_LIMIT: usize = 100;
+const DEFAULT_TOKIO_WORKER_THREADS_MAX: usize = 32;
 const INTERNAL_REQUEST_MAX_AGE_SECONDS: i64 = 300;
 const INTERNAL_JOB_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const RETENTION_CLEANUP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -440,6 +443,57 @@ async fn check_data_processing_worker(state: &AppState) -> OperationalCheck {
     }
 }
 
+async fn check_analysis_worker(client: &Client, enabled: bool) -> OperationalCheck {
+    if !enabled {
+        return OperationalCheck {
+            reachable: false,
+            ok: true,
+            status: "disabled".into(),
+            latency_ms: 0,
+            payload: None,
+        };
+    }
+    let configured_url = env::var("ORACLE_API_ANALYSIS_HEALTH_URL")
+        .unwrap_or_else(|_| DEFAULT_ANALYSIS_HEALTH_URL.to_owned());
+    let Ok(url) = Url::parse(configured_url.trim()) else {
+        return OperationalCheck {
+            reachable: false,
+            ok: false,
+            status: "invalid-url".into(),
+            latency_ms: 0,
+            payload: None,
+        };
+    };
+    let started_at = Instant::now();
+    match client
+        .get(url)
+        .timeout(OPERATIONAL_CHECK_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(response) => {
+            let healthy = response.status().is_success();
+            OperationalCheck {
+                reachable: true,
+                ok: healthy,
+                status: if healthy { "healthy" } else { "unhealthy" }.into(),
+                latency_ms: started_at.elapsed().as_millis(),
+                payload: None,
+            }
+        }
+        Err(error_value) => {
+            error!(error = %error_value, "worker analisis tidak dapat dijangkau");
+            OperationalCheck {
+                reachable: false,
+                ok: false,
+                status: "unavailable".into(),
+                latency_ms: started_at.elapsed().as_millis(),
+                payload: None,
+            }
+        }
+    }
+}
+
 async fn check_oracle_database(state: &AppState) -> OperationalCheck {
     let started_at = Instant::now();
     let Some(database) = state.health_database.as_ref() else {
@@ -463,7 +517,7 @@ async fn check_oracle_database(state: &AppState) -> OperationalCheck {
     }
 }
 
-async fn check_redis_cache(state: &AppState) -> OperationalCheck {
+async fn check_redis_cache(_state: &AppState) -> OperationalCheck {
     let started_at = Instant::now();
     let Some(url) = env::var("ORACLE_REDIS_URL")
         .ok()
@@ -568,10 +622,21 @@ async fn readiness(State(state): State<Arc<AppState>>, request: Request) -> Resp
             _ => false,
         }
     };
-    let (legacy, data_processing, microservices, oracle_database, redis_cache, native_cache_ready) = tokio::join!(
+    let analysis_check_enabled =
+        state.microservices.is_some() && env_flag("ORACLE_API_ANALYSIS_HEALTH_CHECK_ENABLED", true);
+    let (
+        legacy,
+        data_processing,
+        microservices,
+        analysis_worker,
+        oracle_database,
+        redis_cache,
+        native_cache_ready,
+    ) = tokio::join!(
         check_legacy_readiness(state.as_ref()),
         check_data_processing_worker(state.as_ref()),
         check_platform_services(state.as_ref()),
+        check_analysis_worker(&state.client, analysis_check_enabled),
         check_oracle_database(state.as_ref()),
         check_redis_cache(state.as_ref()),
         cache_check
@@ -620,6 +685,7 @@ async fn readiness(State(state): State<Arc<AppState>>, request: Request) -> Resp
         legacy.ok
     };
     let optional_ok = data_processing.ok
+        && analysis_worker.ok
         && (!state.migration_proxy_enabled || legacy.ok)
         && (!native_cache_configured || native_cache_ready);
     let status = readiness_state(core_ok, optional_ok);
@@ -647,6 +713,16 @@ async fn readiness(State(state): State<Arc<AppState>>, request: Request) -> Resp
             "latencyMs": data_processing.latency_ms,
             "provider": "oracle",
             "protocol": "grpc"
+        }),
+    );
+    oracle_services.insert(
+        "analysis-worker".into(),
+        json!({
+            "reachable": analysis_worker.reachable,
+            "status": analysis_worker.status,
+            "latencyMs": analysis_worker.latency_ms,
+            "provider": "oracle",
+            "protocol": "http"
         }),
     );
     oracle_services.insert(
@@ -782,6 +858,12 @@ async fn readiness(State(state): State<Arc<AppState>>, request: Request) -> Resp
                     "reachable": data_processing.reachable,
                     "status": data_processing.status,
                     "latencyMs": data_processing.latency_ms
+                },
+                "analysisWorker": {
+                    "reachable": analysis_worker.reachable,
+                    "status": analysis_worker.status,
+                    "latencyMs": analysis_worker.latency_ms,
+                    "healthCheckEnabled": analysis_check_enabled
                 }
             }
         }),
@@ -1611,6 +1693,24 @@ fn local_healthcheck() -> bool {
     .is_ok()
 }
 
+fn resolve_tokio_worker_threads(raw: Option<&str>, available: usize) -> usize {
+    let fallback = available.clamp(1, DEFAULT_TOKIO_WORKER_THREADS_MAX);
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.min(DEFAULT_TOKIO_WORKER_THREADS_MAX))
+        .unwrap_or(fallback)
+}
+
+fn tokio_worker_threads() -> usize {
+    let available = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1);
+    resolve_tokio_worker_threads(
+        env::var("ORACLE_API_TOKIO_WORKER_THREADS").ok().as_deref(),
+        available,
+    )
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
@@ -1635,12 +1735,21 @@ async fn shutdown_signal() {
     ctrl_c.await;
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     if env::args().nth(1).as_deref() == Some("healthcheck") {
         std::process::exit(if local_healthcheck() { 0 } else { 1 });
     }
 
+    let worker_threads = tokio_worker_threads();
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .build()
+        .expect("runtime Tokio API Oracle tidak dapat dibuat")
+        .block_on(async_main(worker_threads));
+}
+
+async fn async_main(worker_threads: usize) {
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(
@@ -1648,6 +1757,7 @@ async fn main() {
                 .unwrap_or_else(|_| "e_posyandu_oracle_api=info,tower_http=info".into()),
         )
         .init();
+    info!(worker_threads, "runtime Tokio Oracle API dikonfigurasi");
 
     let address: SocketAddr = env::var("ORACLE_API_LISTEN_ADDR")
         .unwrap_or_else(|_| DEFAULT_LISTEN_ADDR.to_string())
@@ -1815,6 +1925,10 @@ async fn main() {
         .fallback(fallback)
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(DEFAULT_MAX_BODY_BYTES))
+        // Negotiate Brotli for modern browsers and gzip as a compatible
+        // fallback. tower-http skips bodies that are already encoded or are
+        // not compressible, while adding the correct Vary header.
+        .layer(CompressionLayer::new().br(true).gzip(true))
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
         .layer(TraceLayer::new_for_http())
@@ -1911,6 +2025,18 @@ mod tests {
         assert_eq!(readiness_state(true, true), "ready");
         assert_eq!(readiness_state(true, false), "degraded");
         assert_eq!(readiness_state(false, true), "not-ready");
+    }
+
+    #[test]
+    fn tokio_worker_threads_follow_cpu_by_default_and_bound_overrides() {
+        assert_eq!(resolve_tokio_worker_threads(None, 4), 4);
+        assert_eq!(resolve_tokio_worker_threads(Some("8"), 4), 8);
+        assert_eq!(resolve_tokio_worker_threads(Some("0"), 4), 4);
+        assert_eq!(
+            resolve_tokio_worker_threads(Some("999"), 4),
+            DEFAULT_TOKIO_WORKER_THREADS_MAX
+        );
+        assert_eq!(resolve_tokio_worker_threads(Some("invalid"), 4), 4);
     }
 
     #[test]

@@ -375,6 +375,7 @@ services:
       - ${ORACLE_API_VAULT_ENV_FILE:-/run/e-posyandu/oracle-api-vault.env}
     environment:
       ORACLE_API_LISTEN_ADDR: 0.0.0.0:8081
+      ORACLE_API_TOKIO_WORKER_THREADS: ${ORACLE_API_TOKIO_WORKER_THREADS:-}
       ORACLE_API_ENVIRONMENT: production
       ORACLE_REDIS_URL: redis://redis-cache:6379
       # The gateway must understand Oracle-native browser sessions even while
@@ -402,6 +403,10 @@ services:
       ORACLE_API_OPERATIONS_GRPC_URL: ${ORACLE_API_OPERATIONS_GRPC_URL:-unix:///run/e-posyandu/operations.sock}
       ORACLE_API_REALTIME_GRPC_URL: ${ORACLE_API_REALTIME_GRPC_URL:-unix:///run/e-posyandu/realtime.sock}
       ORACLE_API_MONITORING_GRPC_URL: ${ORACLE_API_MONITORING_GRPC_URL:-unix:///run/e-posyandu/monitoring.sock}
+      # Readiness includes the Rust/PyO3 analysis worker so the gateway reports
+      # degraded (while still serving snapshot reads) when analysis is down.
+      ORACLE_API_ANALYSIS_HEALTH_URL: ${ORACLE_API_ANALYSIS_HEALTH_URL:-http://analysis-worker:8082/ready}
+      ORACLE_API_ANALYSIS_HEALTH_CHECK_ENABLED: ${ORACLE_API_ANALYSIS_HEALTH_CHECK_ENABLED:-true}
       # Production selalu microservices-only. Jalur migration proxy tetap ada
       # di source untuk rollback darurat, tetapi tidak boleh aktif pada gateway
       # saat seluruh domain service sudah dirilis.
@@ -557,6 +562,9 @@ services:
       # Bounded Python aggregation runtime.  Keep these tunable per host
       # without rebuilding the image as the child population grows.
       ANALYSIS_DATASET_WORKERS: ${ANALYSIS_DATASET_WORKERS:-2}
+      # Keep threads for the embedded PyO3 runtime. Standalone Python/gRPC
+      # deployments may set this to process after profiling CPU-bound batches.
+      ANALYSIS_DATASET_WORKER_MODE: ${ANALYSIS_DATASET_WORKER_MODE:-thread}
       ANALYSIS_DATASET_QUEUE_SIZE: ${ANALYSIS_DATASET_QUEUE_SIZE:-16}
       ANALYSIS_DATASET_QUEUE_TIMEOUT_SECONDS: ${ANALYSIS_DATASET_QUEUE_TIMEOUT_SECONDS:-1}
       ANALYSIS_DASHBOARD_CACHE_SIZE: ${ANALYSIS_DASHBOARD_CACHE_SIZE:-128}
@@ -567,15 +575,27 @@ services:
       # Cache ini process-local dan bounded; tidak menyimpan file kesehatan.
       ANALYSIS_GRAPH_CACHE_SIZE: ${ANALYSIS_GRAPH_CACHE_SIZE:-256}
       ANALYSIS_GRAPH_CACHE_TTL_SECONDS: ${ANALYSIS_GRAPH_CACHE_TTL_SECONDS:-900}
+      ANALYSIS_NUMPY_ENABLED: ${ANALYSIS_NUMPY_ENABLED:-true}
       # Raw writes commit in PostgreSQL first; this worker consumes the
       # migration-037 outbox and persists Python's derived results. The
       # scheduling loop is Rust, the one-shot calculation/write remains Python.
       ANALYSIS_PERSISTENCE_ENABLED: ${ANALYSIS_PERSISTENCE_ENABLED:-true}
+      # Recover child jobs that were dead-lettered during an earlier
+      # migration/DB outage. Recovery runs once per worker process and then
+      # preserves the normal bounded retry policy for genuinely bad rows.
+      ANALYSIS_REQUEUE_FAILED_ON_START: ${ANALYSIS_REQUEUE_FAILED_ON_START:-true}
       # A child projection is rebuilt atomically; a small bounded pool lets
       # independent children finish concurrently during backfills while
       # keeping PostgreSQL/CPU usage predictable.
       ANALYSIS_PERSISTENCE_WORKERS: ${ANALYSIS_PERSISTENCE_WORKERS:-2}
+      # One Rust/PyO3 wake processes several claimed child jobs to reduce
+      # gRPC/JSON boundary overhead during mass input. PostgreSQL NOTIFY wakes
+      # the scheduler; the interval remains a safety-net when notifications
+      # are unavailable.
+      ANALYSIS_PERSISTENCE_BATCH_SIZE: ${ANALYSIS_PERSISTENCE_BATCH_SIZE:-8}
       ANALYSIS_PERSISTENCE_INTERVAL_SECONDS: ${ANALYSIS_PERSISTENCE_INTERVAL_SECONDS:-1}
+      ANALYSIS_PERSISTENCE_RETRY_BASE_SECONDS: ${ANALYSIS_PERSISTENCE_RETRY_BASE_SECONDS:-2}
+      ANALYSIS_PERSISTENCE_RETRY_MAX_SECONDS: ${ANALYSIS_PERSISTENCE_RETRY_MAX_SECONDS:-300}
       # Dashboard snapshots are written asynchronously so a slow PostgreSQL
       # connection never extends the request seen by a kader.  Keep one
       # writer by default to preserve ordering for the same cache key.
@@ -597,7 +617,7 @@ services:
     mem_swappiness: 0
     cpus: 0.25
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/ready', timeout=2)"]
       interval: 10s
       timeout: 3s
       retries: 5

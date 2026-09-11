@@ -2,3 +2,6 @@ grpcio==1.76.0
 grpcio-health-checking==1.76.0
 grpcio-tools==1.76.0
 psycopg[binary]==3.2.9
+# Optional production accelerator for batches of WHO/LMS calculations and
+# growth-curve coordinates. The code keeps a scalar fallback when disabled.
+numpy>=1.26,<3

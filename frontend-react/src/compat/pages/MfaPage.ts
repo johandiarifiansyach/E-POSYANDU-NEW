@@ -39,7 +39,7 @@ function shell(content: Node) {
         h('section', { className: 'login-glass-card admin-mfa-card', 'aria-labelledby': 'mfa-title' },
           h('div', { className: 'login-brand' },
             h('div', { className: 'login-logo-shell' },
-              h('img', { src: '/logo-puskesmas-32981.svg', alt: 'Logo Puskesmas Gumukmas', className: 'h-11 w-11 object-contain' })
+              h('img', { src: '/logo-puskesmas-32981.svg', alt: 'Logo Puskesmas Gumukmas', className: 'h-11 w-11 object-contain', width: 44, height: 44, loading: 'eager', decoding: 'async' })
             ),
             h('h1', { id: 'mfa-title', className: 'login-title' }, 'Verifikasi Administrator'),
             h('p', { className: 'login-organization' }, 'Akses penuh memerlukan faktor keamanan kedua'),
@@ -161,7 +161,9 @@ export function mountMfaPage(container: HTMLElement, options: Options): () => vo
     if (enrollment?.totp?.qr_code) {
       qrImage = h('img', {
         className: 'admin-mfa-qr',
-        alt: 'QR setup authenticator'
+        alt: 'QR setup authenticator',
+        loading: 'lazy',
+        decoding: 'async'
       }) as HTMLImageElement;
       const source = String(enrollment.totp.qr_code).replace(/^data:image\/svg\+xml;(?:utf-8|utf8),/i, '');
       const url = URL.createObjectURL(new Blob([source], { type: 'image/svg+xml' }));
@@ -273,9 +275,6 @@ export function mountMfaPage(container: HTMLElement, options: Options): () => vo
         : 'Pilih metode verifikasi yang sudah terdaftar.'),
       message ? errorText(message) : null,
       button(passkey ? 'Gunakan passkey' : 'Daftarkan passkey', () => { void runPasskey(passkey); }),
-      passkey
-        ? button('Daftarkan passkey baru', () => { void runPasskey(); }, true)
-        : null,
       button(totp ? 'Gunakan authenticator (TOTP)' : 'Siapkan authenticator (TOTP)', () => {
         if (totp) renderTotp(totp.id);
         else void setupTotp();

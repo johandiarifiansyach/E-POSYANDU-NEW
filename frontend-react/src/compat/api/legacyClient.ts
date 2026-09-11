@@ -263,6 +263,9 @@ export type DashboardStatsResponse = {
   perUnderweight: string;
   perStunting: string;
   perWasting: string;
+  /** True while one or more current weighted rows still await Python analysis. */
+  analysisPending?: boolean;
+  analysisPendingCount?: number;
   /** True when the response is the latest persisted snapshot, not the current scope version. */
   snapshotStale?: boolean;
   snapshotSourceVersion?: number;
@@ -1285,9 +1288,9 @@ export async function getChildDetail(id: string): Promise<ApiDocument> {
 
 export async function getDashboardStats(request: DashboardStatsRequest): Promise<DashboardStatsResponse> {
   if (!usesFastApi()) throw new Error('Alamat API aplikasi belum diatur.');
-  // Dashboard classification and aggregation are owned by Python.  The
-  // authenticated operations gateway reads the raw rows and forwards them to
-  // the private analysis service; the browser only receives the final stats.
+  // The authenticated gateway reads the persisted PostgreSQL projection. A
+  // Python worker remains the sole authority that writes clinical statuses;
+  // the browser never recalculates or aggregates raw rows locally.
   const requestDashboard = () => apiRequest<DashboardStatsResponse>('/analysis/dashboard-stats', {
     method: 'POST',
     body: JSON.stringify(request),

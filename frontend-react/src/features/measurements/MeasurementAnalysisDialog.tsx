@@ -51,7 +51,7 @@ function PosterGuidance({ poster }: { poster?: AnyRecord | null }) {
   const points = list(poster.keyPoints);
   const portions = list(poster.portionExamples);
   return <div className="measurement-analysis-poster">
-    {poster.asset ? <img className="measurement-analysis-poster-image" src={String(poster.asset)} alt={String(poster.title || 'Poster Isi Piringku sesuai usia')} loading="lazy" decoding="async" /> : null}
+    {poster.asset ? <img className="measurement-analysis-poster-image" src={String(poster.asset)} alt={String(poster.title || 'Poster Isi Piringku sesuai usia')} width={1200} height={1715} loading="lazy" decoding="async" /> : null}
     <div className="measurement-analysis-poster-copy">
       <strong>{String(poster.title || 'Isi Piringku sesuai usia')}</strong>
       {points.length ? <ul>{points.map((point, index) => <li key={`point-${index}`}>{point}</li>)}</ul> : null}

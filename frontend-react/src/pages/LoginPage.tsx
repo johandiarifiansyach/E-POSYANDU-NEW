@@ -176,7 +176,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         <section className="login-glass-card" aria-labelledby="react-login-title">
           <div className="login-brand">
             <div className="login-logo-shell">
-              <img src="/logo-puskesmas-32981.svg" alt="Logo Puskesmas Gumukmas" className="h-11 w-11 object-contain" />
+              <img src="/logo-puskesmas-32981.svg" alt="Logo Puskesmas Gumukmas" className="h-11 w-11 object-contain" width={44} height={44} loading="eager" decoding="async" />
             </div>
             <h1 id="react-login-title" className="login-title">E-Posyandu</h1>
             <p className="login-organization">UPTD Puskesmas Gumukmas</p>

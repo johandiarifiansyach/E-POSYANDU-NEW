@@ -1061,10 +1061,19 @@ def analyze_growth_graph(
     }
 
 
-def analyze_item(item: dict[str, Any], history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def analyze_item(
+    item: dict[str, Any],
+    history: list[dict[str, Any]] | None = None,
+    *,
+    assessment: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     from .who import assess_item
 
-    assessment = assess_item(item)
+    # ``assessment`` is supplied by ``who.calculate_batch`` when NumPy is
+    # available.  Keeping the optional argument private to the Python call
+    # path preserves the public calculator contract and leaves scalar callers
+    # on the exact legacy implementation.
+    assessment = assessment if assessment is not None else assess_item(item)
     anomaly_result = detect_anomalies(item, history)
     context = _history_context(item, history, assessment)
     asi = _asi_context(item, history)

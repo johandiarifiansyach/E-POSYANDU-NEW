@@ -152,6 +152,38 @@ fn stale_snapshot_result(snapshot: &Value) -> Option<Value> {
     Some(result)
 }
 
+/// Return true only for a complete dashboard aggregate.  The materialized
+/// PostgreSQL function is intentionally recognized by shape rather than by a
+/// metadata flag so rolling deployments can safely fall back to the older
+/// snapshot/Python path when migration 051 is not installed yet.
+fn is_dashboard_stats_result(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    [
+        "S",
+        "D",
+        "N",
+        "T",
+        "B",
+        "O",
+        "asiEksklusif",
+        "asiTarget",
+        "underweight",
+        "stunting",
+        "wasting",
+        "perD",
+        "perN",
+        "perT",
+        "perAsiEksklusif",
+        "perUnderweight",
+        "perStunting",
+        "perWasting",
+    ]
+    .iter()
+    .all(|key| object.contains_key(*key))
+}
+
 fn analysis_value_present(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -198,6 +230,11 @@ fn has_pending_analysis(value: &Value) -> bool {
         Value::Array(values) => values.iter().any(has_pending_analysis),
         _ => false,
     }
+}
+
+fn cache_value_is_fresh(value: &Value) -> bool {
+    !has_pending_analysis(value)
+        && value.get("snapshotStale").and_then(Value::as_bool) != Some(true)
 }
 
 /// Annotate a direct PostgreSQL page used during a rolling migration or a
@@ -857,7 +894,7 @@ impl OperationsDomain {
             // a newly written measurement.  The next request must reach
             // PostgreSQL so it can observe the materialized result as soon
             // as the worker commits it.
-            if !has_pending_analysis(&value) {
+            if cache_value_is_fresh(&value) {
                 return response_json(StatusCode::OK, value);
             }
         }
@@ -873,7 +910,7 @@ impl OperationsDomain {
         };
         if let (Some(cache), Some(key)) = (cache.as_ref(), key.as_deref())
             && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
-            && !has_pending_analysis(&value)
+            && cache_value_is_fresh(&value)
         {
             cache.put(key, &value, ttl_seconds).await;
         }
@@ -1013,6 +1050,36 @@ impl OperationsDomain {
                 .filter(|value| !value.trim().is_empty())
         };
 
+        // Read the same persisted projection that powers the child table
+        // before consulting a dashboard snapshot.  A snapshot can be behind
+        // the table for a short period after a write; serving it first made
+        // the dashboard show a different S/D/N/T/B/O total.  The aggregate
+        // below contains no clinical calculations: Python has already
+        // produced every measurement_analysis status it reads.
+        let input_request = json!({
+            "p_month_start": input.month_start,
+            "p_month_end": input.month_end,
+            "p_previous_month_start": input.previous_month_start,
+            "p_previous_month_end": input.previous_month_end,
+            "p_age_group": input.age_group,
+            "p_village": village,
+            "p_posyandu": posyandu,
+            "p_role": scope.role,
+            "p_scope_village": scoped_village,
+            "p_scope_posyandu": scoped_posyandu,
+        });
+        if let Ok(value) = self
+            .database
+            .rpc(
+                "eposyandu_dashboard_materialized_stats",
+                input_request.clone(),
+            )
+            .await
+            && is_dashboard_stats_result(&value)
+        {
+            return response_json(StatusCode::OK, value);
+        }
+
         // A completed Python snapshot is the fast read path for dashboard
         // aggregates.  Its scope version is checked by PostgreSQL; after any
         // raw mutation the version changes and this intentionally falls
@@ -1058,18 +1125,6 @@ impl OperationsDomain {
             .ok()
             .and_then(|value| stale_snapshot_result(&value));
 
-        let input_request = json!({
-            "p_month_start": input.month_start,
-            "p_month_end": input.month_end,
-            "p_previous_month_start": input.previous_month_start,
-            "p_previous_month_end": input.previous_month_end,
-            "p_age_group": input.age_group,
-            "p_village": village,
-            "p_posyandu": posyandu,
-            "p_role": scope.role,
-            "p_scope_village": scoped_village,
-            "p_scope_posyandu": scoped_posyandu,
-        });
         // The preferred path is one PostgreSQL snapshot.  It returns only the
         // fields needed by Python plus non-clinical input counts, avoiding two
         // sequential full-table reads and keeping the child/measurement view
@@ -2232,6 +2287,18 @@ mod analysis_contract_tests {
         })));
         assert!(!has_pending_analysis(&json!({
             "measurements": [{"data": {"analysisPending": false}}]
+        })));
+    }
+
+    #[test]
+    fn stale_dashboard_snapshots_are_not_eligible_for_dynamic_cache() {
+        assert!(!cache_value_is_fresh(&json!({
+            "S": 10,
+            "snapshotStale": true
+        })));
+        assert!(cache_value_is_fresh(&json!({
+            "S": 10,
+            "snapshotStale": false
         })));
     }
 

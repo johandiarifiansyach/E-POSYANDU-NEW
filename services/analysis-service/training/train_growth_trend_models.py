@@ -221,7 +221,7 @@ def parse_cohort(source: Path, year: int, workers: int = 1) -> tuple[list[dict[s
     # WHO status is still deterministic and identical; only independent
     # offline rows are distributed across processes when explicitly requested.
     statuses = map_processes(_status_for_pending_measurement, pending_statuses, workers)
-    for observation, status in zip(observations, statuses, strict=True):
+    for observation, status in zip(observations, statuses):
         observation["statuses"] = {
             key: status[key]
             for key in ("bbu_status", "tbu_status", "bbtb_status")

@@ -1093,6 +1093,9 @@ fn rpc_sql(name: &str) -> Result<&'static str, DatabaseError> {
         "eposyandu_dashboard_stats" => Ok(
             "SELECT public.eposyandu_dashboard_stats(a.p_month_start, a.p_month_end, a.p_previous_month_start, a.p_previous_month_end, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_month_start date, p_month_end date, p_previous_month_start date, p_previous_month_end date, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
         ),
+        "eposyandu_dashboard_materialized_stats" => Ok(
+            "SELECT public.eposyandu_dashboard_materialized_stats(a.p_month_start, a.p_month_end, a.p_previous_month_start, a.p_previous_month_end, a.p_age_group, a.p_village, a.p_posyandu, a.p_role, a.p_scope_village, a.p_scope_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_month_start date, p_month_end date, p_previous_month_start date, p_previous_month_end date, p_age_group text, p_village text, p_posyandu text, p_role text, p_scope_village text, p_scope_posyandu text)",
+        ),
         "eposyandu_dashboard_snapshot" => Ok(
             "SELECT public.eposyandu_dashboard_snapshot(a.p_cache_key, a.p_scope_key, a.p_month_start, a.p_month_end, a.p_previous_month_start, a.p_previous_month_end, a.p_age_group, a.p_village, a.p_posyandu) AS value FROM jsonb_to_record($1::jsonb) AS a(p_cache_key text, p_scope_key text, p_month_start date, p_month_end date, p_previous_month_start date, p_previous_month_end date, p_age_group text, p_village text, p_posyandu text)",
         ),
@@ -1195,6 +1198,7 @@ mod tests {
         assert!(rpc_sql("eposyandu_materialized_children_page").is_ok());
         assert!(rpc_sql("eposyandu_replica_children_page_legacy").is_ok());
         assert!(rpc_sql("eposyandu_materialized_exclusive_breastfeeding_page").is_ok());
+        assert!(rpc_sql("eposyandu_dashboard_materialized_stats").is_ok());
         assert!(rpc_sql("eposyandu_dashboard_snapshot").is_ok());
         assert!(rpc_sql("eposyandu_dashboard_snapshot_latest").is_ok());
     }

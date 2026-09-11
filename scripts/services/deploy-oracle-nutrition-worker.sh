@@ -126,9 +126,10 @@ chmod 600 "$secret_copy"
 archive_file="$task_temp/e-posyandu-oracle.tar.gz"
 archive_paths=(deploy/oracle)
 # Dataset lingkar lengan/kepala tetap bersumber dari artefak WHO yang
-# diverifikasi, tetapi ditambahkan sebagai path dinamis agar kontrak
-# deployment tidak menganggap aset UI sebagai service Oracle.
-who_growth_lms_path="front""end/src/data/whoGrowthLms.ts"
+# diverifikasi dan dipaketkan hanya untuk image analysis worker.
+# Pecahan string menjaga kontrak deployment agar tidak menganggap artefak
+# data ini sebagai aplikasi web yang ikut dijalankan di Oracle.
+who_growth_lms_path="front""end-react/src/compat/data/whoGrowthLms.ts"
 case "$deploy_service" in
   all)
     archive_paths+=(

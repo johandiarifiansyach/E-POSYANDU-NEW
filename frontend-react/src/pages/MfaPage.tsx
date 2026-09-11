@@ -72,7 +72,7 @@ function MfaShell({ children }: { children: React.ReactNode }) {
         <section className="login-glass-card admin-mfa-card" aria-labelledby="react-mfa-title">
           <div className="login-brand">
             <div className="login-logo-shell">
-              <img src="/logo-puskesmas-32981.svg" alt="Logo Puskesmas Gumukmas" className="h-11 w-11 object-contain" />
+              <img src="/logo-puskesmas-32981.svg" alt="Logo Puskesmas Gumukmas" className="h-11 w-11 object-contain" width={44} height={44} loading="eager" decoding="async" />
             </div>
             <h1 id="react-mfa-title" className="login-title">Verifikasi Administrator</h1>
             <p className="login-organization">Akses penuh memerlukan faktor keamanan kedua</p>
@@ -254,7 +254,7 @@ export default function MfaPage({ auth, pending, onAuthenticated, onCancel }: Mf
 
   if (view === 'totp') {
     return <MfaShell><form className="login-form admin-mfa-panel" onSubmit={verifyTotp}>
-      {qrUrl ? <img className="admin-mfa-qr" alt="QR setup authenticator" src={qrUrl} /> : null}
+      {qrUrl ? <img className="admin-mfa-qr" alt="QR setup authenticator" src={qrUrl} loading="lazy" decoding="async" /> : null}
       {enrollment?.totp?.secret ? <div className="admin-mfa-secret"><span>Kunci manual</span><code>{enrollment.totp.secret}</code></div> : null}
       <p className="admin-mfa-help">{enrollment ? 'Pindai QR dengan aplikasi authenticator, lalu masukkan kode 6 angka.' : 'Masukkan kode 6 angka dari aplikasi authenticator.'}</p>
       <label className="login-field"><span>Kode authenticator</span><input required type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} placeholder="000000" value={code} onChange={(event) => setCode(event.target.value)} autoFocus /></label>
@@ -275,11 +275,10 @@ export default function MfaPage({ auth, pending, onAuthenticated, onCancel }: Mf
   }
 
   return <MfaShell><div className="login-form admin-mfa-panel">
-    <p className="admin-mfa-help">{pending.setupRequired ? 'Daftarkan passkey sebagai metode utama. Authenticator TOTP tersedia sebagai cadangan.' : 'Pilih metode verifikasi yang sudah terdaftar.'}</p>
-    {message ? <p role="alert" className="login-error">{message}</p> : null}
-    <MfaButton label={passkey ? 'Gunakan passkey' : 'Daftarkan passkey'} disabled={busy} onClick={() => void runPasskey(passkey)} />
-    {passkey ? <MfaButton label="Daftarkan passkey baru" secondary disabled={busy} onClick={() => void runPasskey()} /> : null}
-    <MfaButton label={totp ? 'Gunakan authenticator (TOTP)' : 'Siapkan authenticator (TOTP)'} secondary disabled={busy} onClick={() => {
+      <p className="admin-mfa-help">{pending.setupRequired ? 'Daftarkan passkey sebagai metode utama. Authenticator TOTP tersedia sebagai cadangan.' : 'Pilih metode verifikasi yang sudah terdaftar.'}</p>
+      {message ? <p role="alert" className="login-error">{message}</p> : null}
+      <MfaButton label={passkey ? 'Gunakan passkey' : 'Daftarkan passkey'} disabled={busy} onClick={() => void runPasskey(passkey)} />
+      <MfaButton label={totp ? 'Gunakan authenticator (TOTP)' : 'Siapkan authenticator (TOTP)'} secondary disabled={busy} onClick={() => {
       if (totp) {
         setFactorId(totp.id);
         setEnrollment(null);

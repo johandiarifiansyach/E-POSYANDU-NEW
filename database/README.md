@@ -142,6 +142,43 @@ JSONB yang benar, sehingga fungsi tidak gagal saat dipanggil dan Rust dapat
 membaca hasil status gizi Python tanpa menandai seluruh halaman sebagai
 `analysisPending`.
 
+Migration `048_postgres_hot_path_maintenance.sql` menambahkan indeks partial
+untuk cohort balita aktif, program PMT aktif, serta antrean analisis pending dan
+processing. Migration ini juga menurunkan ambang autovacuum pada tabel yang
+sering berubah. PostgreSQL tetap menjalankan autovacuum otomatis; pada host
+Oracle, timer `eposyandu-postgresql-maintenance.timer` menjalankan `VACUUM
+(ANALYZE)` pada tabel hasil/antrean setiap jam agar bloat dan statistik planner
+tetap terkendali.
+
+Sebelum menambah indeks atau mengubah query produksi, ukur query jalur panas di
+staging dengan `EXPLAIN (ANALYZE, BUFFERS)`. Jangan menjalankan `EXPLAIN
+ANALYZE` pada mutasi atau endpoint yang dapat memproses seluruh populasi tanpa
+batas karena perintah tersebut benar-benar mengeksekusi query.
+
+Pooler PostgreSQL bersifat opsional. Semua service sudah memakai pool koneksi
+berbatas (`ORACLE_DATABASE_POOL_SIZE`, default 5), sehingga untuk ukuran saat
+ini PgBouncer belum diperlukan. Jika jumlah instance atau koneksi idle mulai
+mendekati `max_connections`, pasang PgBouncer pada jaringan privat lalu arahkan
+`ORACLE_DATABASE_URL` ke listener PgBouncer; pool aplikasi tetap dipertahankan
+dan mode transaction pooling hanya boleh dipakai setelah seluruh transaksi
+aplikasi tidak bergantung pada session state.
+
+Partitioning pengukuran belum diaktifkan karena volume saat ini masih sekitar
+30 ribu baris. Partitioning baru dipertimbangkan ketika tabel mencapai jutaan
+baris dan query rentang waktu menunjukkan sequential scan/bloat. Migrasi tersebut
+harus dibuat sebagai proyek terpisah: buat tabel partitioned baru, salin data
+bertahap, validasi foreign key dan fungsi Python, lalu lakukan cutover yang
+dapat di-rollback—bukan mengubah tabel production secara langsung.
+
+Migration `049_analysis_outbox_notify.sql` memasang trigger `AFTER INSERT` pada
+`analysis_outbox` yang mengirim `pg_notify` ke channel
+`e_posyandu_analysis_outbox` setelah transaksi sumber berhasil commit. Rust
+analysis-worker mendengarkan channel ini untuk membangunkan scheduler; polling
+interval tetap dipakai sebagai safety-net ketika koneksi LISTEN belum tersedia.
+Satu wake memproses batch job terbatas (`ANALYSIS_PERSISTENCE_BATCH_SIZE`,
+default 8). Kegagalan memakai exponential backoff 2, 4, 8, 16, hingga maksimum
+300 detik sebelum dead-letter setelah lima percobaan.
+
 Penulisan snapshot dashboard dari RPC Python tidak menghambat request. Hasil
 agregasi dimasukkan ke antrean worker berbatas dan ditulis ke
 `dashboard_analysis` secara asinkron; kegagalan koneksi dicoba ulang secara
@@ -153,6 +190,20 @@ jawaban dicatat sebagai `Ya`, jawaban `Ya` pada bulan berikutnya mengisi
 bulan-bulan sebelumnya secara turunan, sedangkan jawaban `Tidak` eksplisit
 tetap menang. Status lengkap tetap memerlukan seluruh rentang 0--6 bulan
 terisi `Ya`; usia dan konteks turunannya disimpan pada `measurement_analysis`.
+
+Migrasi `050` dan `051` menyelaraskan agregat dashboard dengan tabel balita.
+Dashboard membaca fungsi `eposyandu_dashboard_materialized_stats` yang memakai
+kelompok umur, periode, lokasi, dan baris pengukuran terbaru yang sama dengan
+proyeksi tabel. Nilai klinis (status gizi, kenaikan berat badan, dan ASI) tetap
+berasal dari `measurement_analysis` yang ditulis Worker Python; PostgreSQL
+hanya melakukan agregasi baca sehingga snapshot lama tidak menimpa perubahan
+terbaru.
+
+Migrasi `052` menyamakan pembilang kartu ASI eksklusif dengan tabel ASI. Tabel
+menentukan kelompok 6 bulan pada tanggal penimbangan di dalam bulan laporan,
+sehingga dashboard memakai baris pengukuran positif dari cohort yang sama
+(termasuk bila ada dua kunjungan tercatat); denominator kartu tetap seluruh
+anak yang berusia tepat 6 bulan pada akhir bulan laporan.
 
 ## Supabase primary dan Neon read replica
 

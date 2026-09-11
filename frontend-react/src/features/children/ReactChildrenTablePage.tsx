@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getChildrenPage,
-  peekCachedChildrenPage,
   type ChildrenPageRequest,
   type ChildrenPageResponse,
 } from "../../api/childrenApi";
 import { DEFAULT_AGE_GROUP, type AgeGroup } from "../../config/ageFilters";
 import { isFullAccessRole, MONTHS, ROLES } from "../../config/dashboard";
-import { formatIndoDate } from "../../shared/formatters";
+import { formatIndoDate, getCompletedAgeInMonths } from "../../shared/formatters";
 import { errorMessage, type PageState } from "../../shared/pageState";
 import type { DashboardUser } from "../../types";
 import {
@@ -45,6 +45,7 @@ import {
   X,
 } from "../../ui/icons";
 import { hasUsableAnalysis } from "../../api/analysisApi";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 
 type Scope = {
   month: number;
@@ -56,6 +57,8 @@ type Scope = {
 
 const PAGE_SIZE = 10;
 type ChildView = NonNullable<ChildrenPageRequest["view"]>;
+const EMPTY_MEASUREMENT: Record<string, unknown> = {};
+const EMPTY_MEASUREMENT_MAP = new Map<string, Record<string, unknown>>();
 
 /** Keep the page heading identical to the legacy table, including the
  * programme context shown for each problem tab.  The tab labels are short,
@@ -170,6 +173,18 @@ function measurementMap(response: ChildrenPageResponse) {
   return result;
 }
 
+function pageHasPendingAnalysis(response: ChildrenPageResponse | undefined) {
+  return Boolean(
+    response?.measurements?.some((item) => {
+      const measurement = item.data || {};
+      return Boolean(
+        (measurement.analysisPending || measurement.analysis_pending) &&
+          !hasUsableAnalysis(measurement),
+      );
+    }),
+  );
+}
+
 function TableSkeleton({
   rows = 6,
   columns = 12,
@@ -193,6 +208,238 @@ function TableSkeleton({
     </>
   );
 }
+
+type ChildTableRowProps = {
+  item: ChildrenPageResponse["items"][number];
+  index: number;
+  page: number;
+  view: ChildView;
+  asOf: string;
+  measurement: Record<string, unknown>;
+  showDesa: boolean;
+  showPosyandu: boolean;
+  isReadOnly: boolean;
+  onOpenMeasurement?: (child: Record<string, unknown>) => void;
+  onEditChild?: (child: Record<string, unknown>) => void;
+  onOpenPmt?: (child: Record<string, unknown>, category: string) => void;
+  onRestoreChild?: (child: Record<string, unknown>) => void;
+  onPermanentDelete?: (child: Record<string, unknown>) => void;
+  onDelete: (child: Record<string, unknown>) => void;
+};
+
+/**
+ * A table row is intentionally isolated from the paginated page component.
+ * The page can re-render when filters, dialogs, or realtime state change,
+ * while rows whose source objects did not change are skipped by React.memo.
+ */
+const ChildTableRow = memo(function ChildTableRow({
+  item,
+  index,
+  page,
+  view,
+  asOf,
+  measurement,
+  showDesa,
+  showPosyandu,
+  isReadOnly,
+  onOpenMeasurement,
+  onEditChild,
+  onOpenPmt,
+  onRestoreChild,
+  onPermanentDelete,
+  onDelete,
+}: ChildTableRowProps) {
+  const child = dataOf(item);
+  const id = String(item.id || value(child, "id"));
+  // Keep the document id with the flattened row data. The API returns ids
+  // beside `data`, but every action needs the id to address the same child.
+  const childRecord = { ...child, id };
+  const storedAge = value(child, "ageInMonths", "usiaBulan");
+  const storedAgeNumber = Number(storedAge);
+  const measurementAge = value(measurement, "ageInMonths", "usiaBulan");
+  const measurementAgeNumber = Number(measurementAge);
+  // Age is a property of the child and report period, not of whether the
+  // latest measurement has finished Python analysis. Prefer the deterministic
+  // birth-date calculation so rows without a measurement still show an age.
+  const birthDate = value(child, "tglLahir", "birthDate", "birth_date");
+  const ageInMonths =
+    getCompletedAgeInMonths(birthDate, asOf) ??
+    (storedAge !== "-" && Number.isFinite(storedAgeNumber)
+      ? Math.trunc(storedAgeNumber)
+      : measurementAge !== "-" && Number.isFinite(measurementAgeNumber)
+        ? Math.trunc(measurementAgeNumber)
+        : null);
+  const status = (key: string, ...aliases: string[]) =>
+    value(measurement, key, ...aliases);
+  const analysisLoading = Boolean(
+    (measurement.analysisPending || measurement.analysis_pending) &&
+      !hasUsableAnalysis(measurement),
+  );
+  const analysisBadge = (statusValue: string) =>
+    analysisLoading ? (
+      <SkeletonBlock className="table-analysis-skeleton table-analysis-skeleton-badge" />
+    ) : (
+      <StatusBadge status={statusValue} />
+    );
+
+  return (
+    <tr className="ios-data-row text-xs">
+      <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-center text-slate-500 md:sticky md:left-0 md:z-10 md:bg-white">
+        {(page - 1) * PAGE_SIZE + index + 1}
+      </td>
+      <td className="min-w-[12rem] whitespace-normal border-r border-slate-100 px-4 py-3 md:sticky md:left-[48px] md:z-10 md:bg-white md:shadow-lg">
+        <p className="break-words font-bold text-slate-900">
+          {value(child, "nama", "name")}
+        </p>
+        <p
+          className={`break-all font-mono text-[10px] ${
+            child.hasNIK === true
+              ? "text-slate-500"
+              : "font-bold text-red-600"
+          }`}
+        >
+          {value(child, "nik", "national_id")}
+        </p>
+        <div className="mt-1 flex items-center gap-1">
+          <Badge color={value(child, "jk", "gender") === "L" ? "blue" : "pink"}>
+            {value(child, "jk", "gender") === "L" ? "L" : "P"}
+          </Badge>
+          <span className="text-[10px] text-slate-400">
+            {formatIndoDate(String(birthDate))}{" "}
+            ({ageInMonths === null ? "-" : ageInMonths} Bln)
+          </span>
+        </div>
+      </td>
+      <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-slate-700">
+        {value(child, "namaOrtu", "parentName")}
+      </td>
+      {view === "recycle" ? (
+        <td className="min-w-[11rem] border-r border-slate-100 bg-rose-50/30 px-4 py-3 font-semibold text-rose-700">
+          {value(child, "deleteReason", "alasanDihapus")}
+        </td>
+      ) : null}
+      {showDesa ? (
+        <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-slate-600">
+          {value(child, "desa", "village")}
+        </td>
+      ) : null}
+      {showPosyandu ? (
+        <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-slate-600">
+          {value(child, "posyandu")}
+        </td>
+      ) : null}
+      <td className="border-r border-slate-100 bg-blue-50/10 px-2 py-3 text-center font-mono">
+        {value(measurement, "bb", "weight")}
+      </td>
+      <td className="border-r border-slate-100 bg-blue-50/10 px-2 py-3 text-center font-mono">
+        {value(measurement, "tb", "pb", "height")}
+      </td>
+      <td className="border-r border-slate-100 bg-blue-50/10 px-2 py-3 text-center font-mono">
+        {value(measurement, "lila", "muac")}
+      </td>
+      <td className="border-r border-slate-100 bg-blue-50/10 px-2 py-3 text-center font-mono">
+        {value(measurement, "lk", "headCircumference")}
+      </td>
+      <td className="border-r border-slate-100 bg-indigo-50/10 px-2 py-3 text-center">
+        {analysisLoading ? (
+          <SkeletonBlock className="table-analysis-skeleton table-analysis-skeleton-badge" />
+        ) : (
+          <KenaikanBadge
+            status={String(status("weightGainStatus", "statusNaik"))}
+          />
+        )}
+      </td>
+      <td className="border-r border-slate-100 bg-emerald-50/10 px-2 py-3 text-center">
+        {analysisBadge(String(status("bbuStatus", "statusBbu")))}
+      </td>
+      <td className="border-r border-slate-100 bg-emerald-50/10 px-2 py-3 text-center">
+        {analysisBadge(String(status("tbuStatus", "statusTbu")))}
+      </td>
+      <td className="border-r border-slate-100 bg-emerald-50/10 px-2 py-3 text-center">
+        {analysisBadge(String(status("bbtbStatus", "statusBbtb")))}
+      </td>
+      <td className="border-r border-slate-100 bg-emerald-50/10 px-2 py-3 text-center">
+        {analysisBadge(String(status("imtuStatus", "statusImtu")))}
+      </td>
+      <td className="whitespace-nowrap px-4 py-3 text-center">
+        <div className="flex justify-center gap-1">
+          {isReadOnly ? (
+            <span className="text-xs font-semibold text-slate-400">Hanya baca</span>
+          ) : view === "recycle" ? (
+            <>
+              <button
+                type="button"
+                className="apple-button table-action-button table-action-green"
+                title="Pulihkan"
+                aria-label="Pulihkan balita"
+                onClick={() => onRestoreChild?.(childRecord)}
+              >
+                <RotateCcw className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                className="apple-button table-action-button table-action-red"
+                title="Hapus Permanen"
+                aria-label="Hapus permanen"
+                onClick={() => onPermanentDelete?.(childRecord)}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </>
+          ) : (
+            <>
+              {onOpenPmt &&
+              ["problem_wasting", "problem_underweight", "problem_tidak_naik"].includes(
+                view,
+              ) ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenPmt(childRecord, view)}
+                  className="apple-button table-action-button table-action-pmt"
+                  title="Beri PMT"
+                  aria-label="Beri PMT"
+                >
+                  <Gift className="h-4 w-4" />
+                </button>
+              ) : null}
+              {onEditChild ? (
+                <button
+                  type="button"
+                  onClick={() => onEditChild(childRecord)}
+                  className="apple-button table-action-button table-action-blue"
+                  title="Edit Identitas"
+                  aria-label="Edit Identitas"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+              ) : null}
+              {onOpenMeasurement ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenMeasurement(childRecord)}
+                  className="apple-button table-action-button table-action-cyan"
+                  title="Pengukuran Balita"
+                  aria-label="Pengukuran Balita"
+                >
+                  <Ruler className="h-4 w-4" />
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => onDelete(childRecord)}
+                className="apple-button table-action-button table-action-red"
+                title="Hapus Balita"
+                aria-label="Hapus Balita"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+});
 
 export type ReactChildrenTablePageProps = {
   user: DashboardUser;
@@ -238,12 +485,28 @@ export default function ReactChildrenTablePage({
   const [searchDraft, setSearchDraft] = useState("");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("recent");
+  const debouncedSearch = useDebouncedValue(search);
   const request = useMemo(
-    () => toRequest(scope, user, page, search, sort, view),
-    [page, search, sort, scope, user, view],
+    () => toRequest(scope, user, page, debouncedSearch, sort, view),
+    [debouncedSearch, page, sort, scope, user, view],
   );
-  const [state, setState] = useState<PageState<ChildrenPageResponse>>({
-    status: "loading",
+  const queryClient = useQueryClient();
+  const pageQuery = useQuery({
+    queryKey: ["children-page", request],
+    queryFn: () => getChildrenPage(request),
+    // Do not render a previous page while a new filter/page is loading.  The
+    // server response for this exact request is authoritative; showing old
+    // rows would make totals appear inconsistent with the dashboard.
+    staleTime: 0,
+    // Python writes the authoritative projection asynchronously.  Keep
+    // refreshing only while this page contains an actually pending row so a
+    // recovered worker replaces skeleton badges automatically, without
+    // polling every page forever or generating extra mobile traffic.
+    refetchInterval: (query) =>
+      pageHasPendingAnalysis(query.state.data as ChildrenPageResponse | undefined)
+        ? 2_000
+        : false,
+    refetchOnWindowFocus: true,
   });
   const [childToDelete, setChildToDelete] = useState<Record<
     string,
@@ -266,32 +529,23 @@ export default function ReactChildrenTablePage({
     setPage(1);
   }, [initialView]);
 
-  useEffect(() => {
-    let active = true;
-    const cached = peekCachedChildrenPage(request);
-    if (cached) setState({ status: "success", data: cached });
-    else setState({ status: "loading" });
-    void getChildrenPage(request)
-      .then((response) => {
-        if (active) setState({ status: "success", data: response });
-      })
-      .catch((cause) => {
-        if (active)
-          setState({
-            status: "error",
-            message: errorMessage(cause, "Data balita belum dapat dimuat."),
-          });
-      });
-    return () => {
-      active = false;
-    };
-  }, [request]);
-
+  const state: PageState<ChildrenPageResponse> = pageQuery.data
+    ? { status: "success", data: pageQuery.data }
+    : pageQuery.error
+      ? {
+          status: "error",
+          message: errorMessage(
+            pageQuery.error,
+            "Data balita belum dapat dimuat.",
+          ),
+        }
+      : { status: "loading" };
   const response = state.status === "success" ? state.data : null;
   const items = response?.items || [];
-  const measurements = response
-    ? measurementMap(response)
-    : new Map<string, Record<string, unknown>>();
+  const measurements = useMemo(
+    () => (response ? measurementMap(response) : EMPTY_MEASUREMENT_MAP),
+    [response],
+  );
   const total = response?.total || 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const isReadOnly = user.accessMode === "read";
@@ -313,6 +567,10 @@ export default function ReactChildrenTablePage({
     setSearch("");
     setPage(1);
   };
+  const handleDeleteRequest = useCallback(
+    (child: Record<string, unknown>) => setChildToDelete(child),
+    [],
+  );
 
   const confirmDelete = async (id: string, payload: Record<string, string>) => {
     await updateDoc(
@@ -326,8 +584,7 @@ export default function ReactChildrenTablePage({
     );
     await syncPendingMutations();
     setChildToDelete(null);
-    const refreshed = await getChildrenPage(request);
-    setState({ status: "success", data: refreshed });
+    await queryClient.invalidateQueries({ queryKey: ["children-page"] });
   };
 
   const title = pageHeading(view, scope.month, scope.year);
@@ -586,204 +843,26 @@ export default function ReactChildrenTablePage({
                 </tr>
               ) : (
                 items.map((item, index) => {
-                  const child = dataOf(item);
-                  const id = String(item.id || value(child, "id"));
-                  // Keep the document id with the flattened row data. The
-                  // API returns ids beside `data`, but every action needs the
-                  // id to address the same child document.
-                  const childRecord = { ...child, id };
-                  const measurement = measurements.get(id) || {};
-                  const status = (key: string, ...aliases: string[]) =>
-                    value(measurement, key, ...aliases);
-                  const analysisLoading = Boolean(
-                    (measurement.analysisPending ||
-                      measurement.analysis_pending) &&
-                    !hasUsableAnalysis(measurement),
-                  );
-                  const analysisBadge = (statusValue: string) =>
-                    analysisLoading ? (
-                      <SkeletonBlock className="table-analysis-skeleton table-analysis-skeleton-badge" />
-                    ) : (
-                      <StatusBadge status={statusValue} />
-                    );
+                  const id = String(item.id || value(dataOf(item), "id"));
                   return (
-                    <tr className="ios-data-row text-xs" key={id || index}>
-                      <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-center text-slate-500 md:sticky md:left-0 md:z-10 md:bg-white">
-                        {(page - 1) * PAGE_SIZE + index + 1}
-                      </td>
-                      <td className="min-w-[12rem] whitespace-normal border-r border-slate-100 px-4 py-3 md:sticky md:left-[48px] md:z-10 md:bg-white md:shadow-lg">
-                        <p className="break-words font-bold text-slate-900">
-                          {value(child, "nama", "name")}
-                        </p>
-                        <p
-                          className={`break-all font-mono text-[10px] ${
-                            child.hasNIK === true
-                              ? "text-slate-500"
-                              : "font-bold text-red-600"
-                          }`}
-                        >
-                          {value(child, "nik", "national_id")}
-                        </p>
-                        <div className="mt-1 flex items-center gap-1">
-                          <Badge
-                            color={
-                              value(child, "jk", "gender") === "L"
-                                ? "blue"
-                                : "pink"
-                            }
-                          >
-                            {value(child, "jk", "gender") === "L" ? "L" : "P"}
-                          </Badge>
-                          <span className="text-[10px] text-slate-400">
-                            {formatIndoDate(
-                              String(value(child, "tglLahir", "birthDate")),
-                            )}{" "}
-                            ({value(child, "ageInMonths", "usiaBulan")} Bln)
-                          </span>
-                        </div>
-                      </td>
-                      <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-slate-700">
-                        {value(child, "namaOrtu", "parentName")}
-                      </td>
-                      {view === "recycle" ? (
-                        <td className="min-w-[11rem] border-r border-slate-100 bg-rose-50/30 px-4 py-3 font-semibold text-rose-700">
-                          {value(child, "deleteReason", "alasanDihapus")}
-                        </td>
-                      ) : null}
-                      {showDesa ? (
-                        <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-slate-600">
-                          {value(child, "desa", "village")}
-                        </td>
-                      ) : null}
-                      {showPosyandu ? (
-                        <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-slate-600">
-                          {value(child, "posyandu")}
-                        </td>
-                      ) : null}
-                      <td className="border-r border-slate-100 bg-blue-50/10 px-2 py-3 text-center font-mono">
-                        {value(measurement, "bb", "weight")}
-                      </td>
-                      <td className="border-r border-slate-100 bg-blue-50/10 px-2 py-3 text-center font-mono">
-                        {value(measurement, "tb", "pb", "height")}
-                      </td>
-                      <td className="border-r border-slate-100 bg-blue-50/10 px-2 py-3 text-center font-mono">
-                        {value(measurement, "lila", "muac")}
-                      </td>
-                      <td className="border-r border-slate-100 bg-blue-50/10 px-2 py-3 text-center font-mono">
-                        {value(measurement, "lk", "headCircumference")}
-                      </td>
-                      <td className="border-r border-slate-100 bg-indigo-50/10 px-2 py-3 text-center">
-                        {analysisLoading ? (
-                          <SkeletonBlock className="table-analysis-skeleton table-analysis-skeleton-badge" />
-                        ) : (
-                          <KenaikanBadge
-                            status={String(
-                              status("weightGainStatus", "statusNaik"),
-                            )}
-                          />
-                        )}
-                      </td>
-                      <td className="border-r border-slate-100 bg-emerald-50/10 px-2 py-3 text-center">
-                        {analysisBadge(
-                          String(status("bbuStatus", "statusBbu")),
-                        )}
-                      </td>
-                      <td className="border-r border-slate-100 bg-emerald-50/10 px-2 py-3 text-center">
-                        {analysisBadge(
-                          String(status("tbuStatus", "statusTbu")),
-                        )}
-                      </td>
-                      <td className="border-r border-slate-100 bg-emerald-50/10 px-2 py-3 text-center">
-                        {analysisBadge(
-                          String(status("bbtbStatus", "statusBbtb")),
-                        )}
-                      </td>
-                      <td className="border-r border-slate-100 bg-emerald-50/10 px-2 py-3 text-center">
-                        {analysisBadge(
-                          String(status("imtuStatus", "statusImtu")),
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-center">
-                        <div className="flex justify-center gap-1">
-                          {isReadOnly ? (
-                            <span className="text-xs font-semibold text-slate-400">Hanya baca</span>
-                          ) : view === "recycle" ? (
-                            <>
-                              <button
-                                type="button"
-                                className="apple-button table-action-button table-action-green"
-                                title="Pulihkan"
-                                aria-label="Pulihkan balita"
-                                onClick={() => onRestoreChild?.(childRecord)}
-                              >
-                                <RotateCcw className="h-4 w-4" />
-                              </button>
-                              <button
-                                type="button"
-                                className="apple-button table-action-button table-action-red"
-                                title="Hapus Permanen"
-                                aria-label="Hapus permanen"
-                                onClick={() => onPermanentDelete?.(childRecord)}
-                              >
-                                <X className="h-4 w-4" />
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              {onOpenPmt &&
-                              [
-                                "problem_wasting",
-                                "problem_underweight",
-                                "problem_tidak_naik",
-                              ].includes(view) ? (
-                                <button
-                                  type="button"
-                                  onClick={() => onOpenPmt(childRecord, view)}
-                                  className="apple-button table-action-button table-action-pmt"
-                                  title="Beri PMT"
-                                  aria-label="Beri PMT"
-                                >
-                                  <Gift className="h-4 w-4" />
-                                </button>
-                              ) : null}
-                              {onEditChild && !isReadOnly ? (
-                                <button
-                                  type="button"
-                                onClick={() => onEditChild(childRecord)}
-                                  className="apple-button table-action-button table-action-blue"
-                                  title="Edit Identitas"
-                                  aria-label="Edit Identitas"
-                                >
-                                  <Pencil className="h-4 w-4" />
-                                </button>
-                              ) : null}
-                              {onOpenMeasurement ? (
-                                <button
-                                  type="button"
-                                  onClick={() => onOpenMeasurement(childRecord)}
-                                  className="apple-button table-action-button table-action-cyan"
-                                  title="Pengukuran Balita"
-                                  aria-label="Pengukuran Balita"
-                                >
-                                  <Ruler className="h-4 w-4" />
-                                </button>
-                              ) : null}
-                              {!isReadOnly ? (
-                                <button
-                                  type="button"
-                                  onClick={() => setChildToDelete(childRecord)}
-                                  className="apple-button table-action-button table-action-red"
-                                  title="Hapus Balita"
-                                  aria-label="Hapus Balita"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
-                              ) : null}
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
+                    <ChildTableRow
+                      key={id || index}
+                      item={item}
+                      index={index}
+                      page={page}
+                      view={view}
+                      asOf={request.asOf}
+                      measurement={measurements.get(id) || EMPTY_MEASUREMENT}
+                      showDesa={showDesa}
+                      showPosyandu={showPosyandu}
+                      isReadOnly={isReadOnly}
+                      onOpenMeasurement={onOpenMeasurement}
+                      onEditChild={onEditChild}
+                      onOpenPmt={onOpenPmt}
+                      onRestoreChild={onRestoreChild}
+                      onPermanentDelete={onPermanentDelete}
+                      onDelete={handleDeleteRequest}
+                    />
                   );
                 })
               )}

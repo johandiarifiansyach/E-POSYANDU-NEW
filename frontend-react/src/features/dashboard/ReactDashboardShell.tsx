@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   AlertCircle,
@@ -30,7 +31,6 @@ import {
   getMonitoringStatus,
   type DashboardStatsRequest,
   type DashboardStatsResponse,
-  type MonitoringStatus,
 } from "../../api/dashboardApi";
 import {
   DEFAULT_AGE_GROUP,
@@ -38,7 +38,6 @@ import {
   type AgeGroup,
 } from "../../config/ageFilters";
 import {
-  COMPACT_SIDEBAR_MEDIA_QUERY,
   isFullAccessRole,
   MONTHS,
   ROLES,
@@ -68,11 +67,12 @@ import MpasiModal from "../breastfeeding/MpasiModal";
 import { getPmtCategoryForTab } from "../children/childRules";
 import type { DashboardUser } from "../../types";
 import {
-  getPreferredColorScheme,
-  saveColorScheme,
   subscribeColorScheme,
   type ColorScheme,
 } from "../../theme/colorScheme";
+import { useFilterStore } from "../../stores/filterStore";
+import { useRealtimeStore } from "../../stores/realtimeStore";
+import { useUiStore } from "../../stores/uiStore";
 import {
   ensureXlsx,
   sanitizeImportedCellText,
@@ -138,8 +138,6 @@ const EMPTY_STATS: DashboardStatsResponse = {
   perStunting: "0.0",
   perWasting: "0.0",
 };
-const SNAPSHOT_PREFIX = "e-posyandu:react-dashboard:v1:";
-
 function monthStart(year: number, month: number) {
   return `${year}-${String(month).padStart(2, "0")}-01`;
 }
@@ -166,33 +164,6 @@ function toRequest(
     posyandu:
       (user.role === ROLES.KADER ? user.posyandu : scope.posyandu) || undefined,
   };
-}
-function snapshotKey(request: DashboardStatsRequest) {
-  return `${SNAPSHOT_PREFIX}${JSON.stringify(request)}`;
-}
-function loadSnapshot(
-  request: DashboardStatsRequest,
-): DashboardStatsResponse | null {
-  try {
-    const raw = window.localStorage.getItem(snapshotKey(request));
-    if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    return parsed && typeof parsed === "object"
-      ? (parsed as DashboardStatsResponse)
-      : null;
-  } catch {
-    return null;
-  }
-}
-function saveSnapshot(
-  request: DashboardStatsRequest,
-  stats: DashboardStatsResponse,
-) {
-  try {
-    window.localStorage.setItem(snapshotKey(request), JSON.stringify(stats));
-  } catch {
-    /* private/full storage must not block rendering */
-  }
 }
 function initialScope(user: DashboardUser): DashboardScope {
   const now = new Date();
@@ -415,7 +386,7 @@ function DashboardSidebar({
         </div>
         <div className="sidebar-brand-panel" data-sidebar-brand="true">
           <span className="sidebar-brand-logo-shell" aria-hidden="true">
-            <img src="/logo-puskesmas-32981.svg" alt="" className="h-10 w-10" />
+            <img src="/logo-puskesmas-32981.svg" alt="" className="h-10 w-10" width={40} height={40} loading="lazy" decoding="async" />
           </span>
           <div className="sidebar-brand-copy min-w-0">
             <div className="sidebar-brand-name-row">
@@ -652,49 +623,84 @@ export default function ReactDashboardShell({
     null,
   );
   const [childToDelete, setChildToDelete] = useState<Record<string, any> | null>(null);
-  const [draft, setDraft] = useState(() => initialScope(user));
-  const [scope, setScope] = useState(() => initialScope(user));
+  const filterOwnerKey = `${user.role}:${user.desa || ""}:${user.posyandu || ""}:${user.accessMode}`;
+  const filterDefaults = useMemo(() => initialScope(user), [user]);
+  const initializeFilters = useFilterStore((state) => state.initialize);
+  const draft = useFilterStore((state) => state.draft);
+  const scope = useFilterStore((state) => state.applied);
+  const setDraft = useFilterStore((state) => state.setDraft);
+  const applyDraft = useFilterStore((state) => state.applyDraft);
+  const resetFilters = useFilterStore((state) => state.reset);
+  const setFilterAgeGroup = useFilterStore((state) => state.setAgeGroup);
+  useEffect(() => {
+    initializeFilters(filterOwnerKey, filterDefaults);
+  }, [filterDefaults, filterOwnerKey, initializeFilters]);
   const request = useMemo(() => toRequest(scope, user), [scope, user]);
-  const [stats, setStats] = useState<DashboardStatsResponse>(
-    () => loadSnapshot(request) || EMPTY_STATS,
-  );
-  const [pageState, setPageState] = useState<PageState<DashboardStatsResponse>>(
-    () => {
-      const cached = loadSnapshot(request);
-      return cached
-        ? { status: "success", data: cached }
+  const queryClient = useQueryClient();
+  const dashboardQuery = useQuery({
+    queryKey: ["dashboard-stats", request],
+    queryFn: () => getDashboardStats(request),
+    enabled: activeView === "dashboard",
+    // Never seed a new filter with a browser snapshot or the previous query.
+    // The backend owns the authoritative fallback; the UI shows a skeleton
+    // until the response for this exact scope arrives.
+    staleTime: 0,
+    // The aggregate is immediately available from PostgreSQL, but clinical
+    // counters stay skeletonized until every current weighted row has a
+    // persisted Python result.  Refresh only while that projection is
+    // pending; normal dashboard reads remain one request per filter.
+    refetchInterval: (query) =>
+      query.state.data?.analysisPending ? 2_000 : false,
+    refetchOnWindowFocus: true,
+  });
+  const stats = dashboardQuery.data || EMPTY_STATS;
+  const analysisPending = Boolean(dashboardQuery.data?.analysisPending);
+  const pageState: PageState<DashboardStatsResponse> = analysisPending
+    ? { status: "loading" }
+    : dashboardQuery.data
+      ? { status: "success", data: dashboardQuery.data }
+      : dashboardQuery.error
+        ? {
+            status: "error",
+            message: errorMessage(
+              dashboardQuery.error,
+              "Ringkasan dashboard belum dapat dimuat.",
+            ),
+          }
         : { status: "loading" };
-    },
-  );
-  const [monitoringStatus, setMonitoringStatus] =
-    useState<MonitoringStatus | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      (window.matchMedia(COMPACT_SIDEBAR_MEDIA_QUERY).matches ||
-        window.matchMedia("(max-width: 767px)").matches),
-  );
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [accountOpen, setAccountOpen] = useState(false);
-  const [colorScheme, setColorScheme] = useState<ColorScheme>(() =>
-    getPreferredColorScheme(),
-  );
-  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
+  const invalidateReadQueries = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] }),
+      queryClient.invalidateQueries({ queryKey: ["children-page"] }),
+      queryClient.invalidateQueries({
+        queryKey: ["exclusive-breastfeeding-page"],
+      }),
+      queryClient.invalidateQueries({ queryKey: ["change-history"] }),
+    ]);
+  }, [queryClient]);
+  const monitoringStatus = useRealtimeStore((state) => state.monitoringStatus);
+  const setMonitoringStatus = useRealtimeStore((state) => state.setMonitoringStatus);
+  const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed);
+  const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed);
+  const sidebarOpen = useUiStore((state) => state.sidebarOpen);
+  const setSidebarOpen = useUiStore((state) => state.setSidebarOpen);
+  const accountOpen = useUiStore((state) => state.accountOpen);
+  const setAccountOpen = useUiStore((state) => state.setAccountOpen);
+  const colorScheme = useUiStore((state) => state.colorScheme);
+  const setColorScheme = useUiStore((state) => state.setColorScheme);
+  const toggleColorScheme = useUiStore((state) => state.toggleColorScheme);
+  const releaseNotesOpen = useUiStore((state) => state.releaseNotesOpen);
+  const setReleaseNotesOpen = useUiStore((state) => state.setReleaseNotesOpen);
   const [actionError, setActionError] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const accountRef = useRef<HTMLDivElement | null>(null);
 
-  const resetAgeGroupForView = (view: ActiveView) => {
+  const resetAgeGroupForView = useCallback((view: ActiveView) => {
     const ageGroup = defaultAgeGroupForView(view);
-    setDraft((current) =>
-      current.ageGroup === ageGroup ? current : { ...current, ageGroup },
-    );
-    setScope((current) =>
-      current.ageGroup === ageGroup ? current : { ...current, ageGroup },
-    );
-  };
+    setFilterAgeGroup(ageGroup);
+  }, [setFilterAgeGroup]);
 
-  useEffect(() => subscribeColorScheme(setColorScheme), []);
+  useEffect(() => subscribeColorScheme(setColorScheme), [setColorScheme]);
   useEffect(() => {
     const onHashChange = () => {
       const next = viewFromHash();
@@ -759,40 +765,6 @@ export default function ReactDashboardShell({
     };
   }, []);
   useEffect(() => {
-    if (activeView !== "dashboard") return undefined;
-    let active = true;
-    const cached = loadSnapshot(request);
-    if (cached) {
-      setStats(cached);
-      setPageState({ status: "success", data: cached });
-    } else setPageState({ status: "loading" });
-    void getDashboardStats(request)
-      .then((next) => {
-        if (!active) return;
-        setStats(next);
-        setPageState({ status: "success", data: next });
-        saveSnapshot(request, next);
-      })
-      .catch((cause) => {
-        if (!active) return;
-        const fallback = loadSnapshot(request);
-        if (fallback) {
-          setStats(fallback);
-          setPageState({ status: "success", data: fallback });
-        } else
-          setPageState({
-            status: "error",
-            message: errorMessage(
-              cause,
-              "Ringkasan dashboard belum dapat dimuat.",
-            ),
-          });
-      });
-    return () => {
-      active = false;
-    };
-  }, [activeView, request]);
-  useEffect(() => {
     let active = true;
     void getMonitoringStatus()
       .then((status) => {
@@ -804,13 +776,12 @@ export default function ReactDashboardShell({
     };
   }, []);
 
-  const applyScope = () => setScope(draft);
-  const resetScope = () => {
+  const applyScope = useCallback(() => applyDraft(), [applyDraft]);
+  const resetScope = useCallback(() => {
     const next = initialScope(user);
-    setDraft(next);
-    setScope(next);
-  };
-  const navigate = (view: ActiveView) => {
+    resetFilters(next);
+  }, [resetFilters, user]);
+  const navigate = useCallback((view: ActiveView) => {
     if (view === "measurement" && !selectedChild) return;
     if (
       (view === "adminBackend" || view === "adminMonitoring") &&
@@ -825,8 +796,8 @@ export default function ReactDashboardShell({
     const nextHash = `#${hashForView(view)}`;
     if (window.location.hash !== nextHash)
       window.history.replaceState(null, "", nextHash);
-  };
-  const openMeasurement = (child: Record<string, unknown>) => {
+  }, [resetAgeGroupForView, selectedChild, user]);
+  const openMeasurement = useCallback((child: Record<string, unknown>) => {
     const childId = String(child.id || child.childId || "");
     if (!childId) return;
     setSelectedChild(child);
@@ -834,7 +805,7 @@ export default function ReactDashboardShell({
     const nextHash = `#measurement/${encodeURIComponent(childId)}`;
     if (window.location.hash !== nextHash)
       window.history.replaceState(null, "", nextHash);
-  };
+  }, []);
   const showTooltip = (
     label: string,
     event:
@@ -855,21 +826,21 @@ export default function ReactDashboardShell({
     tooltip?.setAttribute("aria-hidden", "true");
   };
   const canWrite = user.accessMode !== "read";
-  const exportContext = {
+  const exportContext = useMemo(() => ({
     scope,
     user,
     db,
     appId,
     roles: ROLES,
-  };
-  const runExport = (label: string, task: () => Promise<void>) => {
+  }), [scope, user]);
+  const runExport = useCallback((label: string, task: () => Promise<void>) => {
     setActionError(null);
     void task().catch((cause) => {
       setActionError(
         `Gagal membuat ${label}: ${errorMessage(cause, "Permintaan tidak dapat diproses.")}`,
       );
     });
-  };
+  }, []);
   const handleImportIdentitas = async (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
@@ -954,21 +925,78 @@ export default function ReactDashboardShell({
         imported += 1;
       }
       await syncPendingMutations();
+      await invalidateReadQueries();
       if (!imported) throw new Error("Tidak ada baris identitas yang dapat diimpor.");
       setActionError(null);
     } catch (cause) {
       setActionError(`Gagal mengimpor identitas: ${errorMessage(cause, "Berkas tidak valid.")}`);
     }
   };
-  const confirmDeleteChild = async (id: string, payload: Record<string, string>) => {
+  const confirmDeleteChild = useCallback(async (id: string, payload: Record<string, string>) => {
     await updateDoc(
       doc(db, "artifacts", appId, "public", "data", "children", id),
       { ...payload, deletedAt: serverTimestamp(), updatedAt: serverTimestamp() },
       { deferSync: true },
     );
     await syncPendingMutations();
+    await invalidateReadQueries();
     setChildToDelete(null);
-  };
+  }, [invalidateReadQueries]);
+  const handleOpenAddChild = useCallback(() => {
+    setEditingChild(null);
+    navigate("addChild");
+  }, [navigate]);
+  const handleEditChild = useCallback((child: Record<string, unknown>) => {
+    const id = String(child.id || child.childId || "");
+    if (!id) return;
+    void getChildDetail(id)
+      .then((document) => setEditingChild({ id: document.id, ...document.data }))
+      .catch((cause) => setActionError(`Gagal memuat detail balita: ${errorMessage(cause, "Permintaan tidak dapat diproses.")}`));
+  }, []);
+  const handleOpenPmt = useCallback((child: Record<string, unknown>, category: string) => {
+    if (!canWrite) return;
+    setPmtModalData({ child: child as Record<string, any>, category: getPmtCategoryForTab(category) });
+  }, [canWrite]);
+  const handleRestoreChild = useCallback(async (child: Record<string, unknown>) => {
+    const id = String(child.id || child.childId || "");
+    if (!id) return;
+    await updateDoc(doc(db, "artifacts", appId, "public", "data", "children", id), { deletedAt: null, updatedAt: serverTimestamp() }, { deferSync: true });
+    await syncPendingMutations();
+    await invalidateReadQueries();
+    navigate("data");
+  }, [invalidateReadQueries, navigate]);
+  const handlePermanentDelete = useCallback(async (child: Record<string, unknown>) => {
+    const id = String(child.id || child.childId || "");
+    if (!id) return;
+    await deleteDoc(doc(db, "artifacts", appId, "public", "data", "children", id));
+    await syncPendingMutations();
+    await invalidateReadQueries();
+    navigate("data");
+  }, [invalidateReadQueries, navigate]);
+  const handleExportTable = useCallback(() => runExport("file tabel balita", () => exportChildrenTable({ ...exportContext, activeView })), [activeView, exportContext, runExport]);
+  const handleExportMeasurement = useCallback(() => runExport("file pengukuran", () => exportMeasurements(exportContext)), [exportContext, runExport]);
+  const handleExportSigizi = useCallback(() => runExport("file identitas Sigizi", () => exportRecentIdentities(exportContext)), [exportContext, runExport]);
+  const handleImportClick = useCallback(() => importInputRef.current?.click(), []);
+  const handleDeleteMpasiChild = useCallback((child: Record<string, unknown>) => {
+    if (canWrite) setChildToDelete(child as Record<string, any>);
+  }, [canWrite]);
+  const handleOpenMpasi = useCallback((child: Record<string, unknown>) => {
+    if (canWrite) setMpasiChild(child as Record<string, any>);
+  }, [canWrite]);
+  const handleExportMpasi = useCallback(() => runExport("file MPASI", () => exportMpasi(exportContext)), [exportContext, runExport]);
+  const handleExportPmt = useCallback(() => runExport("file PMT", () => exportPmt(exportContext)), [exportContext, runExport]);
+  const handleDeleteProgram = useCallback(async (program: Record<string, any>) => {
+    if (!canWrite || !program.id) return;
+    const name = String(program.childName || "balita");
+    if (!window.confirm(`Hapus program PMT untuk ${name}? Data pemantauan mingguannya juga akan dihapus.`)) return;
+    try {
+      await deleteDoc(doc(db, "artifacts", appId, "public", "data", "pmt_programs", String(program.id)));
+      await syncPendingMutations();
+      await invalidateReadQueries();
+    } catch (cause) {
+      setActionError(`Gagal menghapus program PMT: ${errorMessage(cause, "Permintaan tidak dapat diproses.")}`);
+    }
+  }, [canWrite, invalidateReadQueries]);
   const title = PAGE_TITLES[activeView];
   const showFilter = ![
     "addChild",
@@ -1005,9 +1033,7 @@ export default function ReactDashboardShell({
           user={user}
           title={title}
           colorScheme={colorScheme}
-          onToggleTheme={() =>
-            saveColorScheme(colorScheme === "dark" ? "light" : "dark")
-          }
+          onToggleTheme={toggleColorScheme}
           accountOpen={accountOpen}
           onToggleAccount={() => setAccountOpen((current) => !current)}
           onLogout={async () => {
@@ -1134,72 +1160,16 @@ export default function ReactDashboardShell({
               user={user}
               scope={scope}
               initialView={activeView as ChildTableView}
-              onOpenAddChild={() => {
-                setEditingChild(null);
-                navigate("addChild");
-              }}
-              onEditChild={(child) => {
-                const id = String(child.id || child.childId || "");
-                if (!id) return;
-                void getChildDetail(id)
-                  .then((document) => {
-                    setEditingChild({ id: document.id, ...document.data });
-                  })
-                  .catch((cause) => {
-                    setActionError(
-                      `Gagal memuat detail balita: ${errorMessage(cause, "Permintaan tidak dapat diproses.")}`,
-                    );
-                  });
-              }}
-              onOpenMeasurement={(child) => {
-                openMeasurement(child);
-              }}
-              onOpenPmt={(child, category) => {
-                if (!canWrite) return;
-                setPmtModalData({
-                  child: child as Record<string, any>,
-                  category: getPmtCategoryForTab(category),
-                });
-              }}
-              onRestoreChild={async (child) => {
-                const id = String(child.id || child.childId || "");
-                if (!id) return;
-                await updateDoc(
-                  doc(db, "artifacts", appId, "public", "data", "children", id),
-                  { deletedAt: null, updatedAt: serverTimestamp() },
-                  { deferSync: true },
-                );
-                await syncPendingMutations();
-                navigate("data");
-              }}
-              onPermanentDelete={async (child) => {
-                const id = String(child.id || child.childId || "");
-                if (!id) return;
-                await deleteDoc(
-                  doc(db, "artifacts", appId, "public", "data", "children", id),
-                );
-                await syncPendingMutations();
-                navigate("data");
-              }}
-              onExportTable={() =>
-                runExport("file tabel balita", () =>
-                  exportChildrenTable({
-                    ...exportContext,
-                    activeView,
-                  }),
-                )
-              }
-              onExportMeasurement={() =>
-                runExport("file pengukuran", () =>
-                  exportMeasurements(exportContext),
-                )
-              }
-              onExportSigizi={() =>
-                runExport("file identitas Sigizi", () =>
-                  exportRecentIdentities(exportContext),
-                )
-              }
-              onImportIdentitas={() => importInputRef.current?.click()}
+              onOpenAddChild={handleOpenAddChild}
+              onEditChild={handleEditChild}
+              onOpenMeasurement={openMeasurement}
+              onOpenPmt={handleOpenPmt}
+              onRestoreChild={handleRestoreChild}
+              onPermanentDelete={handlePermanentDelete}
+              onExportTable={handleExportTable}
+              onExportMeasurement={handleExportMeasurement}
+              onExportSigizi={handleExportSigizi}
+              onImportIdentitas={handleImportClick}
             />
           ) : activeView === "addChild" ? (
             <ReactAddChildPage
@@ -1213,6 +1183,7 @@ export default function ReactDashboardShell({
               }}
               onSuccess={() => {
                 setEditingChild(null);
+                void invalidateReadQueries();
                 navigate("data");
               }}
             />
@@ -1220,7 +1191,10 @@ export default function ReactDashboardShell({
             <ReactMeasurementPage
               user={user}
               child={selectedChild}
-              onBack={() => navigate("data")}
+              onBack={() => {
+                void invalidateReadQueries();
+                navigate("data");
+              }}
             />
           ) : activeView === "asi" ? (
             <ReactExclusiveBreastfeedingPage user={user} scope={scope} />
@@ -1228,76 +1202,20 @@ export default function ReactDashboardShell({
             <ReactMpasiPage
               user={user}
               scope={scope}
-              onOpenAddChild={() => {
-                setEditingChild(null);
-                navigate("addChild");
-              }}
-              onEditChild={(child) => {
-                const id = String(child.id || child.childId || "");
-                if (!id) return;
-                void getChildDetail(id)
-                  .then((document) => {
-                    setEditingChild({ id: document.id, ...document.data });
-                  })
-                  .catch((cause) => {
-                    setActionError(
-                      `Gagal memuat detail balita: ${errorMessage(cause, "Permintaan tidak dapat diproses.")}`,
-                    );
-                  });
-              }}
-              onOpenMeasurement={(child) => {
-                openMeasurement(child);
-              }}
-              onDeleteChild={(child) => {
-                if (canWrite) setChildToDelete(child as Record<string, any>);
-              }}
-              onOpenMpasi={(child) => {
-                if (canWrite) setMpasiChild(child as Record<string, any>);
-              }}
-              onExportMpasi={() =>
-                runExport("file MPASI", () => exportMpasi(exportContext))
-              }
+              onOpenAddChild={handleOpenAddChild}
+              onEditChild={handleEditChild}
+              onOpenMeasurement={openMeasurement}
+              onDeleteChild={handleDeleteMpasiChild}
+              onOpenMpasi={handleOpenMpasi}
+              onExportMpasi={handleExportMpasi}
             />
           ) : activeView === "pmt" ? (
             <ReactPmtProgramPage
               user={user}
               ageGroup="6-23"
               currentFilterDate={new Date(scope.year, scope.month, 0)}
-              onExportPmt={() =>
-                runExport("file PMT", () => exportPmt(exportContext))
-              }
-              onDeleteProgram={
-                canWrite
-                  ? async (program) => {
-                      if (!program.id) return;
-                      const name = String(program.childName || "balita");
-                      if (
-                        !window.confirm(
-                          `Hapus program PMT untuk ${name}? Data pemantauan mingguannya juga akan dihapus.`,
-                        )
-                      )
-                        return;
-                      try {
-                        await deleteDoc(
-                          doc(
-                            db,
-                            "artifacts",
-                            appId,
-                            "public",
-                            "data",
-                            "pmt_programs",
-                            String(program.id),
-                          ),
-                        );
-                        await syncPendingMutations();
-                      } catch (cause) {
-                        setActionError(
-                          `Gagal menghapus program PMT: ${errorMessage(cause, "Permintaan tidak dapat diproses.")}`,
-                        );
-                      }
-                    }
-                  : undefined
-              }
+              onExportPmt={handleExportPmt}
+              onDeleteProgram={canWrite ? handleDeleteProgram : undefined}
             />
           ) : activeView === "history" ? (
             <ReactChangeHistoryPage user={user} scope={scope} />
@@ -1318,7 +1236,10 @@ export default function ReactDashboardShell({
           child={pmtModalData.child}
           category={pmtModalData.category}
           onClose={() => setPmtModalData(null)}
-          onSaved={() => setPmtModalData(null)}
+          onSaved={() => {
+            setPmtModalData(null);
+            void invalidateReadQueries();
+          }}
         />
       ) : null}
       {editingChild ? (
@@ -1330,6 +1251,7 @@ export default function ReactDashboardShell({
           onClose={() => setEditingChild(null)}
           onSuccess={() => {
             setEditingChild(null);
+            void invalidateReadQueries();
             setActiveView("data");
           }}
         />
@@ -1338,7 +1260,10 @@ export default function ReactDashboardShell({
         <MpasiModal
           child={mpasiChild}
           onClose={() => setMpasiChild(null)}
-          onSaved={() => setMpasiChild(null)}
+          onSaved={() => {
+            setMpasiChild(null);
+            void invalidateReadQueries();
+          }}
         />
       ) : null}
       {childToDelete ? (

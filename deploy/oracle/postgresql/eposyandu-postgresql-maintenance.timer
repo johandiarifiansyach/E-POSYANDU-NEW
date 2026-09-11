@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly E-Posyandu PostgreSQL maintenance
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=10m
+Persistent=true
+Unit=eposyandu-postgresql-maintenance.service
+
+[Install]
+WantedBy=timers.target

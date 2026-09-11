@@ -1,4 +1,4 @@
-use axum::{Router, routing::get};
+use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use e_posyandu_proto::analysis::{
     AnalyzeDatasetRequest, AnalyzeDatasetResponse, CalculateBatchRequest, CalculateBatchResponse,
     GrowthChartPoint, NutritionAssessment, NutritionItem, RenderGrowthChartRequest,
@@ -6,9 +6,12 @@ use e_posyandu_proto::analysis::{
     analysis_service_server::{AnalysisService, AnalysisServiceServer},
 };
 use e_posyandu_proto::transport::{ListenAddress, bind_unix, parse_listen_address};
+use futures_util::{StreamExt, stream::poll_fn};
 use pyo3::prelude::*;
 use serde_json::{Map, Value, json};
 use std::{env, io, time::Duration};
+use tokio::sync::Notify;
+use tokio_postgres::{AsyncMessage, NoTls};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{
     Request, Response, Status,
@@ -22,6 +25,8 @@ const DEFAULT_GRPC_ADDR: &str = "unix:///run/e-posyandu/analysis.sock";
 const DEFAULT_HTTP_PORT: u16 = 8082;
 const DEFAULT_PERSISTENCE_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+const ANALYSIS_OUTBOX_NOTIFY_CHANNEL: &str = "e_posyandu_analysis_outbox";
+const NOTIFY_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 struct AuthInterceptor {
@@ -336,7 +341,114 @@ fn persistence_workers() -> usize {
         .unwrap_or(2)
 }
 
-async fn persistence_loop(worker_index: usize) {
+fn persistence_database_url() -> Option<String> {
+    [
+        "ANALYSIS_DATABASE_URL",
+        "ORACLE_DATABASE_URL",
+        "DATABASE_URL",
+    ]
+    .iter()
+    .find_map(|name| {
+        env::var(name)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+/// Verify that the read-only tables required by the persistence worker exist.
+///
+/// A configured `DATABASE_URL` alone is not sufficient for readiness: an old
+/// database can accept connections while still missing the analysis schema.
+/// Keep this probe bounded and read-only so it is safe to run from the health
+/// endpoint and from the container healthcheck.
+async fn persistence_schema_ready(database_url: &str) -> bool {
+    let connection_result = tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio_postgres::connect(database_url, NoTls),
+    )
+    .await;
+    let Ok(Ok((client, connection))) = connection_result else {
+        return false;
+    };
+    let connection_task = tokio::spawn(async move {
+        if let Err(error) = connection.await {
+            tracing::debug!(%error, "koneksi probe skema analisis terputus");
+        }
+    });
+    let query = tokio::time::timeout(
+        Duration::from_secs(3),
+        client.query_one(
+            "select to_regclass('public.analysis_outbox') is not null, \
+                    to_regclass('public.measurement_analysis') is not null, \
+                    to_regclass('public.dashboard_analysis') is not null",
+            &[],
+        ),
+    )
+    .await;
+    connection_task.abort();
+    let Ok(Ok(row)) = query else {
+        return false;
+    };
+    (0..3).all(|index| row.try_get::<usize, bool>(index).unwrap_or(false))
+}
+
+async fn outbox_notification_listener(wakeup: std::sync::Arc<Notify>) {
+    let enabled = env::var("ANALYSIS_PERSISTENCE_ENABLED")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false);
+    if !enabled {
+        tracing::debug!("listener LISTEN/NOTIFY outbox dinonaktifkan bersama persistence worker");
+        return;
+    }
+    let Some(database_url) = persistence_database_url() else {
+        tracing::info!("URL PostgreSQL tidak tersedia; worker outbox memakai interval polling");
+        return;
+    };
+    loop {
+        match tokio_postgres::connect(&database_url, NoTls).await {
+            Ok((client, mut connection)) => {
+                if let Err(error) = client
+                    .batch_execute(&format!("LISTEN {ANALYSIS_OUTBOX_NOTIFY_CHANNEL}"))
+                    .await
+                {
+                    tracing::warn!(%error, "LISTEN antrean analisis PostgreSQL gagal");
+                } else {
+                    tracing::info!("worker outbox menunggu PostgreSQL LISTEN/NOTIFY");
+                    let mut messages =
+                        Box::pin(poll_fn(move |context| connection.poll_message(context)));
+                    while let Some(message) = messages.next().await {
+                        match message {
+                            Ok(AsyncMessage::Notification(notification))
+                                if notification.channel() == ANALYSIS_OUTBOX_NOTIFY_CHANNEL =>
+                            {
+                                // Wake all schedulers. They still claim through
+                                // SKIP LOCKED, so concurrent workers remain safe.
+                                wakeup.notify_waiters();
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                tracing::warn!(%error, "koneksi LISTEN outbox PostgreSQL terputus");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "koneksi LISTEN antrean analisis gagal");
+            }
+        }
+        tokio::time::sleep(NOTIFY_RECONNECT_INTERVAL).await;
+    }
+}
+
+async fn persistence_loop(worker_index: usize, wakeup: std::sync::Arc<Notify>) {
     let enabled = env::var("ANALYSIS_PERSISTENCE_ENABLED")
         .map(|value| {
             matches!(
@@ -355,6 +467,7 @@ async fn persistence_loop(worker_index: usize) {
         .filter(|value| value.is_finite() && *value >= 0.25)
         .map(Duration::from_secs_f64)
         .unwrap_or(DEFAULT_PERSISTENCE_INTERVAL);
+    let mut unavailable_reported = false;
     loop {
         match tokio::task::spawn_blocking(|| {
             python_json("process_outbox_once_json", "{}".to_owned())
@@ -371,6 +484,18 @@ async fn persistence_loop(worker_index: usize) {
                         .get("failed")
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
+                    if value.get("reason").and_then(Value::as_str) == Some("disabled") {
+                        if !unavailable_reported {
+                            tracing::error!(
+                                worker_index,
+                                "persistence Python aktif tetapi konfigurasi/database belum tersedia"
+                            );
+                            unavailable_reported = true;
+                        }
+                    } else if unavailable_reported {
+                        tracing::info!(worker_index, "persistence Python kembali tersedia");
+                        unavailable_reported = false;
+                    }
                     if processed {
                         tracing::debug!(worker_index, result = %result, "job analisis Python diproses");
                         // Drain successful jobs without an artificial delay,
@@ -386,7 +511,10 @@ async fn persistence_loop(worker_index: usize) {
             Ok(Err(error)) => tracing::error!(worker_index, %error, "worker outbox Python gagal"),
             Err(error) => tracing::error!(worker_index, %error, "thread worker outbox berhenti"),
         }
-        tokio::time::sleep(interval).await;
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {}
+            _ = wakeup.notified() => {}
+        }
     }
 }
 
@@ -394,10 +522,39 @@ async fn health_server(port: u16) -> Result<(), io::Error> {
     async fn health() -> &'static str {
         "E-Posyandu analysis worker aktif\n"
     }
+    async fn ready() -> impl IntoResponse {
+        let enabled = env::var("ANALYSIS_PERSISTENCE_ENABLED")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+        let database_url = persistence_database_url();
+        if enabled && database_url.is_none() {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "persistence analisis belum siap: URL PostgreSQL tidak tersedia\n",
+            )
+        } else if enabled {
+            let database_url = database_url.expect("database URL checked above");
+            if persistence_schema_ready(&database_url).await {
+                (StatusCode::OK, "E-Posyandu analysis worker siap\n")
+            } else {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "persistence analisis belum siap: skema PostgreSQL belum tersedia\n",
+                )
+            }
+        } else {
+            (StatusCode::OK, "E-Posyandu analysis worker siap\n")
+        }
+    }
     let app = Router::new()
         .route("/", get(health))
         .route("/health", get(health))
-        .route("/ready", get(health));
+        .route("/ready", get(ready));
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     axum::serve(listener, app).await.map_err(io::Error::other)
 }
@@ -436,8 +593,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
     let analysis_service = tonic::codegen::InterceptedService::new(analysis_service, service_auth);
     let service = service.add_service(health).add_service(analysis_service);
+    let outbox_wakeup = std::sync::Arc::new(Notify::new());
+    tokio::spawn(outbox_notification_listener(outbox_wakeup.clone()));
     for worker_index in 0..persistence_workers() {
-        tokio::spawn(persistence_loop(worker_index));
+        tokio::spawn(persistence_loop(worker_index, outbox_wakeup.clone()));
     }
     tokio::spawn(async move {
         if let Err(error) = health_server(health_port).await {

@@ -28,7 +28,25 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
-      emptyOutDir: true
+      emptyOutDir: true,
+      // Target browser modern yang dipakai kader agar transpile tidak
+      // menambah ukuran dan waktu parsing JavaScript.
+      target: 'es2020',
+      minify: 'esbuild',
+      rollupOptions: {
+        output: {
+          // React jarang berubah dibanding kode halaman; cache terpisah
+          // membuat navigasi berikutnya tidak mengunduh ulang vendor utama.
+          // Vite 8 memakai Rolldown yang mengharuskan manualChunks berupa
+          // fungsi (format object hanya berlaku pada Rollup versi lama).
+          manualChunks(id) {
+            if (id.includes('/node_modules/react/') || id.includes('/node_modules/react-dom/')) {
+              return 'react-vendor';
+            }
+            return undefined;
+          }
+        }
+      }
     }
   };
 });

@@ -34,6 +34,8 @@ function posterGuidanceBlock(poster, keyPrefix) {
       className: 'measurement-analysis-poster-image',
       src: poster.asset,
       alt: poster.title || 'Poster Isi Piringku sesuai usia',
+      width: 1200,
+      height: 1715,
       loading: 'lazy',
       decoding: 'async',
     }),

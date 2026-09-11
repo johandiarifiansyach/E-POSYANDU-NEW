@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getChildrenPage,
-  peekCachedChildrenPage,
   type ChildrenPageRequest,
   type ChildrenPageResponse,
 } from "../../api/childrenApi";
 import { type AgeGroup } from "../../config/ageFilters";
 import { isFullAccessRole, MONTHS, ROLES } from "../../config/dashboard";
-import { formatIndoDate } from "../../shared/formatters";
+import { formatIndoDate, getCompletedAgeInMonths } from "../../shared/formatters";
 import { errorMessage, type PageState } from "../../shared/pageState";
 import type { DashboardUser } from "../../types";
 import {
@@ -19,6 +19,7 @@ import {
   SkeletonBlock,
 } from "../../components/base";
 import MpasiModal from "../breastfeeding/MpasiModal";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import {
   ChevronDown,
   FileDown,
@@ -122,6 +123,145 @@ function TableSkeleton({ columns }: { columns: number }) {
   );
 }
 
+const MPASI_FOOD_FIELDS = [
+  ["makananPokok", "Makanan pokok"],
+  ["kacang", "Kacang"],
+  ["susu", "Susu"],
+  ["daging", "Daging"],
+  ["telur", "Telur"],
+  ["sayurVitA", "Vitamin A"],
+  ["sayurLain", "Sayur lain"],
+] as const;
+const EMPTY_MPASI_LOG_MAP = new Map<string, Record<string, unknown>>();
+
+type MpasiTableRowProps = {
+  item: ChildrenPageResponse["items"][number];
+  index: number;
+  page: number;
+  asOf: string;
+  log?: Record<string, unknown>;
+  showDesa: boolean;
+  showPosyandu: boolean;
+  isReadOnly: boolean;
+  onOpenMpasi?: (child: Record<string, unknown>) => void;
+  onSelectChild: (child: Record<string, unknown>) => void;
+  onEditChild?: (child: Record<string, unknown>) => void;
+  onOpenMeasurement?: (child: Record<string, unknown>) => void;
+  onDeleteChild?: (child: Record<string, unknown>) => void;
+};
+
+/** Memoized MPASI row. Monitoring updates or modal state in the parent no
+ * longer rebuild every visible child row when its item/log is unchanged. */
+const MpasiTableRow = memo(function MpasiTableRow({
+  item,
+  index,
+  page,
+  asOf,
+  log,
+  showDesa,
+  showPosyandu,
+  isReadOnly,
+  onOpenMpasi,
+  onSelectChild,
+  onEditChild,
+  onOpenMeasurement,
+  onDeleteChild,
+}: MpasiTableRowProps) {
+  const child = dataOf(item);
+  const id = String(item.id || child.id || "");
+  const childRecord = { ...child, id };
+  const storedAge = child.ageInMonths ?? child.usiaBulan;
+  const storedAgeNumber = Number(storedAge);
+  const ageInMonths =
+    getCompletedAgeInMonths(child.tglLahir || child.birthDate, asOf) ??
+    (storedAge !== null && storedAge !== undefined && storedAge !== "" && Number.isFinite(storedAgeNumber)
+      ? Math.trunc(storedAgeNumber)
+      : null);
+  return (
+    <tr className="ios-data-row text-xs">
+      <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-center text-slate-500 md:sticky md:left-0 md:z-10 md:bg-white">
+        {(page - 1) * PAGE_SIZE + index + 1}
+      </td>
+      <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 md:sticky md:left-[48px] md:z-10 md:bg-white md:shadow-lg">
+        <p className="font-bold text-slate-900">
+          {display(child.nama || child.name)}
+        </p>
+        <p
+          className={`font-mono text-[10px] ${
+            child.hasNIK === true
+              ? "text-slate-500"
+              : "font-bold text-red-600"
+          }`}
+        >
+          {display(child.nik || child.national_id)}
+        </p>
+        <div className="mt-1 flex items-center gap-1">
+          <Badge color={child.jk === "L" || child.gender === "L" ? "blue" : "pink"}>
+            {child.jk === "L" || child.gender === "L" ? "L" : "P"}
+          </Badge>
+          <span className="text-[10px] text-slate-400">
+            {formatIndoDate(String(child.tglLahir || child.birthDate))} ({ageInMonths === null ? "-" : ageInMonths} Bln)
+          </span>
+        </div>
+      </td>
+      <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-slate-700">
+        {display(child.namaOrtu || child.parentName)}
+      </td>
+      {showDesa ? (
+        <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-slate-600">
+          {display(child.desa || child.village)}
+        </td>
+      ) : null}
+      {showPosyandu ? (
+        <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-slate-600">
+          {display(child.posyandu)}
+        </td>
+      ) : null}
+      <td className="border-r border-slate-100 px-2 py-3 text-center text-[10px]">
+        {log?.tglMonitoring ? formatIndoDate(String(log.tglMonitoring)) : "-"}
+      </td>
+      <td className="border-r border-slate-100 px-2 py-3 text-center text-[10px]">
+        {log ? display(log.asi) : "-"}
+      </td>
+      {MPASI_FOOD_FIELDS.map(([key, label]) => (
+        <td className="border-r border-slate-100 px-2 py-3 text-center text-[10px]" key={key}>
+          {log ? (
+            hasValue(log[key]) ? (
+              "Ya"
+            ) : (
+              <span title={label} className="text-slate-400">Tidak</span>
+            )
+          ) : (
+            <span title={label} className="text-slate-400">-</span>
+          )}
+        </td>
+      ))}
+      <td className="border-r border-slate-100 px-2 py-3 text-center text-[10px]">
+        {log ? display(log.intervensiGizi) : "-"}
+      </td>
+      <td className="whitespace-nowrap px-4 py-3 text-center">
+        <div className="flex justify-center gap-1">
+          {onOpenMpasi ? (
+            <button type="button" className="apple-button table-action-button table-action-orange" title="Input MPASI" aria-label="Input MPASI" onClick={() => onOpenMpasi(childRecord)}>
+              <Utensils className="h-4 w-4" />
+            </button>
+          ) : null}
+          {isReadOnly ? (
+            <span className="text-xs font-semibold text-slate-400">Hanya baca</span>
+          ) : (
+            <>
+              {!onOpenMpasi ? <AppButton variant="actionOrange" className="table-action-button table-action-orange" onClick={() => onSelectChild(childRecord)} title="Input MPASI"><Utensils className="h-4 w-4" /></AppButton> : null}
+              {onEditChild ? <AppButton variant="actionBlue" className="table-action-button table-action-blue" onClick={() => onEditChild(childRecord)} title="Edit Identitas"><Pencil className="h-4 w-4" /></AppButton> : null}
+              {onOpenMeasurement ? <AppButton variant="actionGreen" className="table-action-button table-action-cyan" onClick={() => onOpenMeasurement(childRecord)} title="Pengukuran Balita"><Ruler className="h-4 w-4" /></AppButton> : null}
+              {onDeleteChild ? <AppButton variant="actionRed" className="table-action-button table-action-red" onClick={() => onDeleteChild(childRecord)} title="Hapus Balita"><Trash2 className="h-4 w-4" /></AppButton> : null}
+            </>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+});
+
 export type ReactMpasiPageProps = {
   user: DashboardUser;
   scope: Scope;
@@ -148,47 +288,44 @@ export default function ReactMpasiPage({
   const [searchDraft, setSearchDraft] = useState("");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("recent");
+  const debouncedSearch = useDebouncedValue(search);
   const [selectedChild, setSelectedChild] = useState<Record<
     string,
     any
   > | null>(null);
   const request = useMemo(
-    () => ({ ...requestOf(scope, user, page, search), sort }),
-    [page, scope, search, sort, user],
+    () => ({ ...requestOf(scope, user, page, debouncedSearch), sort }),
+    [debouncedSearch, page, scope, sort, user],
   );
-  const [state, setState] = useState<PageState<ChildrenPageResponse>>({
-    status: "loading",
+  const queryClient = useQueryClient();
+  const pageQuery = useQuery({
+    queryKey: ["children-page", request],
+    queryFn: () => getChildrenPage(request),
+    // Keep the fixed 6–23 month view consistent with the server response;
+    // do not render rows from another month while this request is pending.
+    staleTime: 0,
   });
   useEffect(
     () => setPage(1),
     [scope.month, scope.year, scope.desa, scope.posyandu, search],
   );
-  useEffect(() => {
-    let active = true;
-    const cached = peekCachedChildrenPage(request);
-    setState(
-      cached ? { status: "success", data: cached } : { status: "loading" },
-    );
-    void getChildrenPage(request)
-      .then((response) => {
-        if (active) setState({ status: "success", data: response });
-      })
-      .catch((cause) => {
-        if (active)
-          setState({
-            status: "error",
-            message: errorMessage(cause, "Data MPASI belum dapat dimuat."),
-          });
-      });
-    return () => {
-      active = false;
-    };
-  }, [request]);
+  const state: PageState<ChildrenPageResponse> = pageQuery.data
+    ? { status: "success", data: pageQuery.data }
+    : pageQuery.error
+      ? {
+          status: "error",
+          message: errorMessage(
+            pageQuery.error,
+            "Data MPASI belum dapat dimuat.",
+          ),
+        }
+      : { status: "loading" };
   const response = state.status === "success" ? state.data : null;
   const items = response?.items || [];
-  const logs = response
-    ? mpasiMap(response)
-    : new Map<string, Record<string, unknown>>();
+  const logs = useMemo(
+    () => (response ? mpasiMap(response) : EMPTY_MPASI_LOG_MAP),
+    [response],
+  );
   const total = response?.total || 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const tableColumnCount = 14 +
@@ -199,6 +336,10 @@ export default function ReactMpasiPage({
     setPage(1);
     setSearch(searchDraft.trim());
   };
+  const handleSelectChild = useCallback(
+    (child: Record<string, unknown>) => setSelectedChild(child),
+    [],
+  );
 
   return (
     <div className="apple-page space-y-6" data-react-mpasi-page="true">
@@ -208,6 +349,7 @@ export default function ReactMpasiPage({
           onClose={() => setSelectedChild(null)}
           onSaved={() => {
             setPage(1);
+            void queryClient.invalidateQueries({ queryKey: ["children-page"] });
           }}
         />
       ) : null}
@@ -348,80 +490,24 @@ export default function ReactMpasiPage({
                 </tr>
               ) : (
                 items.map((item, index) => {
-                  const child = dataOf(item);
-                  const id = String(item.id || child.id || "");
-                  const childRecord = { ...child, id };
-                  // A child without a monitoring record must be represented by
-                  // dashes in every MPASI column.  Do not turn an absent log
-                  // into an empty object: an empty object makes every food
-                  // field look like an explicit "Tidak" response.
-                  const log = logs.get(id);
+                  const id = String(item.id || dataOf(item).id || "");
                   return (
-                    <tr className="ios-data-row text-xs" key={id || index}>
-                      <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-center text-slate-500 md:sticky md:left-0 md:z-10 md:bg-white">
-                        {(page - 1) * PAGE_SIZE + index + 1}
-                      </td>
-                      <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 md:sticky md:left-[48px] md:z-10 md:bg-white md:shadow-lg">
-                        <p className="font-bold text-slate-900">
-                          {display(child.nama || child.name)}
-                        </p>
-                        <p
-                          className={`font-mono text-[10px] ${
-                            child.hasNIK === true
-                              ? "text-slate-500"
-                              : "font-bold text-red-600"
-                          }`}
-                        >
-                          {display(child.nik || child.national_id)}
-                        </p>
-                        <div className="mt-1 flex items-center gap-1">
-                          <Badge color={child.jk === "L" || child.gender === "L" ? "blue" : "pink"}>{child.jk === "L" || child.gender === "L" ? "L" : "P"}</Badge>
-                          <span className="text-[10px] text-slate-400">{formatIndoDate(String(child.tglLahir || child.birthDate))} ({display(child.ageInMonths || child.usiaBulan)} Bln)</span>
-                        </div>
-                      </td>
-                      <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-slate-700">{display(child.namaOrtu || child.parentName)}</td>
-                      {isFullAccessRole(user.role) ? <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-slate-600">{display(child.desa || child.village)}</td> : null}
-                      {user.role === ROLES.BIDAN || isFullAccessRole(user.role) ? <td className="whitespace-nowrap border-r border-slate-100 px-4 py-3 text-slate-600">{display(child.posyandu)}</td> : null}
-                      <td className="border-r border-slate-100 px-2 py-3 text-center text-[10px]">{log?.tglMonitoring ? formatIndoDate(String(log.tglMonitoring)) : "-"}</td>
-                      <td className="border-r border-slate-100 px-2 py-3 text-center text-[10px]">{log ? display(log.asi) : "-"}</td>
-                      {[
-                        ["makananPokok", "Makanan pokok"],
-                        ["kacang", "Kacang"],
-                        ["susu", "Susu"],
-                        ["daging", "Daging"],
-                        ["telur", "Telur"],
-                        ["sayurVitA", "Vitamin A"],
-                        ["sayurLain", "Sayur lain"],
-                      ].map(([key, label]) => (
-                        <td className="border-r border-slate-100 px-2 py-3 text-center text-[10px]" key={key}>
-                          {log ? (hasValue(log[key]) ? "Ya" : <span title={label} className="text-slate-400">Tidak</span>) : <span title={label} className="text-slate-400">-</span>}
-                        </td>
-                      ))}
-                      <td className="border-r border-slate-100 px-2 py-3 text-center text-[10px]">{log ? display(log.intervensiGizi) : "-"}</td>
-                      <td className="whitespace-nowrap px-4 py-3 text-center">
-                        <div className="flex justify-center gap-1">
-                          {onOpenMpasi ? (
-                            <button
-                              type="button"
-                              className="apple-button table-action-button table-action-orange"
-                              title="Input MPASI"
-                              aria-label="Input MPASI"
-                              onClick={() => onOpenMpasi(childRecord)}
-                            >
-                              <Utensils className="h-4 w-4" />
-                            </button>
-                          ) : null}
-                          {user.accessMode === "read" ? <span className="text-xs font-semibold text-slate-400">Hanya baca</span> : (
-                            <>
-                              {!onOpenMpasi ? <AppButton variant="actionOrange" className="table-action-button table-action-orange" onClick={() => setSelectedChild(childRecord)} title="Input MPASI"><Utensils className="h-4 w-4" /></AppButton> : null}
-                              {onEditChild ? <AppButton variant="actionBlue" className="table-action-button table-action-blue" onClick={() => onEditChild(childRecord)} title="Edit Identitas"><Pencil className="h-4 w-4" /></AppButton> : null}
-                              {onOpenMeasurement ? <AppButton variant="actionGreen" className="table-action-button table-action-cyan" onClick={() => onOpenMeasurement(childRecord)} title="Pengukuran Balita"><Ruler className="h-4 w-4" /></AppButton> : null}
-                              {onDeleteChild ? <AppButton variant="actionRed" className="table-action-button table-action-red" onClick={() => onDeleteChild(childRecord)} title="Hapus Balita"><Trash2 className="h-4 w-4" /></AppButton> : null}
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
+                    <MpasiTableRow
+                      key={id || index}
+                      item={item}
+                      index={index}
+                      page={page}
+                      asOf={request.asOf}
+                      log={logs.get(id)}
+                      showDesa={isFullAccessRole(user.role)}
+                      showPosyandu={user.role === ROLES.BIDAN || isFullAccessRole(user.role)}
+                      isReadOnly={user.accessMode === "read"}
+                      onOpenMpasi={onOpenMpasi}
+                      onSelectChild={handleSelectChild}
+                      onEditChild={onEditChild}
+                      onOpenMeasurement={onOpenMeasurement}
+                      onDeleteChild={onDeleteChild}
+                    />
                   );
                 })
               )}

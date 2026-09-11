@@ -67,12 +67,49 @@ test('migration database berurutan dan tercatat sampai versi terbaru', async () 
   const versions = files.map((file) => Number(file.slice(0, 3)));
 
   assert.deepEqual(versions, Array.from({ length: versions.length }, (_, index) => index + 1));
-  assert.equal(files.at(-1), '046_super_admin_scope_materialized_reads.sql');
+  assert.equal(files.at(-1), '052_align_dashboard_asi_with_table.sql');
   for (const file of files) {
     const sql = (await readFile(resolve(root, 'database/migrations', file), 'utf8')).toLowerCase();
     assert.match(sql, /begin;/, `${file} harus transaksional`);
     assert.match(sql, /commit;/, `${file} harus ditutup dengan commit`);
   }
+});
+
+test('dashboard memakai agregat materialized yang sama dengan tabel balita', async () => {
+  const migration = await readFile(
+    resolve(root, 'database/migrations/051_dashboard_materialized_stats_age_aware.sql'),
+    'utf8'
+  );
+  const [domain, nativeApi, nativeDb, worker] = await Promise.all([
+    readFile(resolve(root, 'services/oracle-domain/src/lib.rs'), 'utf8'),
+    readFile(resolve(root, 'services/oracle-api/src/native_api.rs'), 'utf8'),
+    readFile(resolve(root, 'services/oracle-api/src/native_db.rs'), 'utf8'),
+    readFile(resolve(root, 'backend/src/api/mod.rs'), 'utf8')
+  ]);
+  assert.match(migration, /create or replace function public\.eposyandu_dashboard_materialized_stats/i);
+  assert.match(migration, /measurement_analysis/i);
+  assert.match(migration, /eposyandu_age_group_match/i);
+  assert.match(domain, /eposyandu_dashboard_materialized_stats/);
+  assert.match(nativeApi, /eposyandu_dashboard_materialized_stats/);
+  assert.match(nativeDb, /eposyandu_dashboard_materialized_stats/);
+  assert.match(worker, /eposyandu_dashboard_materialized_stats/);
+  assert.match(worker, /eposyandu_materialized_children_page/);
+  assert.match(worker, /p_age_group/);
+  assert.match(migration, /timezone\('Asia\/Jakarta', c\.created_at\)/i);
+  assert.match(migration, /analysisPending/);
+  assert.match(domain, /analysisPending/);
+});
+
+test('dashboard ASI memakai cohort tanggal ukur yang sama dengan tabel ASI', async () => {
+  const migration = await readFile(
+    resolve(root, 'database/migrations/052_align_dashboard_asi_with_table.sql'),
+    'utf8'
+  );
+  assert.match(migration, /join scoped_children c/i);
+  assert.match(migration, /m\.measurement_date between p_month_start and p_month_end/i);
+  assert.match(migration, /eposyandu_age_group_match\([\s\S]*'6'/i);
+  assert.match(migration, /from asi_latest/i);
+  assert.match(migration, /select count\(\*\)::integer from asi_children/i);
 });
 
 test('migration autentikasi native hanya menyiapkan tabel tanpa mengubah scope akun', async () => {
@@ -499,7 +536,12 @@ test('administrasi akun dan monitoring realtime hanya tersedia untuk administrat
   assert.match(page, /admin-backend-tabs/);
   assert.match(page, /admin-account-modal-backdrop/);
   assert.match(page, /activeSection === 'monitoring'/);
-  assert.match(await readFile(resolve(root, 'frontend-react/src/compat/pages/MfaPage.ts'), 'utf8'), /Daftarkan passkey baru/);
+  const [reactMfaPage, compatMfaPage] = await Promise.all([
+    readFile(resolve(root, 'frontend-react/src/pages/MfaPage.tsx'), 'utf8'),
+    readFile(resolve(root, 'frontend-react/src/compat/pages/MfaPage.ts'), 'utf8')
+  ]);
+  assert.doesNotMatch(reactMfaPage, /Daftarkan passkey baru/);
+  assert.doesNotMatch(compatMfaPage, /Daftarkan passkey baru/);
   assert.match(monitoringPanel, /new EventSource\(getAdminMonitoringStreamUrl\(\)/);
   assert.match(monitoringPanel, /source\?\.close\(\)/);
   assert.match(monitoringPanel, /visibilitychange/);
@@ -568,7 +610,8 @@ test('data dinamis memakai primary dan cache Redis terversi dengan TTL terpisah'
   );
 
   assert.ok(dashboardStart >= 0, 'route dashboard tidak ditemukan');
-  assert.match(dashboardRoute, /rpc\(env, "eposyandu_dashboard_stats"/);
+  assert.match(dashboardRoute, /rpc\(env, "eposyandu_dashboard_materialized_stats"/);
+  assert.match(dashboardRoute, /p_age_group/);
   assert.doesNotMatch(dashboardRoute, /read_rpc\(env/);
   assert.match(worker, /DYNAMIC_CACHE_TTL_SECONDS: u64 = 5 \* 60/);
   assert.match(worker, /DASHBOARD_CACHE_TTL_SECONDS: u64 = 60/);
@@ -733,6 +776,8 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
     caddy,
     bootstrap,
     deploy,
+    allDeploy,
+    packageManifest,
     apiDeploy,
     nutritionDeploy,
     connector,
@@ -750,6 +795,8 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
     readFile(resolve(root, 'deploy/oracle/Caddyfile'), 'utf8'),
     readFile(resolve(root, 'deploy/oracle/bootstrap.sh'), 'utf8'),
     readFile(resolve(root, 'scripts/services/deploy-oracle-nutrition-worker.sh'), 'utf8'),
+    readFile(resolve(root, 'scripts/services/deploy-oracle-all.sh'), 'utf8'),
+    readFile(resolve(root, 'package.json'), 'utf8'),
     readFile(resolve(root, 'scripts/services/deploy-oracle-api.sh'), 'utf8'),
     readFile(resolve(root, 'scripts/services/deploy-oracle-nutrition.sh'), 'utf8'),
     readFile(resolve(root, 'scripts/services/connect-oracle-nutrition-worker.sh'), 'utf8'),
@@ -769,6 +816,10 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(compose, /\/var\/lib\/e-posyandu\/grpc:\/run\/e-posyandu:rw,z/);
   assert.match(compose, /ORACLE_API_MICROSERVICES_ENABLED: \$\{ORACLE_API_MICROSERVICES_ENABLED:-true\}/);
   assert.match(compose, /ORACLE_API_MIGRATION_PROXY_ENABLED: "false"/);
+  assert.match(compose, /ORACLE_API_ANALYSIS_HEALTH_URL: \$\{ORACLE_API_ANALYSIS_HEALTH_URL:-http:\/\/analysis-worker:8082\/ready\}/);
+  assert.match(compose, /ORACLE_API_ANALYSIS_HEALTH_CHECK_ENABLED: \$\{ORACLE_API_ANALYSIS_HEALTH_CHECK_ENABLED:-true\}/);
+  assert.match(compose, /ANALYSIS_PERSISTENCE_ENABLED: \$\{ANALYSIS_PERSISTENCE_ENABLED:-true\}/);
+  assert.match(compose, /urlopen\('http:\/\/127\.0\.0\.1:8082\/ready'/);
   assert.match(compose, /expose:[\s\S]*"50051"/);
   assert.match(compose, /image: docker\.io\/library\/caddy:2\.10\.2-alpine/);
   assert.match(compose, /read_only: true/g);
@@ -819,6 +870,8 @@ test('deployment Oracle mengisolasi layanan dan tidak menaruh secret dalam image
   assert.match(deploy, /COPYFILE_DISABLE=1 tar/);
   assert.match(deploy, /deploy_service="\$\{3:-all\}"/);
   assert.match(deploy, /services\/eposyandu-proto/);
+  assert.match(allDeploy, /deploy-oracle-nutrition-worker\.sh.*all/);
+  assert.match(packageManifest, /"oracle:deploy:all": "\.\/scripts\/services\/deploy-oracle-all\.sh"/);
   assert.match(apiDeploy, /oracle-api/);
   assert.match(nutritionDeploy, /nutrition-worker/);
   assert.match(vaultMaterializer, /oracle_api_values\["RUST_WORKER_SHARED_SECRET"\]/);
@@ -1049,6 +1102,8 @@ test('cache sensitif dienkripsi per akun dan login tidak melewati gerbang keaman
   assert.match(pagesProxy, /env\.ASSETS\.fetch/);
   assert.match(pagesProxy, /env\.PRODUCTION_API_ORIGIN/);
   assert.match(pagesProxy, /env\.PRODUCTION_API_FALLBACK_ORIGIN/);
+  assert.match(pagesProxy, /const PRODUCTION_API_ORIGIN = 'https:\/\/api\.eposyandu\.app'/);
+  assert.match(pagesProxy, /const PRODUCTION_API_FALLBACK_ORIGIN = 'https:\/\/e-posyandu-api\.eposyandu-puskesmas-gumukmas\.workers\.dev'/);
   assert.match(pagesProxy, /safeConfiguredOrigin/);
   assert.match(pagesProxy, /SAFE_RETRY_METHODS/);
   assert.match(pagesProxy, /RETRYABLE_GATEWAY_STATUSES/);

@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { jsPDF } from "jspdf";
 import {
   requestGrowthAnalysis,
   requestPythonGrowthChart,
@@ -140,6 +139,8 @@ function PosterGuidance({ poster, prefix }: { poster?: any; prefix: string }) {
           className="measurement-analysis-poster-image"
           src={String(poster.asset)}
           alt={String(poster.title || "Poster Isi Piringku sesuai usia")}
+          width={1200}
+          height={1715}
           loading="lazy"
           decoding="async"
         />
@@ -487,6 +488,9 @@ export default function ReactGrowthChartsPage({
   const downloadAllPdf = async () => {
     setExporting("pdf");
     try {
+      // PDF generation is an explicit action. Keep jsPDF (and its sizeable
+      // rendering dependencies) out of the measurement page's first chunk.
+      const { jsPDF } = await import("jspdf");
       const pdf = new jsPDF({
         orientation: "landscape",
         unit: "mm",

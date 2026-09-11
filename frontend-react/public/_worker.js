@@ -1,4 +1,7 @@
-const PRODUCTION_API_ORIGIN = 'https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev';
+// Oracle is the production primary. The legacy Worker remains an explicit,
+// read-only fallback for transient gateway failures.
+const PRODUCTION_API_ORIGIN = 'https://api.eposyandu.app';
+const PRODUCTION_API_FALLBACK_ORIGIN = 'https://e-posyandu-api.eposyandu-puskesmas-gumukmas.workers.dev';
 const STAGING_API_ORIGIN = 'https://e-posyandu-api-staging.eposyandu-puskesmas-gumukmas.workers.dev';
 const SAFE_RETRY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const MAINTENANCE_GATEWAY_STATUSES = new Set([500, 502, 503, 504]);
@@ -34,7 +37,7 @@ function fallbackOrigin(hostname, env, primaryOrigin) {
   if (hostname.includes('e-posyandu-staging.pages.dev')) return null;
   const fallback = safeConfiguredOrigin(
     env.PRODUCTION_API_FALLBACK_ORIGIN,
-    PRODUCTION_API_ORIGIN
+    PRODUCTION_API_FALLBACK_ORIGIN
   );
   return fallback === primaryOrigin ? null : fallback;
 }

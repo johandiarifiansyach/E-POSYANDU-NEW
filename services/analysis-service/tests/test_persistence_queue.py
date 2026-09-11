@@ -1,15 +1,28 @@
 import threading
 import time
 import unittest
+from unittest.mock import Mock, patch
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from analysis_service.persistence import AnalysisPersistenceWorker
+from analysis_service.persistence import AnalysisPersistenceWorker, _dsn
 
 
 class DashboardPersistenceQueueTests(unittest.TestCase):
+    def test_database_url_is_a_safe_rotation_fallback(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "ANALYSIS_DATABASE_URL": "",
+                "ORACLE_DATABASE_URL": "",
+                "DATABASE_URL": "postgresql://fallback/db",
+            },
+            clear=False,
+        ):
+            self.assertEqual(_dsn(), "postgresql://fallback/db")
+
     def _worker_with_dashboard_thread(self, **kwargs):
         worker = AnalysisPersistenceWorker(**kwargs)
         # Starting the complete outbox poller would require a live PostgreSQL
@@ -74,6 +87,23 @@ class DashboardPersistenceQueueTests(unittest.TestCase):
             self.assertEqual(worker.stats()["dashboardFailed"], 0)
         finally:
             worker.stop()
+
+    def test_process_batch_is_bounded_and_continues_after_failed_child(self):
+        worker = AnalysisPersistenceWorker(dsn="postgresql://unused", batch_size=2)
+        jobs = [{"id": 1}, {"id": 2}, {"id": 3}]
+        worker._claim_one = Mock(side_effect=jobs)
+        worker._process = Mock(side_effect=[None, RuntimeError("bad child")])
+        worker._fail = Mock()
+
+        with self.assertLogs("eposyandu.analysis.persistence", level="ERROR"):
+            result = worker.process_batch()
+
+        self.assertEqual(result["processedCount"], 1)
+        self.assertEqual(result["failedCount"], 1)
+        self.assertTrue(result["processed"])
+        self.assertTrue(result["failed"])
+        self.assertEqual(worker._claim_one.call_count, 2)
+        worker._fail.assert_called_once_with(2, "bad child")
 
 
 if __name__ == "__main__":
