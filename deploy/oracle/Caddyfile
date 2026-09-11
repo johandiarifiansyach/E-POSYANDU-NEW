@@ -42,9 +42,13 @@
 }
 
 # Listener ini hanya berada di jaringan Compose dan menjadi satu-satunya origin
-# Cloudflare Tunnel. Setiap published hostname harus memakai service
-# http://health-proxy:8088 serta HTTP Host Header yang sama dengan hostname-nya.
-:8088 {
+# Cloudflare Tunnel. Sertifikat Cloudflare Origin CA dibaca dari tmpfs; setiap
+# published hostname harus memakai service HTTPS dan HTTP Host Header yang sama
+# dengan hostname-nya. Cloudflared memvalidasi sertifikat melalui
+# originServerName pada masing-masing route.
+https://api.eposyandu.app:8443, https://nutrition.eposyandu.app:8443 {
+	tls /run/secrets/eposyandu-origin-cert.pem /run/secrets/eposyandu-origin-key.pem
+
 	@nutrition_health {
 		host nutrition.eposyandu.app
 		path /health

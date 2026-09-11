@@ -181,6 +181,13 @@ if [[ -f "$vault_dir/eposyandu-vault-env.py" && -f "$vault_dir/eposyandu-vault-e
     echo "File secret runtime API Oracle tidak berhasil disiapkan." >&2
     exit 1
   fi
+  for origin_tls_file in /run/e-posyandu/origin-cert.pem /run/e-posyandu/origin-key.pem; do
+    if [[ ! -s "$origin_tls_file" ]]; then
+      echo "Secret Origin TLS belum tersedia: $origin_tls_file" >&2
+      echo "Isi OCI_SECRET_ORIGIN_CERT_ID dan OCI_SECRET_ORIGIN_KEY_ID di /etc/e-posyandu/vault.env." >&2
+      exit 1
+    fi
+  done
 fi
 
 backup_dir="$release_dir/deploy/oracle/backup"

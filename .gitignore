@@ -31,3 +31,7 @@ deploy/oracle/*.env
 
 # Service-account credentials are never committed.
 secrets/*.json
+
+# Python bytecode is generated locally and never belongs in a release.
+__pycache__/
+*.py[cod]

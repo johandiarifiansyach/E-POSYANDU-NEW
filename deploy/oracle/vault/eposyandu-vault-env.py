@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import os
 import stat
 import tempfile
@@ -24,6 +25,11 @@ ORACLE_API_OUTPUT_FILE = Path("/run/e-posyandu/oracle-api-vault.env")
 CLOUDFLARE_TUNNEL_TOKEN_FILE = Path(
     "/run/e-posyandu/cloudflare-tunnel-token"
 )
+# Origin TLS material is stored in OCI Vault as one-line Base64-encoded PEM
+# values.  Keeping the decoded files on tmpfs avoids putting certificates or
+# private keys in the release archive and lets Caddy read them read-only.
+ORIGIN_CERT_FILE = Path("/run/e-posyandu/origin-cert.pem")
+ORIGIN_KEY_FILE = Path("/run/e-posyandu/origin-key.pem")
 # The official cloudflared image runs as UID/GID 65532. Keep the token
 # private (0600) while making it readable by that non-root container user.
 CLOUDFLARE_TUNNEL_CONTAINER_OWNER: Tuple[int, int] = (65532, 65532)
@@ -41,8 +47,6 @@ ORACLE_API_SECRET_SPECS = (
 MCP_SECRET_SPECS = (
     ("MCP_SHARED_SECRET", "OCI_SECRET_MCP_SHARED_SECRET_ID"),
 )
-
-
 def parse_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for raw_line in path.read_text(encoding="utf-8").splitlines():
@@ -61,7 +65,7 @@ def fetch_secret(client: oci.secrets.SecretsClient, secret_id: str, name: str) -
         raise RuntimeError(f"Secret {name} tidak memiliki isi CURRENT")
     try:
         value = base64.b64decode(content.content, validate=True).decode("utf-8")
-    except (ValueError, UnicodeDecodeError) as exc:
+    except (binascii.Error, UnicodeDecodeError) as exc:
         raise RuntimeError(f"Secret {name} bukan teks UTF-8 base64 yang valid") from exc
     # OCI Console commonly preserves the final newline produced by clipboard
     # commands. Remove exactly one terminal line ending, never embedded lines.
@@ -74,6 +78,37 @@ def fetch_secret(client: oci.secrets.SecretsClient, secret_id: str, name: str) -
     if any(character in value for character in ("\x00", "\r", "\n")):
         raise RuntimeError(f"Secret {name} mengandung karakter baris yang tidak didukung")
     return value
+
+
+def fetch_base64_pem_secret(
+    client: oci.secrets.SecretsClient,
+    secret_id: str,
+    name: str,
+    begin_markers: tuple[str, ...],
+    end_markers: tuple[str, ...],
+) -> str:
+    """Decode a one-line Base64 PEM stored as an OCI Vault secret.
+
+    OCI returns the secret payload Base64-wrapped.  The payload itself is the
+    one-line Base64 value produced from the PEM file before it was pasted into
+    the Vault console.  Decode both layers while validating the expected PEM
+    boundary so a misconfigured secret fails before Caddy is restarted.
+    """
+
+    encoded = fetch_secret(client, secret_id, name)
+    try:
+        decoded = base64.b64decode("".join(encoded.split()), validate=True).decode(
+            "ascii"
+        )
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RuntimeError(f"Secret {name} bukan Base64 PEM yang valid") from exc
+    if not any(marker in decoded for marker in begin_markers) or not any(
+        marker in decoded for marker in end_markers
+    ):
+        raise RuntimeError(f"Secret {name} tidak memiliki blok PEM yang diharapkan")
+    if "\x00" in decoded or "\r" in decoded:
+        raise RuntimeError(f"Secret {name} mengandung karakter PEM yang tidak didukung")
+    return decoded if decoded.endswith("\n") else decoded + "\n"
 
 
 def write_env_file(path: Path, values: dict[str, str]) -> None:
@@ -224,10 +259,52 @@ def main() -> None:
         )
         tunnel_count = 0
 
+    origin_cert_id = config.get("OCI_SECRET_ORIGIN_CERT_ID")
+    origin_key_id = config.get("OCI_SECRET_ORIGIN_KEY_ID")
+    if bool(origin_cert_id) != bool(origin_key_id):
+        raise RuntimeError(
+            "Konfigurasi Origin TLS harus memuat OCI_SECRET_ORIGIN_CERT_ID "
+            "dan OCI_SECRET_ORIGIN_KEY_ID secara berpasangan"
+        )
+    if origin_cert_id and origin_key_id:
+        write_secret_file(
+            ORIGIN_CERT_FILE,
+            fetch_base64_pem_secret(
+                client,
+                origin_cert_id,
+                "Origin TLS certificate",
+                ("-----BEGIN CERTIFICATE-----",),
+                ("-----END CERTIFICATE-----",),
+            ),
+        )
+        write_secret_file(
+            ORIGIN_KEY_FILE,
+            fetch_base64_pem_secret(
+                client,
+                origin_key_id,
+                "Origin TLS private key",
+                ("-----BEGIN PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN EC PRIVATE KEY-----"),
+                (
+                    "-----END PRIVATE KEY-----",
+                    "-----END RSA PRIVATE KEY-----",
+                    "-----END EC PRIVATE KEY-----",
+                ),
+            ),
+        )
+        origin_tls_count = 1
+    else:
+        # Never leave a previous certificate/key active after its OCID is
+        # removed.  Empty files keep the bind mounts deterministic; Caddy's
+        # HTTPS listener will fail closed until both OCIDs are configured.
+        write_secret_file(ORIGIN_CERT_FILE, "")
+        write_secret_file(ORIGIN_KEY_FILE, "")
+        origin_tls_count = 0
+
     print(
         "Secret runtime OCI berhasil disiapkan "
         f"({len(oracle_api_values)} secret API dan "
-        f"{tunnel_count} token Tunnel materialized)."
+        f"{tunnel_count} token Tunnel dan {origin_tls_count} Origin TLS "
+        "materialized)."
     )
 
 

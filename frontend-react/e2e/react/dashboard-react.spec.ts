@@ -19,7 +19,10 @@ const dashboardStats = {
   perUnderweight: '9.3',
   perStunting: '12.7',
   perWasting: '6.4',
-  snapshotStale: false
+  snapshotStale: false,
+  // A projection can contain usable aggregate values while Python finishes
+  // a few clinical rows. The page must keep those values visible.
+  analysisPending: true
 };
 
 test('dashboard React mempertahankan snapshot, filter, dan agregasi', async ({ page }) => {
@@ -88,6 +91,7 @@ test('dashboard React mempertahankan snapshot, filter, dan agregasi', async ({ p
   await expect(page.getByRole('heading', { name: 'Capaian Program SKDN' })).toBeVisible();
   await expect(page.getByText('3100', { exact: true })).toBeVisible();
   await expect(page.getByText('21 / 43 bayi', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Memperbarui ringkasan')).toBeVisible();
   await expect(page.getByLabel('Pilih kelompok umur')).toHaveValue('0-59');
 
   await page.getByLabel('Pilih kelompok umur').selectOption('6-23');

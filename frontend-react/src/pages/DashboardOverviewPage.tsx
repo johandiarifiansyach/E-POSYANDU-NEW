@@ -9,6 +9,8 @@ export type DashboardOverviewPageProps = {
   stats: DashboardStatsResponse;
   pageState?: PageState<DashboardStatsResponse>;
   loading?: boolean;
+  /** A completed snapshot is shown while the backend refreshes it. */
+  refreshing?: boolean;
   monitoringStatus?: MonitoringStatus | null;
   filterMonth: number;
   filterYear: number;
@@ -64,12 +66,13 @@ function MetricProgress({ value, loading, colorClass }: { value: string; loading
   return loading ? <SkeletonBlock className="dashboard-stat-skeleton-progress" /> : <div className={`h-full ${colorClass} rounded-full`} style={{ width: `${value}%` }} />;
 }
 
-export default function DashboardOverviewPage({ stats: providedStats, pageState, loading = false, monitoringStatus }: DashboardOverviewPageProps) {
+export default function DashboardOverviewPage({ stats: providedStats, pageState, loading = false, refreshing = false, monitoringStatus }: DashboardOverviewPageProps) {
   const resolvedState: PageState<DashboardStatsResponse> = pageState ?? (loading ? { status: 'loading' } : { status: 'success', data: providedStats });
   const pageLoading = resolvedState.status === 'loading';
   const pageError = resolvedState.status === 'error' ? resolvedState.message : null;
   const stats = resolvedState.status === 'success' ? resolvedState.data : providedStats;
   const snapshotStale = !pageLoading && Boolean(stats.snapshotStale);
+  const isRefreshing = !pageLoading && (refreshing || Boolean(stats.analysisPending));
   const workerStatus = monitoringStatus?.worker?.status;
   const monitoringMessage = workerStatus === 'down'
     ? `Worker laporan tidak tersedia setelah ${monitoringStatus?.worker.consecutiveFailures || 3} pemeriksaan. Login dan input data tetap dapat digunakan.`
@@ -94,7 +97,7 @@ export default function DashboardOverviewPage({ stats: providedStats, pageState,
     { title: 'Wasting (BB/TB)', value: stats.wasting, percent: stats.perWasting, card: 'prevalence-yellow', dot: 'bg-yellow-500', text: 'text-yellow-600', progress: 'bg-yellow-500' }
   ], [stats]);
   return <div className="apple-page space-y-6" aria-busy={pageLoading ? 'true' : 'false'}>
-    <div className="apple-page-header flex items-end justify-between"><h2 className="apple-section-title dashboard-overview-title">Capaian Program SKDN</h2>{pageLoading ? <ActivityIcon className="h-5 w-5 animate-spin text-emerald-600" aria-label="Memuat ringkasan" /> : null}</div>
+    <div className="apple-page-header flex items-end justify-between"><h2 className="apple-section-title dashboard-overview-title">Capaian Program SKDN</h2>{pageLoading || isRefreshing ? <ActivityIcon className="h-5 w-5 animate-spin text-emerald-600" aria-label={pageLoading ? 'Memuat ringkasan' : 'Memperbarui ringkasan'} /> : null}</div>
     {pageError ? <div role="alert" className="ios-inline-notification ios-inline-notification-error system-health-notice">{pageError}</div> : null}
     {snapshotStale && !pageError ? <div role="status" aria-live="polite" className="ios-inline-notification ios-inline-notification-warning system-health-notice">Menampilkan snapshot dashboard terakhir. Data akan disegarkan setelah analisis Python selesai.</div> : null}
     {monitoringMessage ? <div role="status" aria-live="polite" className={`ios-inline-notification ${workerStatus === 'down' ? 'ios-inline-notification-error' : 'ios-inline-notification-warning'} system-health-notice flex items-start gap-3`}><AlertTriangleIcon className="h-5 w-5 flex-shrink-0" /><div><p className="font-bold">Status pemrosesan laporan</p><p className="mt-1">{monitoringMessage}</p></div></div> : null}

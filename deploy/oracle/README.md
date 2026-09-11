@@ -28,7 +28,7 @@ Urutan migrasi yang aman:
 1. Deploy Oracle dengan mode `proxy`, lalu uji API internal.
 2. Materialisasi seluruh secret dari OCI Vault dan aktifkan mode `auth`,
    `reads`, lalu `full`; setiap tahap memiliki health check dan rollback.
-3. Buat Cloudflare Tunnel menuju listener internal `health-proxy:8088`.
+3. Buat Cloudflare Tunnel menuju listener internal HTTPS `health-proxy:8443`.
 4. Delegasikan DNS ke Cloudflare dan uji login, CRUD, sinkronisasi offline,
    ekspor, Queue/R2, serta grafik dari jaringan desktop dan seluler.
 5. Ubah bind publik Oracle menjadi loopback, tutup ingress OCI 80/443, dan
@@ -157,7 +157,7 @@ memuat payload maupun identitas pasien.
 - IP publik statis/reserved hanya dibutuhkan selama bootstrap/cutover.
 - Saat final, tidak ada ingress publik 22/80/443. SSH melalui OCI Bastion dan
   trafik web melalui Cloudflare Tunnel outbound-only. Jangan pernah membuka
-  50051, 8080, 8081, 8088, atau 2000 ke internet.
+  50051, 8080, 8081, 8443, atau 2000 ke internet.
 
 ## Menyiapkan akses
 
@@ -216,12 +216,20 @@ Jalankan ulang materializer Vault. Token akan berada di tmpfs
 `cloudflared` melalui `TUNNEL_TOKEN_FILE`.
 
 Tambahkan dua published application route pada tunnel. Keduanya memakai service
-internal yang sama, tetapi **HTTP Host Header harus sama dengan hostname**:
+HTTPS internal yang sama. **HTTP Host Header dan Origin Server Name harus sama
+dengan hostname** agar sertifikat Origin CA diverifikasi:
 
 | Public hostname | Service | HTTP Host Header |
 | --- | --- | --- |
-| `api.eposyandu.app` | `http://health-proxy:8088` | `api.eposyandu.app` |
-| `nutrition.eposyandu.app` | `http://health-proxy:8088` | `nutrition.eposyandu.app` |
+| `api.eposyandu.app` | `https://health-proxy:8443` | `api.eposyandu.app` |
+| `nutrition.eposyandu.app` | `https://health-proxy:8443` | `nutrition.eposyandu.app` |
+
+Pada **Origin request and connection settings** untuk masing-masing route, isi
+`Origin Server Name` dengan hostname route yang sama dan aktifkan verifikasi
+sertifikat. Sertifikat serta private key Origin CA dimaterialisasi dari OCI
+Vault ke `/run/e-posyandu/origin-cert.pem` dan
+`/run/e-posyandu/origin-key.pem`; keduanya tidak boleh dimasukkan ke archive
+atau Git.
 
 Sebelum mengganti nameserver di registrar, salin seluruh record DNS yang masih
 dipakai ke zone Cloudflare. Inventaris aplikasi saat migrasi adalah apex/API/

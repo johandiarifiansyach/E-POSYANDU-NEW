@@ -645,19 +645,17 @@ export default function ReactDashboardShell({
     // The backend owns the authoritative fallback; the UI shows a skeleton
     // until the response for this exact scope arrives.
     staleTime: 0,
-    // The aggregate is immediately available from PostgreSQL, but clinical
-    // counters stay skeletonized until every current weighted row has a
-    // persisted Python result.  Refresh only while that projection is
-    // pending; normal dashboard reads remain one request per filter.
+    // The aggregate is immediately available from PostgreSQL.  If a few
+    // clinical rows are still waiting for Python, keep the aggregate visible
+    // and refresh it in the background rather than replacing the whole page
+    // with an indefinite skeleton.
     refetchInterval: (query) =>
-      query.state.data?.analysisPending ? 2_000 : false,
+      query.state.data?.analysisPending ? 5_000 : false,
     refetchOnWindowFocus: true,
   });
   const stats = dashboardQuery.data || EMPTY_STATS;
   const analysisPending = Boolean(dashboardQuery.data?.analysisPending);
-  const pageState: PageState<DashboardStatsResponse> = analysisPending
-    ? { status: "loading" }
-    : dashboardQuery.data
+  const pageState: PageState<DashboardStatsResponse> = dashboardQuery.data
       ? { status: "success", data: dashboardQuery.data }
       : dashboardQuery.error
         ? {
@@ -1140,6 +1138,7 @@ export default function ReactDashboardShell({
               stats={stats}
               pageState={pageState}
               loading={pageState.status === "loading"}
+              refreshing={dashboardQuery.isFetching || analysisPending}
               monitoringStatus={monitoringStatus}
               filterMonth={scope.month}
               filterYear={scope.year}
