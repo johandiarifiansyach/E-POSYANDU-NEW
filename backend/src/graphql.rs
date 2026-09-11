@@ -54,6 +54,7 @@ fn route_for(field: &str) -> Option<RootRoute> {
                 "sort",
                 "view",
                 "search",
+                "nikStatus",
                 "village",
                 "posyandu",
             ],

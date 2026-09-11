@@ -1,6 +1,7 @@
 import { test, expect } from '../../frontend-react/node_modules/@playwright/test/index.mjs';
 import {
   getMeasurementStatuses,
+  measurementMethodForAge,
   validateMeasurementForm,
 } from '../../frontend-react/src/compat/features/measurements/measurementRules';
 import {
@@ -15,6 +16,13 @@ import {
 import { fetchChildMeasurementHistory } from '../../frontend-react/src/compat/services/measurementService';
 
 test.describe('measurement feature', () => {
+  test('selects the automatic measurement method at the 24-month boundary', () => {
+    expect(measurementMethodForAge(0)).toBe('Terlentang');
+    expect(measurementMethodForAge(23)).toBe('Terlentang');
+    expect(measurementMethodForAge(24)).toBe('Berdiri');
+    expect(measurementMethodForAge(59)).toBe('Berdiri');
+  });
+
   test('normalizes valid local decimal input before saving', () => {
     const result = validateMeasurementForm({
       date: '2026-02-01',

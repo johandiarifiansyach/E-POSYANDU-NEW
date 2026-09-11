@@ -9,7 +9,7 @@ Sumber primer dan checksum setiap workbook WHO dicatat dalam [`who-growth-standa
 - Indikator menurut umur umum tersedia dari lahir sampai 60 bulan selesai.
 - LILA/U hanya tersedia mulai 3 sampai 60 bulan. WHO MGRS baru mengumpulkan lingkar lengan pada anak berumur setidaknya 3 bulan, sehingga aplikasi tidak meminta atau menampilkan hasil LILA pada usia 0–2 bulan.
 - LK/U tersedia sejak lahir sampai 60 bulan.
-- Untuk anak sampai 24 bulan, kurva memakai panjang badan telentang. Bila diukur berdiri, aplikasi menambahkan 0,7 cm. Di atas 24 bulan, kurva memakai tinggi badan berdiri; bila diukur telentang, aplikasi mengurangi 0,7 cm.
+- Untuk anak usia 0–23 bulan, kurva memakai panjang badan telentang. Bila diukur berdiri, aplikasi menambahkan 0,7 cm. Mulai usia 24 bulan, kurva memakai tinggi badan berdiri; bila diukur telentang, aplikasi mengurangi 0,7 cm.
 
 ## Interpretasi dan batas klinis
 

@@ -46,6 +46,11 @@ import {
 } from "../../ui/icons";
 import { hasUsableAnalysis } from "../../api/analysisApi";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
+import {
+  NIK_STATUS_OPTIONS,
+  childHasManualNik,
+  type NikStatus,
+} from "../../config/nikFilters";
 
 type Scope = {
   month: number;
@@ -93,6 +98,7 @@ function toRequest(
   page: number,
   search: string,
   sort: string,
+  nikStatus: NikStatus,
   view: ChildView,
 ): ChildrenPageRequest {
   const previous = previousRange(scope.year, scope.month);
@@ -112,6 +118,7 @@ function toRequest(
     previousMonthEnd: dateEnd(previous.year, previous.month),
     historyStart: "1900-01-01",
     page,
+    nikStatus,
     size: PAGE_SIZE,
     sort,
     view,
@@ -293,7 +300,7 @@ const ChildTableRow = memo(function ChildTableRow({
         </p>
         <p
           className={`break-all font-mono text-[10px] ${
-            child.hasNIK === true
+            childHasManualNik(child)
               ? "text-slate-500"
               : "font-bold text-red-600"
           }`}
@@ -485,10 +492,11 @@ export default function ReactChildrenTablePage({
   const [searchDraft, setSearchDraft] = useState("");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("recent");
+  const [nikStatus, setNikStatus] = useState<NikStatus>("all");
   const debouncedSearch = useDebouncedValue(search);
   const request = useMemo(
-    () => toRequest(scope, user, page, debouncedSearch, sort, view),
-    [debouncedSearch, page, sort, scope, user, view],
+    () => toRequest(scope, user, page, debouncedSearch, sort, nikStatus, view),
+    [debouncedSearch, nikStatus, page, sort, scope, user, view],
   );
   const queryClient = useQueryClient();
   const pageQuery = useQuery({
@@ -660,6 +668,29 @@ export default function ReactChildrenTablePage({
               <option value="name_desc">Nama (Z-A)</option>
               <option value="age_oldest">Umur Tertua</option>
               <option value="age_youngest">Umur Termuda</option>
+            </select>
+            <Filter className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-400" />
+          </div>
+          <div className="relative w-full sm:w-48">
+            <label className="sr-only" htmlFor="react-child-nik-status">
+              Filter NIK
+            </label>
+            <select
+              id="react-child-nik-status"
+              value={nikStatus}
+              onChange={(event) => {
+                const next = event.target.value as NikStatus;
+                setNikStatus(next);
+                setPage(1);
+              }}
+              className="min-h-11 w-full appearance-none rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-8 text-sm outline-none shadow-sm focus:border-emerald-500"
+            >
+              {NIK_STATUS_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
             </select>
             <Filter className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-400" />

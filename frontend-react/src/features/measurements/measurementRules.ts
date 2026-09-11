@@ -13,6 +13,16 @@ export const normalizeMeasurementInput = normalizeDecimalInput;
 export const parseMeasurementDecimal = parseLocaleNumber;
 export const parseMeasurementDecimalForRange = parseLocaleNumberForRange;
 
+/**
+ * WHO measurement convention used by every measurement form.
+ * Children aged 0-23 completed months are measured recumbent; from the
+ * 24th completed month onward they are measured standing.
+ */
+export function measurementMethodForAge(ageInMonths: unknown): 'Terlentang' | 'Berdiri' {
+  const age = Number(ageInMonths);
+  return Number.isFinite(age) && age >= 24 ? 'Berdiri' : 'Terlentang';
+}
+
 export function validateMeasurementForm({ date, bb, tb, lila, lk, ageInMonths = null }) {
   const measurementDate = String(date ?? '').slice(0, 10);
   const parsedDate = new Date(`${measurementDate}T00:00:00`);

@@ -110,8 +110,8 @@ as $$
       b.*,
       case
         when b.height_cm is null or b.height_cm <= 0 then null
-        when b.age_in_months <= 24 and b.measurement_method = 'Berdiri' then b.height_cm + 0.7
-        when b.age_in_months > 24 and b.measurement_method = 'Terlentang' then b.height_cm - 0.7
+        when b.age_in_months < 24 and b.measurement_method = 'Berdiri' then b.height_cm + 0.7
+        when b.age_in_months >= 24 and b.measurement_method = 'Terlentang' then b.height_cm - 0.7
         else b.height_cm
       end as adjusted_height
     from current_base b
@@ -138,13 +138,13 @@ as $$
       and tbu.sample_index = a.age_in_months
     left join public.eposyandu_growth_lms_points bbtb
       on bbtb.metric = case
-        when a.age_in_months <= 24 then 'weight_for_length'
+        when a.age_in_months < 24 then 'weight_for_length'
         else 'weight_for_height'
       end
       and bbtb.sex = a.sex
       and bbtb.sample_index = case
         when a.adjusted_height is null or a.adjusted_height <= 0 then null
-        when a.age_in_months <= 24 then round((a.adjusted_height - 45)::numeric * 2)::integer
+        when a.age_in_months < 24 then round((a.adjusted_height - 45)::numeric * 2)::integer
         else round((a.adjusted_height - 65)::numeric * 2)::integer
       end
   ), zscores as materialized (

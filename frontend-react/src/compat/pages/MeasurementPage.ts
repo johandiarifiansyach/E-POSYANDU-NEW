@@ -14,7 +14,8 @@ import {
     MEASUREMENT_DECIMAL_RULES,
     normalizeMeasurementInput,
     parseMeasurementDecimalForRange,
-    validateMeasurementForm
+    validateMeasurementForm,
+    measurementMethodForAge
 } from '../features/measurements/measurementRules';
 import { appId, db, formatDate, formatIndoDate, getAgeInMonths } from './DashboardApp';
 import type { PageState } from '../shared/pageState';
@@ -33,7 +34,7 @@ export default function MeasurementPage({ child, onBack }) {
         mbg: 'Tidak',
         vitA: 'Tidak',
         asi: 'Tidak',
-        caraUkur: '',
+        caraUkur: 'Terlentang',
         statusNaik: 'B'
     });
     const [asiTouched, setAsiTouched] = useState(false);
@@ -98,7 +99,7 @@ export default function MeasurementPage({ child, onBack }) {
     const ageAtMeasure = useMemo(() => getAgeInMonths(child.tglLahir, measureDate), [child.tglLahir, measureDate]);
     const asiLabel = `ASI EKSKLUSIF USIA ${Math.max(0, Math.min(6, ageAtMeasure))} BULAN`;
     const showLilaMeasurement = ageAtMeasure >= 3;
-    const lengthHeightLabel = ageAtMeasure <= 24 ? 'Panjang Badan (cm)' : 'Tinggi Badan (cm)';
+    const lengthHeightLabel = ageAtMeasure < 24 ? 'Panjang Badan (cm)' : 'Tinggi Badan (cm)';
     const monthlyHistory = useMemo(() => {
         const monthlyMap = new Map();
         history.forEach((item) => {
@@ -149,7 +150,7 @@ export default function MeasurementPage({ child, onBack }) {
     useEffect(() => {
         if (activeMenu !== 'add')
             return;
-        const caraUkur = ageAtMeasure > 24 ? 'Berdiri' : 'Terlentang';
+        const caraUkur = measurementMethodForAge(ageAtMeasure);
         setFormData((previous) => {
             const nextLila = ageAtMeasure < 3 ? '' : previous.lila;
             return previous.caraUkur === caraUkur && previous.lila === nextLila
@@ -166,9 +167,11 @@ export default function MeasurementPage({ child, onBack }) {
         setEditingMeasurementId(null);
         setAsiTouched(false);
         setActiveMenu('add');
+        const addDate = formatDate(new Date());
+        const addAge = getAgeInMonths(child.tglLahir, new Date(`${addDate}T00:00:00`));
         setFormData((previous) => ({
             ...previous,
-            tglUkur: formatDate(new Date()),
+            tglUkur: addDate,
             bb: '',
             tb: '',
             lila: '',
@@ -178,6 +181,7 @@ export default function MeasurementPage({ child, onBack }) {
             mbg: 'Tidak',
             vitA: 'Tidak',
             asi: 'Tidak',
+            caraUkur: measurementMethodForAge(addAge),
             statusNaik: 'B'
         }));
     };
@@ -200,7 +204,7 @@ export default function MeasurementPage({ child, onBack }) {
             mbg: measurement.mbg || 'Tidak',
             vitA: measurement.vitA || 'Tidak',
             asi: recordedAsi || (editAge === 0 ? 'Ya' : 'Tidak'),
-            caraUkur: measurement.caraUkur || '',
+            caraUkur: measurementMethodForAge(editAge),
             statusNaik: measurement.statusNaik || 'B'
         });
         setActiveMenu('add');
@@ -261,6 +265,7 @@ export default function MeasurementPage({ child, onBack }) {
             tb: height,
             lila,
             lk,
+            caraUkur: measurementMethodForAge(liveAgeInMonths),
             // N/T/O/B is calculated by the Python analysis service from the
             // chronological measurements. Keep B only as a legacy storage
             // placeholder; the table reads the Python response below.

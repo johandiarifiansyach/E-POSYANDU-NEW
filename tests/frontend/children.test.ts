@@ -6,6 +6,7 @@ import {
   generateTemporaryNik,
   validateChildBirthMeasurements
 } from '../../frontend-react/src/compat/features/children/childRules';
+import { childHasManualNik, childMatchesNikStatus } from '../../frontend-react/src/config/nikFilters';
 
 test.describe('children feature', () => {
   test('formats each part of a child name', () => {
@@ -62,5 +63,17 @@ test.describe('children feature', () => {
 
     expect(nik).toMatch(/^35090402012600(?:1[0-9]|[2-5][0-9]|60)$/);
     expect(nik).not.toBe(existingNiks[0].nik);
+  });
+
+  test('separates generated and manually entered NIKs', () => {
+    const generated = { hasNIK: false, nik: '3509040201260002' };
+    const manual = { hasNIK: true, nik: '3509040201260001' };
+
+    expect(childHasManualNik(generated)).toBe(false);
+    expect(childHasManualNik(manual)).toBe(true);
+    expect(childMatchesNikStatus(generated, 'missing')).toBe(true);
+    expect(childMatchesNikStatus(generated, 'present')).toBe(false);
+    expect(childMatchesNikStatus(manual, 'missing')).toBe(false);
+    expect(childMatchesNikStatus(manual, 'present')).toBe(true);
   });
 });

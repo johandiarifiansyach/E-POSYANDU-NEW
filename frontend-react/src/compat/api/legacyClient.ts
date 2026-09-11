@@ -21,6 +21,7 @@ import {
   updatePendingMutation
 } from '../services/offlineStore';
 import type { AgeGroup } from '../config/ageFilters';
+import type { NikStatus } from '../../config/nikFilters';
 
 export type AuthUser = {
   uid: string;
@@ -140,6 +141,8 @@ export type ChildrenPageRequest = {
   historyStart?: string;
   measurementEnd: string;
   measurementStart: string;
+  /** Source of the child NIK: generated temporary or manually entered. */
+  nikStatus?: NikStatus;
   previousMonthEnd?: string;
   previousMonthStart?: string;
   page: number;
@@ -184,6 +187,7 @@ function childrenPageCacheKey(request: ChildrenPageRequest): string {
     historyStart: request.historyStart || '',
     measurementEnd: request.measurementEnd,
     measurementStart: request.measurementStart,
+    nikStatus: request.nikStatus || 'all',
     previousMonthEnd: request.previousMonthEnd || '',
     previousMonthStart: request.previousMonthStart || '',
     page: request.page,
@@ -1164,6 +1168,7 @@ export async function getChildrenPage(request: ChildrenPageRequest): Promise<Chi
     });
     if (request.historyStart?.trim()) parameters.set('historyStart', request.historyStart.trim());
     if (request.search?.trim()) parameters.set('search', request.search.trim());
+    if (request.nikStatus && request.nikStatus !== 'all') parameters.set('nikStatus', request.nikStatus);
     if (request.village?.trim()) parameters.set('village', request.village.trim());
     if (request.posyandu?.trim()) parameters.set('posyandu', request.posyandu.trim());
     if (request.previousMonthStart?.trim()) parameters.set('previousMonthStart', request.previousMonthStart.trim());

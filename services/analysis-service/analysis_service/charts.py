@@ -322,7 +322,7 @@ def _chart_spec(chart_type: str, sex: str, points: list[dict[str, Any]]) -> tupl
         return label, "Umur (bulan dan tahun selesai)", y_label, "cm", rows, chart_points
     if chart_type == "bbtb":
         ages = [_age_months(p) for p in points if _age_months(p) is not None]
-        use_length = not ages or max(ages) <= 24
+        use_length = not ages or max(ages) < 24
         key = "weightForLength" if use_length else "weightForHeight"
         minimum = 45.0 if use_length else 65.0
         rows = [(minimum + i * 0.5, row) for i, row in enumerate(reference[key][normalized_sex])]
@@ -334,7 +334,7 @@ def _chart_spec(chart_type: str, sex: str, points: list[dict[str, Any]]) -> tupl
             # WHO publishes separate BB/PB (0–24 months) and BB/TB
             # (24–60 months) references. Do not place a point on the wrong
             # reference when one history spans both age ranges.
-            if (use_length and age > 24) or (not use_length and age <= 24):
+            if (use_length and age >= 24) or (not use_length and age < 24):
                 continue
             adjusted = who.adjusted_length_height(height, int(round(age)), str(point.get("measurement_method", point.get("measurementMethod", "")) or ""))
             if adjusted >= minimum and adjusted <= rows[-1][0]:

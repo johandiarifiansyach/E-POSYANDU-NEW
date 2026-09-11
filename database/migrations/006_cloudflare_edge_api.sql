@@ -66,8 +66,8 @@ language sql
 immutable
 as $$
   select case
-    when p_age_months <= 24 and p_method = 'Berdiri' then p_value + 0.7
-    when p_age_months > 24 and p_method = 'Terlentang' then p_value - 0.7
+    when p_age_months < 24 and p_method = 'Berdiri' then p_value + 0.7
+    when p_age_months >= 24 and p_method = 'Terlentang' then p_value - 0.7
     else p_value
   end
 $$;
@@ -107,7 +107,7 @@ begin
   elsif p_metric = 'BBTB' then
     if p_secondary is null or p_secondary <= 0 then return '-'; end if;
     v_height := public.eposyandu_adjusted_height(p_secondary, p_age_months, coalesce(p_method, ''));
-    if p_age_months <= 24 then
+    if p_age_months < 24 then
       v_index := round((v_height - 45) * 2)::integer;
       v_lms := public.eposyandu_lms('weight_for_length', p_sex, v_index);
     else

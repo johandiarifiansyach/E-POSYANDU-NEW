@@ -6,6 +6,7 @@ import { SkeletonBlock, TableLoadingSkeleton } from '../ui/skeleton';
 import { Card, formatIndoDate, isFullAccessRole, MONTHS, ROLES } from './DashboardApp';
 import { hasUsableAnalysis, pythonWeightGainStatus } from '../api/analysisApi';
 import { getPmtCategoryForTab } from '../features/children/childRules';
+import { NIK_STATUS_OPTIONS, childHasManualNik } from '../../config/nikFilters';
 import type { PageState } from '../shared/pageState';
 function getPageTitle(activeTab, filterMonth, filterYear) {
     if (activeTab === 'recycle_bin')
@@ -24,7 +25,7 @@ function getPageTitle(activeTab, filterMonth, filterYear) {
         return 'Balita MPASI (6-23 Bulan)';
     return 'Data Balita Lengkap';
 }
-export default function ChildrenTablePage({ activeTab, currentFilterDate, currentPage, displayData, fileInputRef, filterMonth, filterYear, handleExportMpasi, handleExportPengukuranSigizi, handleExportSigizi, handleExportTable, handleImportIdentitas, handlePermanentDelete, handleRestore, itemsPerPage, loading, monthlyMeasurements, mpasiLogs, paginatedData, onClearSearch, searchTerm, searchDraft, setChildToDelete, setChildToMpasi, setCurrentPage, onEditChild, setPmtModalData, setSearchDraft, onOpenAddChild, onOpenMeasurement, onSubmitSearch, setSortOrder, sortOrder, totalDataCount, user, pageState, readOnly = false }) {
+export default function ChildrenTablePage({ activeTab, currentFilterDate, currentPage, displayData, fileInputRef, filterMonth, filterYear, handleExportMpasi, handleExportPengukuranSigizi, handleExportSigizi, handleExportTable, handleImportIdentitas, handlePermanentDelete, handleRestore, itemsPerPage, loading, monthlyMeasurements, mpasiLogs, nikStatus = 'all', paginatedData, onClearSearch, searchTerm, searchDraft, setChildToDelete, setChildToMpasi, setCurrentPage, onEditChild, setPmtModalData, setSearchDraft, onOpenAddChild, onOpenMeasurement, onSubmitSearch, setNikStatus, setSortOrder, sortOrder, totalDataCount, user, pageState, readOnly = false }) {
     const fallbackTotal = totalDataCount ?? displayData.length;
     const resolvedState = pageState ?? (loading
         ? { status: 'loading' }
@@ -77,6 +78,15 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                         Native.createElement("option", { value: "name_desc" }, "Nama (Z-A)"),
                         Native.createElement("option", { value: "age_oldest" }, "Umur Tertua"),
                         Native.createElement("option", { value: "age_youngest" }, "Umur Termuda")),
+                    Native.createElement(Filter, { className: "absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" }),
+                    Native.createElement(ChevronDown, { className: "absolute right-3 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 pointer-events-none" })),
+                Native.createElement("div", { className: "relative w-full sm:w-48" },
+                    Native.createElement("label", { className: "sr-only", htmlFor: "child-nik-status" }, "Filter NIK"),
+                    Native.createElement("select", { id: "child-nik-status", value: nikStatus, onChange: (event) => {
+                            setNikStatus?.(event.target.value);
+                            setCurrentPage(1);
+                        }, className: "appearance-none pl-9 pr-8 py-2.5 w-full border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none bg-white cursor-pointer shadow-sm" },
+                        NIK_STATUS_OPTIONS.map((option) => Native.createElement("option", { key: option.value, value: option.value }, option.label))),
                     Native.createElement(Filter, { className: "absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" }),
                     Native.createElement(ChevronDown, { className: "absolute right-3 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 pointer-events-none" })),
                 Native.createElement("div", { className: "flex gap-2 overflow-x-auto pb-1 sm:pb-0 no-scrollbar" },
@@ -238,7 +248,7 @@ export default function ChildrenTablePage({ activeTab, currentFilterDate, curren
                             Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap text-slate-500 border-r border-slate-100 text-center md:sticky md:left-0 bg-white z-10" }, realIndex),
                             Native.createElement("td", { className: "px-4 py-3 whitespace-nowrap border-r border-slate-100 md:sticky md:left-[48px] bg-white z-10 md:shadow-lg" },
                                 Native.createElement("div", { className: "font-bold text-slate-900" }, child.nama),
-                                Native.createElement("div", { className: `text-[10px] font-mono ${!child.hasNIK ? 'text-red-600 font-bold' : 'text-slate-500'}` }, child.nik),
+                                Native.createElement("div", { className: `text-[10px] font-mono ${childHasManualNik(child) ? 'text-slate-500' : 'text-red-600 font-bold'}` }, child.nik),
                                 Native.createElement("div", { className: "flex gap-1 mt-1" },
                                     Native.createElement(Badge, { color: child.jk === 'L' ? 'blue' : 'pink' }, child.jk === 'L' ? 'L' : 'P'),
                                     Native.createElement("span", { className: "text-[10px] text-slate-400" },

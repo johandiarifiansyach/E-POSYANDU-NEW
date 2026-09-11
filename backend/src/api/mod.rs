@@ -1196,6 +1196,27 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
     if search.is_some_and(|value| value.chars().count() > 80) {
         return Err(api_error(422, "Kata pencarian terlalu panjang."));
     }
+    let nik_status = first_query(&query, "nikStatus")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("all");
+    if !matches!(nik_status, "all" | "missing" | "present") {
+        return Err(api_error(422, "Filter NIK tidak valid."));
+    }
+    // The SQL page functions pre-date the NIK filter parameter. Encode the
+    // selected source in the private search marker so filtering still occurs
+    // before pagination (and therefore keeps page totals correct) while the
+    // existing RPC signatures remain unchanged. Migration 053 must be applied
+    // before enabling this API version against the production database.
+    let rpc_search = match (nik_status, search) {
+        ("missing", Some(term)) => Some(format!("__N0__{term}")),
+        ("present", Some(term)) => Some(format!("__N1__{term}")),
+        ("missing", None) => Some("__N0__".to_owned()),
+        ("present", None) => Some("__N1__".to_owned()),
+        ("all", Some(term)) => Some(term.to_owned()),
+        ("all", None) => None,
+        _ => None,
+    };
 
     let village = first_query(&query, "village")
         .map(|value| value.trim())
@@ -1215,7 +1236,7 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
         "p_size": size,
         "p_sort": sort,
         "p_view": view,
-        "p_search": search,
+        "p_search": rpc_search.as_deref(),
         "p_village": scoped_value(&scope, village, true),
         "p_posyandu": scoped_value(&scope, posyandu, false),
         "p_role": database_scope_role(&scope.role),
@@ -1249,7 +1270,7 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
                 "p_problem": view,
                 "p_page": page,
                 "p_size": size,
-                "p_search": search,
+                "p_search": rpc_search.as_deref(),
                 "p_sort": sort,
                 "p_village": village,
                 "p_posyandu": posyandu,
@@ -1269,7 +1290,7 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
         "p_size": size,
         "p_sort": sort,
         "p_view": view,
-        "p_search": search,
+        "p_search": rpc_search.as_deref(),
         "p_village": village,
         "p_posyandu": posyandu,
         "p_role": database_scope_role(&scope.role),
@@ -1323,6 +1344,12 @@ async fn children_page(request: Request, env: &Env) -> ApiResult<Value> {
         parameters.push((
             "or".into(),
             format!("(name.ilike.*{search}*,national_id.ilike.*{search}*)"),
+        ));
+    }
+    if nik_status != "all" {
+        parameters.push((
+            "has_national_id".into(),
+            format!("eq.{}", nik_status == "present"),
         ));
     }
     for (query_key, column) in [("village", "village"), ("posyandu", "posyandu")] {

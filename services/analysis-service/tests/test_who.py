@@ -12,6 +12,12 @@ from analysis_service.runtime import AnalysisRuntime
 
 
 class WhoCalculatorTests(unittest.TestCase):
+    def test_measurement_method_transition_uses_standing_from_month_24(self):
+        self.assertEqual(who.adjusted_length_height(80.0, 23, "Terlentang"), 80.0)
+        self.assertEqual(who.adjusted_length_height(80.0, 24, "Berdiri"), 80.0)
+        self.assertAlmostEqual(who.adjusted_length_height(80.0, 23, "Berdiri"), 80.7)
+        self.assertAlmostEqual(who.adjusted_length_height(80.0, 24, "Terlentang"), 79.3)
+
     @unittest.skipUnless(who.np is not None, "NumPy optional accelerator is not installed")
     def test_vectorized_assessments_match_scalar_lms(self):
         items = [

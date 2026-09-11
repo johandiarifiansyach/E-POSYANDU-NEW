@@ -19,6 +19,7 @@ import {
   MEASUREMENT_DECIMAL_RULES,
   normalizeMeasurementInput,
   parseMeasurementDecimalForRange,
+  measurementMethodForAge,
   validateMeasurementForm,
 } from "./measurementRules";
 import { appId, db } from "../../app/session";
@@ -88,7 +89,9 @@ const emptyForm = (): Form => ({
   mbg: "Tidak",
   vitA: "Tidak",
   asi: "Tidak",
-  caraUkur: "",
+  // Set a visible default immediately; the effect below recalculates this
+  // when the measurement date changes.
+  caraUkur: "Terlentang",
   statusNaik: "B",
 });
 
@@ -229,7 +232,7 @@ export default function ReactMeasurementPage({
   useEffect(() => {
     setForm((current) => ({
       ...current,
-      caraUkur: ageAtMeasure > 24 ? "Berdiri" : "Terlentang",
+      caraUkur: measurementMethodForAge(ageAtMeasure),
       lila: ageAtMeasure < 3 ? "" : current.lila,
       asi: !asiTouched && ageAtMeasure === 0 ? "Ya" : current.asi,
     }));
@@ -238,7 +241,16 @@ export default function ReactMeasurementPage({
   const startAdd = () => {
     setEditingId(null);
     setAsiTouched(false);
-    setForm(emptyForm());
+    const addDate = formatDate(new Date());
+    const addAge = getAgeInMonths(
+      child.tglLahir,
+      new Date(`${addDate}T00:00:00`),
+    );
+    setForm({
+      ...emptyForm(),
+      tglUkur: addDate,
+      caraUkur: measurementMethodForAge(addAge),
+    });
     setMenu("add");
   };
   const startEdit = (measurement: Measurement) => {
@@ -255,7 +267,12 @@ export default function ReactMeasurementPage({
       mbg: normalise(measurement.mbg || "Tidak"),
       vitA: normalise(measurement.vitA || "Tidak"),
       asi: normalise(measurement.asi || "Tidak"),
-      caraUkur: normalise(measurement.caraUkur),
+      caraUkur: measurementMethodForAge(
+        getAgeInMonths(
+          child.tglLahir,
+          new Date(`${normalise(measurement.tglUkur).slice(0, 10)}T00:00:00`),
+        ),
+      ),
       statusNaik: normalise(measurement.statusNaik || "B"),
     });
     setMenu("add");
@@ -310,21 +327,25 @@ export default function ReactMeasurementPage({
     setSaving(true);
     setHistoryError(null);
     const values = validation.data;
+    const measurementAge = getAgeInMonths(
+      child.tglLahir,
+      new Date(`${values.measurementDate}T00:00:00`),
+    );
     const payload = {
       childId: child.id,
       childName: child.nama,
       posyandu: child.posyandu,
       desa: child.desa,
       ...form,
+      // Derive this at submit time as well, so a fast save immediately after
+      // changing the date cannot persist a stale method from the prior age.
+      caraUkur: measurementMethodForAge(measurementAge),
       tglUkur: values.measurementDate,
       bb: values.bb,
       tb: values.tb,
       lila: values.lila,
       lk: values.lk,
-      ageInMonths: getAgeInMonths(
-        child.tglLahir,
-        new Date(`${values.measurementDate}T00:00:00`),
-      ),
+      ageInMonths: measurementAge,
       updatedAt: serverTimestamp(),
     };
     try {
@@ -805,7 +826,7 @@ export default function ReactMeasurementPage({
                 <input
                   readOnly
                   className={`${inputClass} bg-slate-100 text-slate-500`}
-                  value={form.caraUkur}
+                  value={form.caraUkur || measurementMethodForAge(ageAtMeasure)}
                 />
               </InputGroup>
             </div>
@@ -813,7 +834,7 @@ export default function ReactMeasurementPage({
               {field("bb", "Berat Badan (kg)")}
               {field(
                 "tb",
-                ageAtMeasure <= 24 ? "Panjang Badan (cm)" : "Tinggi Badan (cm)",
+                ageAtMeasure < 24 ? "Panjang Badan (cm)" : "Tinggi Badan (cm)",
               )}
             </div>
             <div

@@ -954,9 +954,9 @@ fn lms_z_score(value: f64, [l, median, spread]: [f64; 3]) -> f64 {
 }
 
 fn adjusted_length_height(value: f64, age_months: i32, method: &str) -> f64 {
-    if age_months <= 24 && method == "Berdiri" {
+    if age_months < 24 && method == "Berdiri" {
         value + 0.7
-    } else if age_months > 24 && method == "Terlentang" {
+    } else if age_months >= 24 && method == "Terlentang" {
         value - 0.7
     } else {
         value
@@ -1007,7 +1007,7 @@ fn nutrition_status(
         }),
         "BBTB" => secondary.filter(|height| *height > 0.0).and_then(|height| {
             let adjusted_height = adjusted_length_height(height, age_months, method);
-            let (minimum, values) = if age_months <= 24 {
+            let (minimum, values) = if age_months < 24 {
                 (45.0, standards.weight_for_length.get(sex))
             } else {
                 (65.0, standards.weight_for_height.get(sex))
@@ -2512,6 +2512,14 @@ mod tests {
             nutrition_status(3.2, "BBU", 61, "L", None, "", &standards),
             "-"
         );
+    }
+
+    #[test]
+    fn measurement_method_transition_starts_standing_at_month_24() {
+        assert_eq!(adjusted_length_height(80.0, 23, "Terlentang"), 80.0);
+        assert_eq!(adjusted_length_height(80.0, 24, "Berdiri"), 80.0);
+        assert!((adjusted_length_height(80.0, 23, "Berdiri") - 80.7).abs() < 1e-10);
+        assert!((adjusted_length_height(80.0, 24, "Terlentang") - 79.3).abs() < 1e-10);
     }
 
     #[test]

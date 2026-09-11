@@ -3,6 +3,7 @@ import * as Context from '../../shared/dashboardContext';
 import { errorMessage, type PageState } from '../../shared/pageState';
 import { TableLoadingSkeleton } from '../../ui/skeleton';
 import { pythonWeightGainStatus, requestPythonAnthropometry } from '../../api/analysisApi';
+import { measurementMethodForAge } from './measurementRules';
 
 const {
     Native, useState, useEffect, useMemo, useRef, collection, addDoc,
@@ -25,7 +26,7 @@ export const MeasurementModal = ({ child, onClose }) => {
         mbg: 'Tidak',
         vitA: 'Tidak',
         asi: 'Tidak',
-        caraUkur: '',
+        caraUkur: 'Terlentang',
         statusNaik: 'B'
     });
     const [asiTouched, setAsiTouched] = useState(false);
@@ -107,10 +108,8 @@ export const MeasurementModal = ({ child, onClose }) => {
     useEffect(() => {
         if (activeMenu !== 'add')
             return;
-        if (ageAtMeasure > 24)
-            setFormData((prev) => ({ ...prev, caraUkur: 'Berdiri' }));
-        else
-            setFormData((prev) => ({ ...prev, caraUkur: 'Terlentang' }));
+        const caraUkur = measurementMethodForAge(ageAtMeasure);
+        setFormData((prev) => prev.caraUkur === caraUkur ? prev : ({ ...prev, caraUkur }));
     }, [ageAtMeasure, activeMenu]);
     useEffect(() => {
         if (activeMenu === 'add' && !asiTouched && ageAtMeasure === 0) {
@@ -147,12 +146,15 @@ export const MeasurementModal = ({ child, onClose }) => {
         const height = parseLocaleNumberForRange(readLiveField('tb', formData.tb), 10, 220, 1);
         const lila = parseLocaleNumberForRange(readLiveField('lila', formData.lila), 0.1, 50, 1);
         const lk = parseLocaleNumberForRange(readLiveField('lk', formData.lk), 0.1, 80, 1);
+        const liveMeasurementDate = readLiveField('tglUkur', formData.tglUkur);
+        const liveAgeInMonths = getAgeInMonths(child.tglLahir, new Date(`${liveMeasurementDate.slice(0, 10)}T00:00:00`));
         const normalizedPayload = {
             ...formData,
             bb: weight ?? formData.bb,
             tb: height ?? formData.tb,
             lila: lila ?? formData.lila,
-            lk: lk ?? formData.lk
+            lk: lk ?? formData.lk,
+            caraUkur: measurementMethodForAge(liveAgeInMonths)
         };
         setSaveState({ status: 'loading' });
         try {
@@ -162,7 +164,7 @@ export const MeasurementModal = ({ child, onClose }) => {
                 posyandu: child.posyandu,
                 desa: child.desa,
                 ...normalizedPayload,
-                ageInMonths: ageAtMeasure,
+                ageInMonths: liveAgeInMonths,
                 createdAt: serverTimestamp()
             });
             if (child.id) {
@@ -297,7 +299,7 @@ export const MeasurementModal = ({ child, onClose }) => {
                         Native.createElement(InputGroup, { label: "Tanggal Pengukuran" },
                               Native.createElement("input", { required: true, type: "date", className: inputClass, value: formData.tglUkur, onChange: (e) => setFormData((previous) => ({ ...previous, tglUkur: e.target.value })) })),
                         Native.createElement(InputGroup, { label: "Cara Ukur" },
-                            Native.createElement("input", { type: "text", readOnly: true, className: `${inputClass} bg-slate-100 text-slate-500`, value: formData.caraUkur }))),
+                            Native.createElement("input", { type: "text", readOnly: true, className: `${inputClass} bg-slate-100 text-slate-500`, value: formData.caraUkur || measurementMethodForAge(ageAtMeasure), "aria-readonly": "true" }))),
                     Native.createElement("div", { className: "grid grid-cols-2 gap-4" },
                         Native.createElement(InputGroup, { label: "Berat Badan (kg)" },
                             Native.createElement("input", { name: "bb", required: true, type: "text", inputMode: "decimal", className: inputClass, value: formData.bb, onInput: handleDecimalFieldChange('bb'), onChange: handleDecimalFieldChange('bb'), onBlur: handleDecimalFieldBlur('bb') })),

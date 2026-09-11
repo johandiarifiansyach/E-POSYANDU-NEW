@@ -139,9 +139,9 @@ def lms_z_score(value: float, reference: list[float] | tuple[float, float, float
 
 
 def adjusted_length_height(value: float, age_months: int, method: str) -> float:
-    if age_months <= 24 and method == "Berdiri":
+    if age_months < 24 and method == "Berdiri":
         return value + 0.7
-    if age_months > 24 and method == "Terlentang":
+    if age_months >= 24 and method == "Terlentang":
         return value - 0.7
     return value
 
@@ -179,8 +179,8 @@ def z_score(
         bmi = value / (adjusted / 100.0) ** 2
         return lms_z_score(bmi, rows[age]) if age < len(rows) else None
     if growth_type == "BBTB":
-        minimum = 45.0 if age_months <= 24 else 65.0
-        key = "weightForLength" if age_months <= 24 else "weightForHeight"
+        minimum = 45.0 if age_months < 24 else 65.0
+        key = "weightForLength" if age_months < 24 else "weightForHeight"
         rows = reference.get(key, {}).get(sex, [])
         index = _half_up((adjusted - minimum) * 2.0)
         return lms_z_score(value, rows[index]) if 0 <= index < len(rows) else None
@@ -363,8 +363,8 @@ def vectorized_assess_items(
     methods = np.asarray([item.get("measurement_method") or "" for item in items], dtype=object)
     adjusted_heights = heights.copy()
     valid_height = np.isfinite(adjusted_heights)
-    standing = valid_height & (ages <= 24) & (methods == "Berdiri")
-    recumbent = valid_height & (ages > 24) & (methods == "Terlentang")
+    standing = valid_height & (ages < 24) & (methods == "Berdiri")
+    recumbent = valid_height & (ages >= 24) & (methods == "Terlentang")
     adjusted_heights[standing] += 0.7
     adjusted_heights[recumbent] -= 0.7
 
@@ -407,7 +407,7 @@ def vectorized_assess_items(
     fill_age_indicator("imtu", bmi, "bmiForAge", valid_bmi)
 
     valid_bbtb = np.isfinite(weights) & np.isfinite(adjusted_heights)
-    minimum = np.where(ages <= 24, 45.0, 65.0)
+    minimum = np.where(ages < 24, 45.0, 65.0)
     bbtb_index = np.zeros(size, dtype=np.int64)
     if np.any(valid_bbtb):
         bbtb_index[valid_bbtb] = np.floor(
@@ -417,7 +417,7 @@ def vectorized_assess_items(
     bbtb_keys = [
         (
             str(items[index]["sex"]),
-            "weightForLength" if ages[index] <= 24 else "weightForHeight",
+            "weightForLength" if ages[index] < 24 else "weightForHeight",
             int(bbtb_index[index]),
         )
         for index in bbtb_positions
@@ -425,7 +425,7 @@ def vectorized_assess_items(
     for key_positions in grouped(bbtb_keys).values():
         actual = [bbtb_positions[position] for position in key_positions]
         sex = str(items[actual[0]]["sex"])
-        table_name = "weightForLength" if ages[actual[0]] <= 24 else "weightForHeight"
+        table_name = "weightForLength" if ages[actual[0]] < 24 else "weightForHeight"
         index = int(bbtb_index[actual[0]])
         rows = reference.get(table_name, {}).get(sex, [])
         if 0 <= index < len(rows):

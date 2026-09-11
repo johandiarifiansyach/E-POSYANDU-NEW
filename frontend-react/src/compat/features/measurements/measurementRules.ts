@@ -36,6 +36,12 @@ export const normalizeMeasurementInput = normalizeDecimalInput;
 export const parseMeasurementDecimal = parseLocaleNumber;
 export const parseMeasurementDecimalForRange = parseLocaleNumberForRange;
 
+/** WHO convention: 0-23 months recumbent, 24-59 months standing. */
+export function measurementMethodForAge(ageInMonths) {
+  const age = Number(ageInMonths);
+  return Number.isFinite(age) && age >= 24 ? 'Berdiri' : 'Terlentang';
+}
+
 export function validateMeasurementForm({ date, bb, tb, lila, lk, ageInMonths = null }) {
   const measurementDate = String(date ?? '').slice(0, 10);
   const parsedDate = new Date(`${measurementDate}T00:00:00`);

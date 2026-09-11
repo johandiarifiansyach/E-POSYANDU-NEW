@@ -69,7 +69,13 @@ const yesNoOptions = [
 
 function fieldValue(form: ChildForm, field: keyof ChildForm): string {
   const value = form[field];
-  return typeof value === "string" ? value : "";
+  // PostgreSQL exposes integer identity fields (child_order and
+  // gestational_age_weeks) as JSON numbers.  Inputs are string-valued, so
+  // converting every scalar here keeps saved numeric values visible when an
+  // edit form is opened instead of silently rendering them as empty fields.
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  return "";
 }
 
 export type ReactAddChildPageProps = {

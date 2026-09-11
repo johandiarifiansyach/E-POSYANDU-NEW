@@ -18,6 +18,7 @@ type Query {
     sort: String = "recent"
     view: String = "data"
     search: String
+    nikStatus: String
     village: String
     posyandu: String
   ): JSON!

@@ -138,7 +138,7 @@ def normalize_height(value: Any) -> tuple[float | None, str]:
 def _status_for_measurement(weight: float, height: float, age_months: int, sex: str) -> dict[str, Any]:
     # The cohort does not carry measurement method.  Use the usual method by
     # age so the WHO length/height correction remains deterministic.
-    method = "Terlentang" if age_months <= 24 else "Berdiri"
+    method = "Terlentang" if age_months < 24 else "Berdiri"
     return assess_item(
         {
             "weight_kg": weight,
@@ -404,7 +404,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             "measurementMonths": list(MONTHS),
             "monthDateAssumption": "Tanggal 15 digunakan sebagai titik tengah bulan untuk menghitung usia selesai dalam bulan.",
             "zeroAndTidak": "Nilai 0 atau TIDAK diperlakukan sebagai pengukuran yang tidak tersedia.",
-            "methodAssumption": "Terlentang untuk usia <=24 bulan, Berdiri untuk usia >24 bulan karena kolom cara ukur tidak tersedia.",
+            "methodAssumption": "Terlentang untuk usia 0-23 bulan, Berdiri untuk usia >=24 bulan karena kolom cara ukur tidak tersedia.",
         },
         "split": {
             "strategy": "GroupShuffleSplit",
